@@ -2,21 +2,45 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-_SCAN_TERMINAL_CACHE_LOCK = threading.Lock()
-_SCAN_TERMINAL_CACHE: Dict[str, Dict[str, Any]] = {}
-_SCAN_TERMINAL_REFRESHING: set[str] = set()
+# ---------------------------------------------------------------------------
+# Shared SQLite connection (all workers write to the same file)
+# ---------------------------------------------------------------------------
+_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "polyweather.db"
+_DB_LOCK = threading.Lock()
+
+
+def _get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_DB_PATH), timeout=30.0, isolation_level="IMMEDIATE")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# In-memory cache for AI results (not shared across workers, fine for now)
+# ---------------------------------------------------------------------------
 _SCAN_TERMINAL_AI_CACHE_LOCK = threading.Lock()
 _SCAN_TERMINAL_AI_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
+# ---------------------------------------------------------------------------
+# Key helpers
+# ---------------------------------------------------------------------------
+
 def scan_terminal_cache_key(filters: Dict[str, Any]) -> str:
     return json.dumps(filters, ensure_ascii=True, sort_keys=True)
 
+
+# ---------------------------------------------------------------------------
+# Shared scan-terminal cache (SQLite-backed)
+# ---------------------------------------------------------------------------
 
 def get_cached_scan_terminal_payload(
     filters: Dict[str, Any],
@@ -25,26 +49,43 @@ def get_cached_scan_terminal_payload(
 ) -> Optional[Dict[str, Any]]:
     cache_key = scan_terminal_cache_key(filters)
     now = time.time()
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        cached = _SCAN_TERMINAL_CACHE.get(cache_key)
-        if not cached:
+    with _DB_LOCK:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT payload_json, cached_at_ts FROM scan_terminal_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        if not row:
             return None
-        cached_at = float(cached.get("t") or 0.0)
-        if now - cached_at >= float(ttl_sec):
+        payload_json_str, cached_at = row
+        if now - float(cached_at) >= float(ttl_sec):
             return None
-        payload = cached.get("payload")
-        if not isinstance(payload, dict):
+        try:
+            return json.loads(payload_json_str)
+        except (json.JSONDecodeError, TypeError):
             return None
-        return dict(payload)
 
 
 def get_scan_terminal_cache_entry(filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     cache_key = scan_terminal_cache_key(filters)
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        cached = _SCAN_TERMINAL_CACHE.get(cache_key)
-        if not isinstance(cached, dict):
+    with _DB_LOCK:
+        conn = _get_db()
+        row = conn.execute(
+            """SELECT payload_json, cached_at_ts, success_at_ts,
+                      success_payload, last_error, last_failed_at
+               FROM scan_terminal_cache WHERE cache_key = ?""",
+            (cache_key,),
+        ).fetchone()
+        if not row:
             return None
-        return dict(cached)
+        return {
+            "payload_json": row[0],
+            "t": row[1],
+            "success_t": row[2],
+            "success_payload": row[3],
+            "last_error": row[4],
+            "last_failed_at": row[5],
+        }
 
 
 def set_cached_scan_terminal_payload(
@@ -54,15 +95,33 @@ def set_cached_scan_terminal_payload(
     cache_key = scan_terminal_cache_key(filters)
     existing = get_scan_terminal_cache_entry(filters) or {}
     now = time.time()
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        _SCAN_TERMINAL_CACHE[cache_key] = {
-            "t": now,
-            "payload": dict(payload),
-            "success_t": now,
-            "success_payload": dict(payload),
-            "last_error": existing.get("last_error"),
-            "last_failed_at": existing.get("last_failed_at"),
-        }
+    payload_json = json.dumps(payload, ensure_ascii=True)
+    success_payload_json = json.dumps(payload, ensure_ascii=True)
+    with _DB_LOCK:
+        conn = _get_db()
+        conn.execute(
+            """INSERT INTO scan_terminal_cache
+               (cache_key, payload_json, cached_at_ts, success_at_ts,
+                success_payload, last_error, last_failed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cache_key) DO UPDATE SET
+                   payload_json   = excluded.payload_json,
+                   cached_at_ts   = excluded.cached_at_ts,
+                   success_at_ts  = excluded.success_at_ts,
+                   success_payload= excluded.success_payload,
+                   last_error     = excluded.last_error,
+                   last_failed_at = excluded.last_failed_at""",
+            (
+                cache_key,
+                payload_json,
+                now,
+                now,
+                success_payload_json,
+                existing.get("last_error"),
+                existing.get("last_failed_at"),
+            ),
+        )
+        conn.commit()
 
 
 def set_scan_terminal_failure_state(
@@ -71,27 +130,83 @@ def set_scan_terminal_failure_state(
     error_message: str,
 ) -> None:
     cache_key = scan_terminal_cache_key(filters)
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        existing = _SCAN_TERMINAL_CACHE.get(cache_key) or {}
-        existing["last_error"] = error_message
-        existing["last_failed_at"] = datetime.utcnow().isoformat() + "Z"
-        _SCAN_TERMINAL_CACHE[cache_key] = existing
+    now = time.time()
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    with _DB_LOCK:
+        conn = _get_db()
+        # Only update the error fields, preserve everything else
+        existing = conn.execute(
+            "SELECT payload_json, cached_at_ts, success_at_ts, success_payload, last_failed_at FROM scan_terminal_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE scan_terminal_cache SET
+                       last_error = ?, last_failed_at = ?
+                   WHERE cache_key = ?""",
+                (error_message, now_iso, cache_key),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO scan_terminal_cache
+                   (cache_key, payload_json, cached_at_ts, last_error, last_failed_at)
+                   VALUES (?, '{}', ?, ?, ?)""".replace("'{}'", " '{}' "),
+                (cache_key, "{}", now, error_message, now_iso),
+            )
+        conn.commit()
 
+
+# ---------------------------------------------------------------------------
+# Cross-worker refresh lock using the shared cache_refresh_locks table
+# ---------------------------------------------------------------------------
 
 def mark_scan_terminal_refreshing(filters: Dict[str, Any]) -> bool:
+    """Atomically try to claim the refresh lock. Returns True if we claimed it."""
     cache_key = scan_terminal_cache_key(filters)
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        if cache_key in _SCAN_TERMINAL_REFRESHING:
+    now = time.time()
+    lock_ttl = 300.0  # auto-expire after 5 minutes
+    with _DB_LOCK:
+        conn = _get_db()
+        # Try to insert a new lock (fails if one exists and not expired)
+        try:
+            conn.execute(
+                """INSERT INTO cache_refresh_locks
+                   (cache_key, locked_until_ts, owner, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                (cache_key, now + lock_ttl, "scan-terminal", datetime.utcnow().isoformat() + "Z"),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            # Lock exists — check if expired
+            row = conn.execute(
+                "SELECT locked_until_ts FROM cache_refresh_locks WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+            if row and now > float(row[0]):
+                # Expired — update it
+                conn.execute(
+                    """UPDATE cache_refresh_locks SET
+                           locked_until_ts = ?, owner = ?, updated_at = ?
+                       WHERE cache_key = ?""",
+                    (now + lock_ttl, "scan-terminal", datetime.utcnow().isoformat() + "Z", cache_key),
+                )
+                conn.commit()
+                return True
             return False
-        _SCAN_TERMINAL_REFRESHING.add(cache_key)
-    return True
 
 
 def clear_scan_terminal_refreshing(filters: Dict[str, Any]) -> None:
     cache_key = scan_terminal_cache_key(filters)
-    with _SCAN_TERMINAL_CACHE_LOCK:
-        _SCAN_TERMINAL_REFRESHING.discard(cache_key)
+    with _DB_LOCK:
+        conn = _get_db()
+        conn.execute("DELETE FROM cache_refresh_locks WHERE cache_key = ?", (cache_key,))
+        conn.commit()
 
+
+# ---------------------------------------------------------------------------
+# AI cache (remains in-process, not shared — acceptable for per-request AI results)
+# ---------------------------------------------------------------------------
 
 def scan_ai_cache_key(
     snapshot_id: str,

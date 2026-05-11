@@ -5,6 +5,10 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env file for local dev (Docker injects env vars directly)
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -17,9 +21,9 @@ def parse_args() -> argparse.Namespace:
         description="Run a background dashboard prewarm worker for hot PolyWeather cities.",
     )
     parser.add_argument(
-        "--base-url",
-        default=os.getenv("POLYWEATHER_BACKEND_URL", "http://127.0.0.1:8000"),
-        help="Backend base URL, defaults to POLYWEATHER_BACKEND_URL or http://127.0.0.1:8000",
+        '--base-url',
+        default=os.getenv("POLYWEATHER_BACKEND_URL", "http://127.0.0.1:8001"),
+        help="Backend base URL, defaults to POLYWEATHER_BACKEND_URL or http://127.0.0.1:8001",
     )
     parser.add_argument(
         "--cities",

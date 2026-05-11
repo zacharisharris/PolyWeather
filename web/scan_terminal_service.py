@@ -88,12 +88,12 @@ def _env_int(
 
 
 SCAN_TERMINAL_PAYLOAD_TTL_SEC = max(
-    10,
-    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_PAYLOAD_TTL_SEC", "120")),
+    60,
+    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_PAYLOAD_TTL_SEC", "300")),
 )
 SCAN_TERMINAL_BUILD_TIMEOUT_SEC = max(
     8,
-    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC", "22")),
+    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC", "120")),
 )
 DEFAULT_SCAN_AI_MODEL = "mimo-v2.5-pro"
 DEFAULT_SCAN_AI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
@@ -351,8 +351,6 @@ def _build_city_ai_prompt(data: Dict[str, Any]) -> Dict[str, Any]:
             "wind_speed_kt": current.get("wind_speed_kt"),
             "wind_dir": current.get("wind_dir"),
             "humidity": current.get("humidity"),
-            "pressure_hpa": current.get("pressure_hpa"),
-            "observation_source": current.get("settlement_source"),
         },
         "airport": {
             "name": risk.get("airport") or airport_current.get("station_label") or airport_primary.get("station_label"),
@@ -637,11 +635,6 @@ def stream_scan_city_ai_forecast_payload(
             "final_judgment_en": preview_raw.get("final_judgment_en"),
             "model_cluster_note_zh": preview_raw.get("model_cluster_note_zh"),
             "model_cluster_note_en": preview_raw.get("model_cluster_note_en"),
-            "predicted_max": preview_raw.get("predicted_max"),
-            "range_low": preview_raw.get("range_low"),
-            "range_high": preview_raw.get("range_high"),
-            "confidence": preview_raw.get("confidence"),
-            "unit": preview_raw.get("unit"),
         },
     )
     yield _sse_event(
