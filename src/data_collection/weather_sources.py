@@ -15,9 +15,13 @@ from src.data_collection.russia_station_sources import RussiaStationSourceMixin
 from src.data_collection.nmc_sources import NmcSourceMixin
 from src.data_collection.nws_open_meteo_sources import NwsOpenMeteoSourceMixin
 from src.data_collection.amos_station_sources import AmosStationSourceMixin
+from src.data_collection.fmi_sources import FmiSourceMixin
+from src.data_collection.knmi_sources import KnmiSourceMixin
+from src.data_collection.hko_obs_sources import HkoObsSourceMixin
+from src.database.db_manager import DBManager
 
 
-class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSourceMixin, MgmSourceMixin, JmaAmedasSourceMixin, RussiaStationSourceMixin, NmcSourceMixin, NwsOpenMeteoSourceMixin, AmosStationSourceMixin):
+class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSourceMixin, MgmSourceMixin, JmaAmedasSourceMixin, RussiaStationSourceMixin, NmcSourceMixin, NwsOpenMeteoSourceMixin, AmosStationSourceMixin, FmiSourceMixin, KnmiSourceMixin, HkoObsSourceMixin):
     """
     Multi-source weather data collector
 
@@ -220,6 +224,21 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         )
         self._settlement_cache: Dict[str, Dict] = {}
         self._settlement_cache_lock = threading.Lock()
+        self.fmi_cache_ttl_sec = int(
+            os.getenv("FMI_CACHE_TTL_SEC", "120")
+        )
+        self._fmi_cache: Dict[str, Dict] = {}
+        self._fmi_cache_lock = threading.Lock()
+        self.knmi_cache_ttl_sec = int(
+            os.getenv("KNMI_CACHE_TTL_SEC", "120")
+        )
+        self._knmi_cache: Dict[str, Dict] = {}
+        self._knmi_cache_lock = threading.Lock()
+        self.hko_obs_cache_ttl_sec = int(
+            os.getenv("HKO_OBS_CACHE_TTL_SEC", "60")
+        )
+        self._hko_obs_cache: Dict[str, Dict] = {}
+        self._hko_obs_cache_lock = threading.Lock()
         self.cwa_open_data_auth = (
             os.getenv("CWA_OPEN_DATA_AUTH")
             or os.getenv("CWA_OPEN_DATA_API_KEY")
@@ -728,6 +747,12 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         normalized = str(city or "").strip().lower()
         with self._jma_cache_lock:
             self._jma_cache.pop(f"{normalized}:{use_fahrenheit}", None)
+        with self._fmi_cache_lock:
+            self._fmi_cache.pop(f"fmi:{normalized}:{use_fahrenheit}", None)
+        with self._knmi_cache_lock:
+            self._knmi_cache.pop(f"knmi:{normalized}:{use_fahrenheit}", None)
+        with self._hko_obs_cache_lock:
+            self._hko_obs_cache.pop(f"hko_obs:{normalized}:{use_fahrenheit}", None)
         with self._nmc_cache_lock:
             self._nmc_cache.pop(f"{normalized}:{use_fahrenheit}", None)
         with self._ru_station_cache_lock:
@@ -804,6 +829,19 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         if not mgm_data:
             return
         results["mgm"] = mgm_data
+        # Log airport obs for high-freq monitoring (Ankara 17128)
+        try:
+            mgm_current = mgm_data.get("current") or {}
+            DBManager().append_airport_obs(
+                icao=str(istno),
+                city=city_lower,
+                temp_c=mgm_current.get("temp"),
+                wind_kt=mgm_current.get("wind_speed_kt"),
+                pressure_hpa=mgm_current.get("pressure"),
+                obs_time=mgm_data.get("obs_time") or datetime.now().isoformat(),
+            )
+        except Exception:
+            logger.exception("airport_obs_log append failed for mgm city={}", city_lower)
         if include_nearby:
             results["nearby_source"] = "mgm"
             nearby = self.fetch_mgm_nearby_stations(province, root_ist_no=istno)
@@ -865,6 +903,93 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         if "mgm_nearby" not in results:
             results["mgm_nearby"] = official_rows
         results["nearby_source"] = "jma"
+        try:
+            row = official_rows[0] if official_rows else {}
+            icao = str(row.get("icao") or row.get("istNo") or "RJTT")
+            DBManager().append_airport_obs(
+                icao=icao,
+                city=city_lower,
+                temp_c=row.get("temp"),
+                obs_time=str(row.get("obs_time") or datetime.now().isoformat()),
+            )
+        except Exception:
+            logger.exception("airport_obs_log append failed for jma city={}", city_lower)
+
+    def _attach_knmi_official_nearby(
+        self, results: Dict, city_lower: str, use_fahrenheit: bool
+    ) -> None:
+        if city_lower != "amsterdam":
+            return
+        rows = self.fetch_knmi_official_nearby(
+            city_lower, use_fahrenheit=use_fahrenheit
+        )
+        if not rows:
+            return
+        results["knmi_official_nearby"] = rows
+        if "mgm_nearby" not in results:
+            results["mgm_nearby"] = rows
+        results["nearby_source"] = "knmi"
+        try:
+            row = rows[0] if rows else {}
+            DBManager().append_airport_obs(
+                icao=str(row.get("icao") or "EHAM"),
+                city=city_lower,
+                temp_c=row.get("temp"),
+                obs_time=str(row.get("obs_time") or datetime.now().isoformat()),
+            )
+        except Exception:
+            logger.exception("airport_obs_log append failed for knmi city={}", city_lower)
+
+    def _attach_fmi_official_nearby(
+        self, results: Dict, city_lower: str, use_fahrenheit: bool
+    ) -> None:
+        if city_lower != "helsinki":
+            return
+        rows = self.fetch_fmi_official_nearby(
+            city_lower, use_fahrenheit=use_fahrenheit
+        )
+        if not rows:
+            return
+        results["fmi_official_nearby"] = rows
+        if "mgm_nearby" not in results:
+            results["mgm_nearby"] = rows
+        results["nearby_source"] = "fmi"
+        try:
+            row = rows[0] if rows else {}
+            icao = str(row.get("icao") or "EFHK")
+            DBManager().append_airport_obs(
+                icao=icao,
+                city=city_lower,
+                temp_c=row.get("temp"),
+                obs_time=str(row.get("obs_time") or datetime.now().isoformat()),
+            )
+        except Exception:
+            logger.exception("airport_obs_log append failed for fmi city={}", city_lower)
+
+    def _attach_hko_obs_official_nearby(
+        self, results: Dict, city_lower: str, use_fahrenheit: bool
+    ) -> None:
+        if city_lower not in ("hong kong", "lau fau shan"):
+            return
+        rows = self.fetch_hko_obs_official_nearby(
+            city_lower, use_fahrenheit=use_fahrenheit
+        )
+        if not rows:
+            return
+        results["hko_obs_nearby"] = rows
+        if "mgm_nearby" not in results:
+            results["mgm_nearby"] = rows
+        results["nearby_source"] = "hko_obs"
+        try:
+            row = rows[0] if rows else {}
+            DBManager().append_airport_obs(
+                icao=str(row.get("icao") or "HKO"),
+                city=city_lower,
+                temp_c=row.get("temp"),
+                obs_time=str(row.get("obs_time") or datetime.now().isoformat()),
+            )
+        except Exception:
+            logger.exception("airport_obs_log append failed for hko_obs city={}", city_lower)
 
     def _attach_korean_amos_data(
         self, results: Dict, city_lower: str, use_fahrenheit: bool
@@ -882,6 +1007,17 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                             city_lower, amos_data.get("temp_c"), amos_data.get("temp_source"),
                             len(amos_data.get("runway_obs", {}).get("runway_pairs", []) or []))
                 results["amos"] = amos_data
+                try:
+                    DBManager().append_airport_obs(
+                        icao=amos_data.get("icao") or "",
+                        city=city_lower,
+                        temp_c=amos_data.get("temp_c"),
+                        wind_kt=amos_data.get("wind_kt"),
+                        pressure_hpa=amos_data.get("pressure_hpa"),
+                        obs_time=amos_data.get("observation_time") or datetime.now().isoformat(),
+                    )
+                except Exception:
+                    logger.exception("airport_obs_log append failed for amos city={}", city_lower)
             else:
                 logger.warning("AMOS: no data returned for city={}", city_lower)
         except Exception as exc:
@@ -1015,6 +1151,9 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                 if include_nearby:
                     self._attach_china_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_japan_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_fmi_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_knmi_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_hko_obs_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_russia_official_nearby(results, city_lower, use_fahrenheit)
                     if city_lower == "warsaw":
                         self._attach_warsaw_official_nearby(results, use_fahrenheit)
@@ -1057,6 +1196,9 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                 if include_nearby:
                     self._attach_china_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_japan_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_fmi_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_knmi_official_nearby(results, city_lower, use_fahrenheit)
+                    self._attach_hko_obs_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_russia_official_nearby(results, city_lower, use_fahrenheit)
                     if city_lower == "warsaw":
                         self._attach_warsaw_official_nearby(results, use_fahrenheit)
