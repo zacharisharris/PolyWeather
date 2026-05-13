@@ -64,7 +64,10 @@ import {
   useScanTerminalTheme,
   useUserLocalClock,
 } from "@/components/dashboard/scan-terminal/use-scan-terminal-ui-state";
-import MonitorPanel from "@/components/dashboard/monitoring/MonitorPanel";
+const MonitorPanel = dynamic(
+  () => import("@/components/dashboard/monitoring/MonitorPanel"),
+  { ssr: false },
+);
 
 type ContentView = "analysis" | "map" | "monitor";
 
@@ -355,7 +358,7 @@ function ScanTerminalScreen() {
       );
     }
     if (resolvedView === "monitor") {
-      return null; // iframe 在下方始终挂载，通过 display 切换
+      return null; // MonitorPanel is rendered below the main view switch
     }
     if (!isPro) {
       return (
@@ -632,7 +635,22 @@ function ScanTerminalScreen() {
               renderMainView()
             )}
             {resolvedView === "monitor" && (
-              <MonitorPanel />
+              isPro ? (
+                <MonitorPanel
+                  onCityClick={(cityName) => {
+                    const matchedRow = findRowForCity(timeSortedRows, cityName);
+                    if (matchedRow) {
+                      setSelectedRowId(matchedRow.id);
+                      store.preloadCityFromRow(matchedRow);
+                    }
+                    addAiPinnedCity(cityName);
+                    setActiveView("analysis");
+                    void store.selectCity(cityName);
+                  }}
+                />
+              ) : (
+                <ProFeaturePaywall feature="monitor" />
+              )
             )}
           </section>
         </main>
