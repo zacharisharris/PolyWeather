@@ -64,8 +64,9 @@ import {
   useScanTerminalTheme,
   useUserLocalClock,
 } from "@/components/dashboard/scan-terminal/use-scan-terminal-ui-state";
+import MonitorPanel from "@/components/dashboard/monitoring/MonitorPanel";
 
-type ContentView = "analysis" | "map";
+type ContentView = "analysis" | "map" | "monitor";
 
 const CityDetailPanel = dynamic(
   () =>
@@ -353,6 +354,9 @@ function ScanTerminalScreen() {
         />
       );
     }
+    if (resolvedView === "monitor") {
+      return null; // iframe 在下方始终挂载，通过 display 切换
+    }
     if (!isPro) {
       return (
         <div className="scan-table-shell empty">
@@ -548,6 +552,15 @@ function ScanTerminalScreen() {
                 >
                   {isEn ? "Decision Cards" : "城市决策卡"}
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={resolvedView === "monitor"}
+                  className={resolvedView === "monitor" ? "active" : ""}
+                  onClick={() => setActiveView("monitor")}
+                >
+                  🔥 {isEn ? "Monitor" : "市场监控"}
+                </button>
               </div>
               <div className="scan-list-status">
                 {scanLoading ? (
@@ -617,6 +630,9 @@ function ScanTerminalScreen() {
               </div>
             ) : (
               renderMainView()
+            )}
+            {resolvedView === "monitor" && (
+              <MonitorPanel />
             )}
           </section>
         </main>

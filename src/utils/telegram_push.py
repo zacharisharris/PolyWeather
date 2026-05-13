@@ -837,8 +837,8 @@ _AIRPORT_PUSH_INTERVAL = {
     "amsterdam": 600,  # KNMI 10-min
     "istanbul": 600,   # MGM ~10-min
     "paris": 900,        # AROME HD 15-min model
-    "hong kong": 600,    # HKO 10-min
-    "lau fau shan": 600, # HKO 10-min
+    "hong kong": 60,     # HKO 10-min → 60s轮询，obs_time去重
+    "lau fau shan": 60,  # HKO 10-min → 60s轮询，obs_time去重
     "taipei": 600,       # CWA ~10-min
 }
 # Per-city temperature window threshold (°C below DEB predicted high)
@@ -852,11 +852,20 @@ _AIRPORT_HEAT_THRESHOLD = {
 }
 
 
-def _in_peak_time_window(city_weather: Dict[str, Any]) -> bool:
+# 部分城市 Open-Meteo 算出的 peak 窗口偏窄，用 fallback 拓宽
+# （例如沿海城市受海风影响，高温窗口被压缩）
+_AIRPORT_PEAK_FALLBACK = {
+    "busan": (12, 16),
+}
+
+def _in_peak_time_window(city: str, city_weather: Dict[str, Any]) -> bool:
     """Check if current local time is within the expected peak temperature window."""
     peak = city_weather.get("peak") or {}
     first_h = peak.get("first_h")
     last_h = peak.get("last_h")
+    fallback = _AIRPORT_PEAK_FALLBACK.get(city)
+    if fallback and ((first_h is None) or (last_h is not None and last_h - first_h < 3)):
+        first_h, last_h = fallback
     local_time = city_weather.get("local_time") or ""
     if first_h is None or not local_time:
         return False
@@ -959,12 +968,43 @@ def _run_high_freq_airport_cycle(
                 continue
 
             # 基于原始观测数据时间的去重：同一条观测不重复推送
-            if current_obs_time and last_obs_time and current_obs_time == last_obs_time:
+            # HK/LFS 数据在 x7 分发布，API 可能有 3-5s 延迟，
+            # obs_time 未变但距上次推送已超 9min → 等 4s 重拉一次
+            _CITIES_WITH_DELAYED_API = {"hong kong", "lau fau shan"}
+            if (current_obs_time and last_obs_time and current_obs_time == last_obs_time
+                    and city in _CITIES_WITH_DELAYED_API
+                    and now_ts - last_city_ts > 540):
+                time.sleep(4)
+                try:
+                    city_weather = _analyze(city)
+                    deb_raw2 = (city_weather.get("deb") or {}).get("prediction")
+                    if deb_raw2 is not None:
+                        deb_pred = float(deb_raw2)
+                    mgm_nearby2 = city_weather.get("mgm_nearby") or []
+                    row2 = None
+                    for r in mgm_nearby2:
+                        if str(r.get("istNo") or "") == airport_icao or str(r.get("icao") or "") == airport_icao:
+                            row2 = r
+                            break
+                    if not row2 and mgm_nearby2:
+                        row2 = mgm_nearby2[0]
+                    retry_obs = str(row2.get("obs_time") or "") if row2 else ""
+                    if retry_obs and retry_obs != last_obs_time:
+                        current_obs_time = retry_obs
+                        station_temp = row2.get("temp") if row2 else None
+                        current_temp = station_temp or (city_weather.get("current") or {}).get("temp")
+                        if current_temp is None or deb_pred is None:
+                            continue
+                    else:
+                        continue
+                except Exception:
+                    continue
+            elif current_obs_time and last_obs_time and current_obs_time == last_obs_time:
                 continue
 
             # ── Three-condition heat window ──
             threshold = _AIRPORT_HEAT_THRESHOLD.get(city, 3.0)
-            time_ok = _in_peak_time_window(city_weather)
+            time_ok = _in_peak_time_window(city, city_weather)
             temp_ok = (deb_pred - current_temp) <= threshold
             trend_ok = _check_rising_trend(airport_icao) if city != "paris" else True
 
@@ -976,8 +1016,10 @@ def _run_high_freq_airport_cycle(
                     state_dirty = True
                 continue
 
-            local_time = city_weather.get("local_time") or ""
-            message = _build_airport_status_message(city, city_weather, deb_pred, local_time)
+            # 用观测数据时间而非当前本地时间
+            airport_cur = city_weather.get("airport_current") or {}
+            obs_local = airport_cur.get("obs_time") or city_weather.get("local_time") or ""
+            message = _build_airport_status_message(city, city_weather, deb_pred, obs_local)
 
             sent = False
             for chat_id in chat_ids:

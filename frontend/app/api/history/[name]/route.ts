@@ -29,7 +29,9 @@ export async function GET(
   const url = `${API_BASE}/api/history/${encodeURIComponent(name)}`;
 
   try {
-    const auth = await buildBackendRequestHeaders(req);
+    const auth = await buildBackendRequestHeaders(req, {
+      includeSupabaseIdentity: false,
+    });
     const fetchOptions = {
       headers: auth.headers,
       next: { revalidate: 60 },
