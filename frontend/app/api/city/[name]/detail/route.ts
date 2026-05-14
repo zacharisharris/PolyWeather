@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  applyAuthResponseCookies,
-  buildBackendRequestHeaders,
-} from "@/lib/backend-auth";
-import {
-  buildProxyExceptionResponse,
-  buildUpstreamErrorResponse,
-} from "@/lib/api-proxy";
-import { buildCachedJsonResponse } from "@/lib/http-cache";
+import { proxyBackendJsonGet } from "@/lib/api-proxy";
+import { buildCityDetailProxyCachePolicy } from "@/lib/proxy-cache-policy";
 
 const API_BASE = process.env.POLYWEATHER_API_BASE_URL;
 
@@ -25,6 +18,7 @@ export async function GET(
 
   const { name } = await context.params;
   const forceRefresh = req.nextUrl.searchParams.get("force_refresh") ?? "false";
+  const cachePolicy = buildCityDetailProxyCachePolicy(forceRefresh, 15);
   const depth = req.nextUrl.searchParams.get("depth");
   const marketSlug = req.nextUrl.searchParams.get("market_slug");
   const targetDate = req.nextUrl.searchParams.get("target_date");
@@ -42,30 +36,12 @@ export async function GET(
   }
   const url = `${API_BASE}/api/city/${encodeURIComponent(name)}/detail?${searchParams.toString()}`;
 
-  try {
-    const auth = await buildBackendRequestHeaders(req, {
-      includeSupabaseIdentity: false,
-    });
-    const res = await fetch(url, {
-      headers: auth.headers,
-      next: { revalidate: 15 },
-    });
-    if (!res.ok) {
-      const raw = await res.text();
-      const response = buildUpstreamErrorResponse(res.status, raw);
-      return applyAuthResponseCookies(response, auth.response);
-    }
-    const data = await res.json();
-    const response = buildCachedJsonResponse(
-      req,
-      data,
-      "public, max-age=0, s-maxage=15, stale-while-revalidate=45",
-    );
-    return applyAuthResponseCookies(response, auth.response);
-  } catch (error) {
-    const response = buildProxyExceptionResponse(error, {
-      publicMessage: "Failed to fetch city detail aggregate",
-    });
-    return response;
-  }
+  return proxyBackendJsonGet(req, {
+    cacheControl: cachePolicy.responseCacheControl,
+    fetchCache:
+      cachePolicy.fetchMode === "no-store" ? "no-store" : undefined,
+    publicMessage: "Failed to fetch city detail aggregate",
+    revalidateSeconds: cachePolicy.revalidateSeconds,
+    url,
+  });
 }

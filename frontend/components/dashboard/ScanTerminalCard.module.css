@@ -1289,3 +1289,5 @@
   font-weight: 600;
   color: var(--color-text-muted);
 }
+
+@keyframes spin { to { transform: rotate(360deg); } }

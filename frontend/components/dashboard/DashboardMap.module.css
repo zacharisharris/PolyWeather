@@ -836,3 +836,5 @@
     opacity: 0.6;
   }
 }
+
+@keyframes spin { to { transform: rotate(360deg); } }

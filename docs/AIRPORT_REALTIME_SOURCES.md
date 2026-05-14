@@ -12,6 +12,29 @@
 | 赫尔辛基 | Vantaa | EFHK | FMI (`opendata.fmi.fi`) | 10 分钟 | 机场站点实时温度 | 免费 |
 | 阿姆斯特丹 | Schiphol | EHAM | KNMI (`dataplatform.knmi.nl`) | 10 分钟 | 机场站点实时温度 | 免费（需注册） |
 | 巴黎 | Le Bourget | LFPB | AROME HD (`api.open-meteo.com`) | 15 分钟 | 模型预报（非实测） | 免费 |
+| 新加坡 | Changi | WSSS | Singapore MSS (`api.data.gov.sg`) | 1 分钟 | 机场站点实时温度 (S24 站) | 免费 |
+| 纽约 | LaGuardia | KLGA | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 洛杉矶 | LAX | KLAX | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 芝加哥 | O'Hare | KORD | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 丹佛 | Buckley | KBKF | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 亚特兰大 | Hartsfield | KATL | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 迈阿密 | MIA | KMIA | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 旧金山 | SFO | KSFO | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 休斯顿 | Hobby | KHOU | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 达拉斯 | Love Field | KDAL | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 奥斯汀 | Bergstrom | KAUS | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+| 西雅图 | SeaTac | KSEA | NOAA MADIS HFMETAR | 5 分钟 | 机场站点实时温度 | 免费 |
+
+> **Singapore MSS**: 新加坡气象局（MSS）通过 data.gov.sg 开放数据平台提供全国 15 个站点
+> 的干球温度（1 分钟均值），更新频率 ~1 分钟。选取 S24 Upper Changi Road North 站
+> 作为樟宜机场 (WSSS) 的实时温度锚点。数据公开免费，无需 API 密钥。
+> 后端通过 `singapore_mss_sources.py` 拉取并注入 `airport_primary`。
+
+> **NOAA MADIS HFMETAR**: 美国 11 个城市的机场高频实时数据通过 NOAA MADIS 公共档案获取。
+> 数据源为 NetCDF 格式（`madis-data.ncep.noaa.gov/madisPublic1/data/LDAD/hfmetar/`），
+> 每 5 分钟全量更新一次，温度保留一位小数。匿名公开访问，无需 API 密钥。
+> 后端通过 `weather_sources.py` 拉取并注入 `airport_primary`，前端市场监控通过
+> `resolveMonitorTemperature` 优先读取 `airport_primary.temp` 获得小数精度温度。
 
 ## 推送机制
 
@@ -20,6 +43,33 @@
 - 循环轮询 60s 以匹配最快频率
 - 仅当当前温度距 DEB 预测最高 ≤3°C 时推送
 - 确认过峰值后自动停止
+
+## 前端市场监控 freshness 契约
+
+后端城市详情接口会在 `current.freshness` / `airport_current.freshness` 返回源感知更新时间信息，前端市场监控不再用统一的 `obs_age_min` 判断所有城市。
+
+关键字段：
+
+```json
+{
+  "source_code": "amos",
+  "source_label": "AMOS",
+  "observed_at": "2026-05-14T11:59:10+00:00",
+  "observed_at_local": "20:59",
+  "native_update_interval_sec": 60,
+  "expected_next_update_at": "2026-05-14T12:00:10+00:00",
+  "freshness_status": "fresh",
+  "freshness_reason": "within_native_fresh_window",
+  "age_sec": 50
+}
+```
+
+前端刷新规则：
+
+- 首次进入市场监控：强制刷新全部城市，绕过 30 分钟前端缓存。
+- 定时轮询：仍以 60s tick 检查，但只刷新已到 `expected_next_update_at`、`delayed`、`stale` 或缺失的城市。
+- BFF 代理：`force_refresh=true` 时使用 `no-store`，避免 Next fetch revalidate 缓存吞掉强刷。
+- 展示：卡片 tooltip 显示源端名称、原生更新间隔和当前 freshness 状态。
 
 ## 消息模板
 

@@ -1789,3 +1789,5 @@ html.light .root :global(.future-v2-refresh-lock strong) {
   color: #0f172a;
 }
 
+
+@keyframes spin { to { transform: rotate(360deg); } }
