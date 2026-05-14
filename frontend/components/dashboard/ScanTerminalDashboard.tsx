@@ -68,6 +68,14 @@ const MonitorPanel = dynamic(
   { ssr: false },
 );
 
+const RunwayObservationsPanel = dynamic(
+  () =>
+    import(
+      "@/components/dashboard/scan-terminal/RunwayObservationsPanel"
+    ).then((module) => module.RunwayObservationsPanel),
+  { ssr: false },
+);
+
 const CityDetailPanel = dynamic(
   () =>
     import("@/components/dashboard/DetailPanel").then(
@@ -355,7 +363,7 @@ function ScanTerminalScreen() {
         />
       );
     }
-    if (resolvedView === "monitor") {
+    if (resolvedView === "monitor" || resolvedView === "runway") {
       return null; // MonitorPanel is rendered below the main view switch
     }
     if (!isPro) {
@@ -462,6 +470,15 @@ function ScanTerminalScreen() {
                 >
                   🔥 {isEn ? "Monitor" : "市场监控"}
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={resolvedView === "runway"}
+                  className={resolvedView === "runway" ? "active" : ""}
+                  onClick={() => setActiveView("runway")}
+                >
+                  🛬 {isEn ? "Runways" : "跑道观测"}
+                </button>
               </div>
               <div className="scan-list-status">
                 {scanLoading ? (
@@ -546,6 +563,13 @@ function ScanTerminalScreen() {
                     void store.selectCity(cityName);
                   }}
                 />
+              ) : (
+                <ProFeaturePaywall feature="monitor" />
+              )
+            )}
+            {resolvedView === "runway" && (
+              isPro ? (
+                <RunwayObservationsPanel />
               ) : (
                 <ProFeaturePaywall feature="monitor" />
               )
