@@ -492,6 +492,78 @@ function pickRicherForecast(
   };
 }
 
+function countHourlyPoints(value: CityDetail["hourly"] | undefined) {
+  const times = Array.isArray(value?.times) ? value?.times || [] : [];
+  const temps = Array.isArray(value?.temps) ? value?.temps || [] : [];
+  return Math.min(times.length, temps.length);
+}
+
+function pickRicherHourly(
+  currentValue: CityDetail["hourly"] | undefined,
+  incomingValue: CityDetail["hourly"] | undefined,
+) {
+  const incomingCount = countHourlyPoints(incomingValue);
+  const currentCount = countHourlyPoints(currentValue);
+  if (incomingCount <= 0) return currentValue;
+  if (currentCount <= 0) return incomingValue;
+  return incomingCount >= currentCount ? incomingValue : currentValue;
+}
+
+function countObservationSeriesPoints<T extends { time?: string | null; temp?: number | null }>(
+  value: T[] | null | undefined,
+) {
+  return (Array.isArray(value) ? value : []).filter((row) => {
+    const time = String(row?.time || "").trim();
+    const temp = Number(row?.temp);
+    return Boolean(time) && Number.isFinite(temp);
+  }).length;
+}
+
+function pickRicherObservationSeries<
+  T extends { time?: string | null; temp?: number | null },
+>(
+  currentValue: T[] | null | undefined,
+  incomingValue: T[] | null | undefined,
+): T[] | undefined {
+  const incomingCount = countObservationSeriesPoints(incomingValue);
+  const currentCount = countObservationSeriesPoints(currentValue);
+  if (incomingCount <= 0) return currentValue || undefined;
+  if (currentCount <= 0) return incomingValue || undefined;
+  return (incomingCount >= currentCount ? incomingValue : currentValue) || undefined;
+}
+
+function mergeTrendInfo(
+  currentValue: CityDetail["trend"] | undefined,
+  incomingValue: CityDetail["trend"] | undefined,
+) {
+  if (!incomingValue) return currentValue;
+  if (!currentValue) return incomingValue;
+  return {
+    ...currentValue,
+    ...incomingValue,
+    recent: pickRicherObservationSeries(
+      currentValue.recent,
+      incomingValue.recent,
+    ),
+  };
+}
+
+function mergeMgmData(
+  currentValue: CityDetail["mgm"] | undefined,
+  incomingValue: CityDetail["mgm"] | undefined,
+) {
+  if (!incomingValue) return currentValue;
+  if (!currentValue) return incomingValue;
+  return {
+    ...currentValue,
+    ...incomingValue,
+    hourly: pickRicherObservationSeries(
+      currentValue.hourly,
+      incomingValue.hourly,
+    ),
+  };
+}
+
 function pickPreferredNearbyStations(
   currentValue: CityDetail["official_nearby"] | CityDetail["mgm_nearby"],
   incomingValue: CityDetail["official_nearby"] | CityDetail["mgm_nearby"],
@@ -529,13 +601,23 @@ function mergeCityDetail(
     airport_current: incoming.airport_current || current.airport_current,
     deb: incoming.deb || current.deb,
     probabilities: incoming.probabilities || current.probabilities,
-    trend: incoming.trend || current.trend,
+    trend: mergeTrendInfo(current.trend, incoming.trend),
+    metar_today_obs: pickRicherObservationSeries(
+      current.metar_today_obs,
+      incoming.metar_today_obs,
+    ),
+    settlement_today_obs: pickRicherObservationSeries(
+      current.settlement_today_obs,
+      incoming.settlement_today_obs,
+    ),
+    mgm: mergeMgmData(current.mgm, incoming.mgm),
     multi_model: pickRicherModelMap(current.multi_model, incoming.multi_model),
     multi_model_daily: mergeDailyModelMap(
       current.multi_model_daily,
       incoming.multi_model_daily,
     ),
     forecast: pickRicherForecast(current.forecast, incoming.forecast),
+    hourly: pickRicherHourly(current.hourly, incoming.hourly),
     official_nearby: pickPreferredNearbyStations(
       current.official_nearby,
       incoming.official_nearby,

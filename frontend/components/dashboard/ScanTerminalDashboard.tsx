@@ -10,24 +10,6 @@ import {
   useRef,
   useState,
 } from "react";
-
-/** Tracks how many minutes until the next auto-refresh, ticking every minute. */
-function useNextRefreshMinutes(generatedAt: string | null | undefined): number | null {
-  const [minutes, setMinutes] = useState<number | null>(null);
-  useEffect(() => {
-    if (!generatedAt) return;
-    const AUTO_REFRESH_MS = 10 * 60_000;
-    const compute = () => {
-      const elapsed = Date.now() - new Date(generatedAt).getTime();
-      const remaining = AUTO_REFRESH_MS - elapsed;
-      setMinutes(remaining > 0 ? Math.ceil(remaining / 60_000) : 0);
-    };
-    compute();
-    const id = setInterval(compute, 60_000);
-    return () => clearInterval(id);
-  }, [generatedAt]);
-  return minutes;
-}
 import styles from "./Dashboard.module.css";
 import { scanRootClass } from "./scan-root-styles";
 import { ProFeaturePaywall } from "@/components/dashboard/ProFeaturePaywall";
@@ -63,6 +45,8 @@ import {
   useScanTerminalTheme,
   useUserLocalClock,
 } from "@/components/dashboard/scan-terminal/use-scan-terminal-ui-state";
+import { useRelativeTime } from "@/hooks/useRelativeTime";
+
 const MonitorPanel = dynamic(
   () => import("@/components/dashboard/monitoring/MonitorPanel"),
   { ssr: false },
@@ -118,7 +102,6 @@ function ScanTerminalScreen() {
     isPro,
     proAccessLoading: proAccess.loading,
   });
-  const nextRefreshMinutes = useNextRefreshMinutes(terminalData?.generated_at);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ScanTerminalContentView>("map");
   const [mapSelectedCityName, setMapSelectedCityName] = useState<string | null>(null);
@@ -154,6 +137,20 @@ function ScanTerminalScreen() {
   const userLocalTime = useUserLocalClock();
   const { setThemeMode, themeMode } = useScanTerminalTheme();
   const lastMapSelectedCityRef = useRef<string>("");
+  const lastFetchedAtRef = useRef<number>(0);
+  const serverAgeText = useRelativeTime(terminalData?.generated_at ?? null);
+  const localAgeText = useRelativeTime(
+    lastFetchedAtRef.current
+      ? new Date(lastFetchedAtRef.current).toISOString()
+      : null,
+  );
+
+  useEffect(() => {
+    if (terminalData?.generated_at) {
+      lastFetchedAtRef.current = Date.now();
+    }
+  }, [terminalData?.generated_at]);
+
   const scanTerminalRootClassName = clsx(
     styles.root,
     scanRootClass,
@@ -495,37 +492,16 @@ function ScanTerminalScreen() {
                 </button>
               </div>
               <div className="scan-list-status">
-                {scanLoading ? (
-                  <span className="scan-status-chip scanning">
-                    <RefreshCw size={14} className="spin" />
-                    {isEn ? "Scanning..." : "扫描中..."}
+                {terminalData?.generated_at ? (
+                  <span className={clsx("scan-status-chip", terminalData?.stale ? "stale" : "live")}>
+                    {isEn ? "Updated" : "已更新"} {serverAgeText || ""}
                   </span>
-                ) : (
-                  <>
-                    {terminalData?.generated_at ? (
-                      <span className="scan-status-chip live">
-                        {isEn ? "Updated" : "已更新"}{" "}
-                        {new Date(terminalData.generated_at).toLocaleTimeString(
-                          isEn ? "en-US" : "zh-CN",
-                          {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          },
-                        )}
-                      </span>
-                    ) : null}
-                    {terminalData?.generated_at && nextRefreshMinutes != null && nextRefreshMinutes > 0 ? (
-                      <span className="scan-status-chip auto-refresh">
-                        {isEn ? `Refresh in ~${nextRefreshMinutes}m` : `约${nextRefreshMinutes}分钟后刷新`}
-                      </span>
-                    ) : null}
-                    {terminalData?.stale ? (
-                      <span className="scan-status-chip stale">
-                        {isEn ? "Delayed snapshot" : "延迟快照"}
-                      </span>
-                    ) : null}
-                  </>
-                )}
+                ) : null}
+                {terminalData?.stale && localAgeText ? (
+                  <span className="scan-status-chip stale">
+                    {isEn ? "Local fetch " : "本地下发 "}{localAgeText}
+                  </span>
+                ) : null}
                 {isPro ? (
                   <button
                     type="button"
