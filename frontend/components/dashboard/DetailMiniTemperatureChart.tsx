@@ -47,7 +47,7 @@ export function DetailMiniTemperatureChart({ detail }: { detail: CityDetail }) {
         label: forecastLabel,
         pointRadius: 0,
         spanGaps: true,
-        tension: 0.28,
+        tension: 0.1,
       },
     ];
 
@@ -60,7 +60,7 @@ export function DetailMiniTemperatureChart({ detail }: { detail: CityDetail }) {
         label: calibratedLabel,
         pointRadius: 0,
         spanGaps: true,
-        tension: 0.3,
+        tension: 0.1,
       });
     }
 
@@ -79,7 +79,7 @@ export function DetailMiniTemperatureChart({ detail }: { detail: CityDetail }) {
     return {
       data: {
         datasets,
-        labels: chartData.times,
+        labels: chartData.tickLabels,
       },
       options: {
         interaction: { intersect: false, mode: "index" },
@@ -98,13 +98,8 @@ export function DetailMiniTemperatureChart({ detail }: { detail: CityDetail }) {
           x: {
             grid: { color: "rgba(255,255,255,0.03)" },
             ticks: {
-              callback: (value, index) =>
-                typeof index === "number" && index % 4 === 0
-                  ? String(value)
-                  : "",
               color: "#6B7A90",
               font: { size: 10 },
-              maxTicksLimit: 6,
               maxRotation: 0,
             },
           },

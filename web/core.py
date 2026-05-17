@@ -21,7 +21,6 @@ from src.data_collection.country_networks import provider_coverage_summary
 from src.data_collection.city_risk_profiles import CITY_RISK_PROFILES  # noqa: F401
 from src.data_collection.polymarket_readonly import PolymarketReadOnlyLayer
 from src.auth.supabase_entitlement import SUPABASE_ENTITLEMENT, extract_bearer_token
-from src.utils.prewarm_dashboard import get_prewarm_runtime_summary
 from src.utils.metrics import (
     build_metrics_summary,
     counter_inc,
@@ -239,19 +238,29 @@ def _resolve_auth_points(request: Request) -> int:
         points = max(0, int(raw_points or 0))
     except Exception:
         points = 0
-    if points > 0:
-        return points
 
     user_id = str(getattr(request.state, "auth_user_id", "") or "").strip()
-    if not user_id:
-        return points
-    try:
-        db_points = _account_db.get_points_by_supabase_user_id(user_id)
-        if db_points > points:
-            request.state.auth_points = db_points
-            return db_points
-    except Exception as exc:
-        logger.warning(f"auth points fallback failed user_id={user_id}: {exc}")
+
+    if user_id:
+        try:
+            db_points = _account_db.get_points_by_supabase_user_id(user_id)
+            if db_points > points:
+                request.state.auth_points = db_points
+                points = db_points
+        except Exception as exc:
+            logger.warning(f"auth points fallback failed user_id={user_id}: {exc}")
+
+    if points <= 0:
+        email = str(getattr(request.state, "auth_email", "") or "").strip().lower()
+        if email:
+            try:
+                email_points = _account_db.get_points_by_supabase_email(email)
+                if email_points > points:
+                    request.state.auth_points = email_points
+                    points = email_points
+            except Exception as exc:
+                logger.warning(f"auth points email fallback failed email={email}: {exc}")
+
     return points
 
 
@@ -826,6 +835,5 @@ def build_system_status_payload() -> Dict[str, Any]:
         "probability": _probability_summary(),
         "training_data": _training_data_summary(),
         "station_networks": provider_coverage_summary(),
-        "prewarm": get_prewarm_runtime_summary(),
         "cities_count": len(CITIES),
     }

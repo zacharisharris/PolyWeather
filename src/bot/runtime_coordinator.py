@@ -84,8 +84,6 @@ class StartupCoordinator:
     def start_all(self) -> RuntimeStatus:
         loops = [
             self._start_airport_high_freq_loop(),
-            self._start_market_monitor_push_loop(),
-            self._start_dashboard_prewarm_loop(),
             self._start_polygon_wallet_loop(),
             self._start_polymarket_wallet_activity_loop(),
             self._start_weekly_reward_loop(),
@@ -174,59 +172,6 @@ class StartupCoordinator:
                 self.bot,
                 self.config,
             ),
-        )
-
-    def _start_market_monitor_push_loop(self) -> LoopStatus:
-        enabled = _env_bool("TELEGRAM_MARKET_MONITOR_PUSH_ENABLED", True)
-        chat_ids = import_module(
-            "src.utils.telegram_chat_ids"
-        ).get_market_monitor_chat_ids_from_env()
-        telegram_push = import_module("src.utils.telegram_push")
-        interval = int(getattr(telegram_push, "MARKET_MONITOR_INTERVAL_SEC", 60))
-        cities_count = len(getattr(telegram_push, "MARKET_MONITOR_CITIES", []))
-        details = {
-            "mode": "market-monitor-periodic",
-            "interval_sec": interval,
-            "cities_count": cities_count,
-            "chat_targets": len(chat_ids),
-            "window": "every 60s, available Polymarket scans only",
-        }
-        validation_error = None if chat_ids else "missing_TELEGRAM_MARKET_MONITOR_CHAT_IDS"
-        return self._start_with_validation(
-            key="market_monitor_push",
-            label="市场监控频道推送",
-            configured_enabled=enabled,
-            details=details,
-            validation_error=validation_error,
-            starter=lambda: telegram_push.start_market_monitor_push_loop(
-                self.bot,
-            ),
-        )
-
-    def _start_dashboard_prewarm_loop(self) -> LoopStatus:
-        enabled = _env_bool("POLYWEATHER_DASHBOARD_PREWARM_ENABLED", False)
-        interval = max(30, _env_int("POLYWEATHER_PREWARM_INTERVAL_SEC", 300))
-        jitter = max(0, _env_int("POLYWEATHER_PREWARM_JITTER_SEC", 20))
-        cities_count = _parse_csv_count(os.getenv("POLYWEATHER_PREWARM_CITIES")) or 14
-        details = {
-            "interval_sec": interval,
-            "jitter_sec": jitter,
-            "cities_count": cities_count,
-            "include_detail": _env_bool("POLYWEATHER_PREWARM_INCLUDE_DETAIL", True),
-            "include_market": _env_bool("POLYWEATHER_PREWARM_INCLUDE_MARKET", True),
-            "force_refresh": _env_bool("POLYWEATHER_PREWARM_FORCE_REFRESH", False),
-            "base_url": str(os.getenv("POLYWEATHER_BACKEND_URL") or "http://127.0.0.1:8000").strip(),
-        }
-        validation_error = None
-        if not str(os.getenv("POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN") or "").strip():
-            validation_error = "missing_POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN"
-        return self._start_with_validation(
-            key="dashboard_prewarm",
-            label="站点面板预热",
-            configured_enabled=enabled,
-            details=details,
-            validation_error=validation_error,
-            starter=lambda: import_module("src.utils.prewarm_dashboard").start_prewarm_worker_thread(),
         )
 
     def _start_polygon_wallet_loop(self) -> LoopStatus:

@@ -78,19 +78,30 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
     cityKey: string;
     data: TemperatureChartData;
   } | null>(null);
-  if (computedChartData) {
-    lastChartDataRef.current = { cityKey, data: computedChartData };
-  }
-  const chartData =
-    computedChartData ||
-    (lastChartDataRef.current?.cityKey === cityKey
-      ? lastChartDataRef.current.data
-      : null);
+  // Use a memo so we never mutate refs during render (React anti-pattern).
+  // When cityKey changes, discard any stale cache; once computedChartData
+  // arrives, save it into the ref and use it.
+  const chartData = useMemo(() => {
+    if (lastChartDataRef.current && lastChartDataRef.current.cityKey !== cityKey) {
+      // City switched — clear stale cache so the old city's chart cannot
+      // bleed into the new city card while its detail is still loading.
+      lastChartDataRef.current = null;
+    }
+    if (computedChartData) {
+      lastChartDataRef.current = { cityKey, data: computedChartData };
+      return computedChartData;
+    }
+    if (lastChartDataRef.current?.cityKey === cityKey) {
+      return lastChartDataRef.current.data;
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityKey, computedChartData]);
   const forecastLabel = locale === "en-US" ? "DEB baseline" : "DEB 原始路径";
   const calibratedLabel =
     locale === "en-US"
-      ? "METAR-calibrated path"
-      : "METAR 修正路径";
+      ? "DEB calibrated path"
+      : "DEB 修正路径";
   const observationLabel =
     chartData?.observationLabel ||
     (locale === "en-US" ? "METAR obs" : "METAR 实况");
@@ -121,7 +132,7 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
             chartData.currentIndex != null && ctx.p0DataIndex < chartData.currentIndex ? [] : [6, 4],
         },
         spanGaps: true,
-        tension: 0.28,
+        tension: 0.1,
       },
     ];
 
@@ -135,7 +146,7 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
         pointHoverRadius: 5,
         pointRadius: 0,
         spanGaps: true,
-        tension: 0.32,
+        tension: 0.12,
       });
     }
 
@@ -154,7 +165,7 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
     return {
       data: {
         datasets,
-        labels: chartData.times,
+        labels: chartData.tickLabels,
       },
       options: {
         animation: false,
@@ -174,13 +185,8 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
           x: {
             grid: { color: "rgba(159, 178, 199, 0.08)" },
             ticks: {
-              callback: (value, index) =>
-                typeof index === "number" && index % 3 === 0
-                  ? String(value)
-                  : "",
               color: "#6B7A90",
               font: { size: 10 },
-              maxTicksLimit: 8,
               maxRotation: 0,
             },
           },
@@ -210,6 +216,7 @@ export const AiCityTemperatureChart = memo(function AiCityTemperatureChart({ det
   }, [
     calibratedLabel,
     chartData,
+    cityKey,
     detail.temp_symbol,
     forecastLabel,
     hasCalibratedPath,

@@ -5,7 +5,6 @@ import type { MouseEvent } from "react";
 import { useEffect, useState } from "react";
 import { AiCityTemperatureChart } from "@/components/dashboard/scan-terminal/AiCityTemperatureChart";
 import { AiEvidencePanel } from "@/components/dashboard/scan-terminal/AiEvidencePanel";
-import { AmosRunwayPanel } from "@/components/dashboard/scan-terminal/AmosRunwayPanel";
 import { CityCardHeader } from "@/components/dashboard/scan-terminal/CityCardHeader";
 import { MobileDecisionCard } from "@/components/dashboard/scan-terminal/MobileDecisionCard";
 import { ModelEvidencePanel } from "@/components/dashboard/scan-terminal/ModelEvidencePanel";
@@ -27,6 +26,7 @@ import {
   useAiCityForecast,
   useCityMarketScan,
 } from "@/components/dashboard/scan-terminal/use-ai-city-card-data";
+import { getDisplayAirportPrimary } from "@/lib/airport-observation-display";
 import type { CityDetail, ScanOpportunityRow } from "@/lib/dashboard-types";
 import { getModelView } from "@/lib/model-utils";
 import { getTodayPaceView } from "@/lib/pace-utils";
@@ -36,6 +36,14 @@ function toFiniteDecisionNumber(value: unknown) {
   if (value == null || value === "") return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function getRowModelEntries(row: ScanOpportunityRow | null) {
+  const sources = row?.model_cluster_sources;
+  if (!sources || typeof sources !== "object") return [];
+  return Object.entries(sources)
+    .map(([name, value]) => [name, Number(value)] as const)
+    .filter(([, value]) => Number.isFinite(value));
 }
 
 function parseEpochMs(value: unknown) {
@@ -228,11 +236,12 @@ export function AiPinnedCityCard({
     item.cityName;
   const tempSymbol = detail?.temp_symbol || row?.temp_symbol || "°C";
   const modelView = detail ? getModelView(detail, detail.local_date) : null;
-  const modelEntries = modelView
+  const detailModelEntries = modelView
     ? Object.entries(modelView.models || {})
         .map(([name, value]) => [name, Number(value)] as const)
         .filter(([, value]) => Number.isFinite(value))
     : [];
+  const modelEntries = detailModelEntries.length ? detailModelEntries : getRowModelEntries(row);
   const modelValues = modelEntries.map(([, value]) => value);
   const modelMin = modelValues.length ? Math.min(...modelValues) : null;
   const modelMax = modelValues.length ? Math.max(...modelValues) : null;
@@ -243,10 +252,11 @@ export function AiPinnedCityCard({
     "--";
   const deb = detail?.deb?.prediction ?? row?.deb_prediction ?? null;
   const isHkoObservation = isHkoObservationCity(detail);
+  const displayAirportPrimary = getDisplayAirportPrimary(detail);
   const currentTemp =
     (isHkoObservation
       ? detail?.current?.temp ?? row?.current_temp
-      : detail?.airport_primary?.temp ??
+      : displayAirportPrimary?.temp ??
         detail?.airport_current?.temp ??
         detail?.current?.temp ??
         row?.current_temp) ?? null;
@@ -265,27 +275,8 @@ export function AiPinnedCityCard({
   const report = isHkoObservation
     ? ""
     : detail?.current?.raw_metar || detail?.airport_current?.raw_metar || "";
-  const metarReportTimeDisplay = formatMetarReportTime(detail, report, isEn);
-  const observationStation = isHkoObservation
-    ? detail?.current?.station_name ||
-      detail?.current?.station_code ||
-      detail?.settlement_station?.settlement_station_label ||
-      detail?.settlement_station?.settlement_station_code ||
-      "香港天文台"
-    : detail?.risk?.icao ||
-      detail?.current?.station_code ||
-      detail?.airport_current?.station_code ||
-      detail?.airport_primary?.station_code ||
-      "";
   const observationSourceZh = isHkoObservation ? "香港天文台观测" : "METAR 实测";
   const observationSourceEn = isHkoObservation ? "HKO observations" : "METAR observations";
-  const rawObservationText = isHkoObservation
-    ? `${isEn ? "Observation source" : "观测来源"}：${observationStation || (isEn ? "Hong Kong Observatory" : "香港天文台")}${metarReportTimeDisplay ? `，${metarReportTimeDisplay}` : ""}`
-    : report
-      ? `${isEn ? "Raw METAR" : "原始 METAR"}：${`${observationStation} ${report}`.trim()}`
-      : isEn
-        ? "Raw METAR: unavailable."
-        : "原始 METAR：暂无。";
   const detailCityName = detail?.name || item.cityName;
   const [refreshingDetail, setRefreshingDetail] = useState(false);
   const { aiForecast, refreshAiForecast } = useAiCityForecast({
@@ -314,31 +305,16 @@ export function AiPinnedCityCard({
   }, []);
 
   const aiCityForecast = aiForecast.payload?.city_forecast || null;
-  const localizedFinalJudgmentRaw =
+  const localizedFinalJudgment =
     (isEn ? aiCityForecast?.final_judgment_en : aiCityForecast?.final_judgment_zh) ||
     (isEn ? aiCityForecast?.reasoning_en : aiCityForecast?.reasoning_zh) ||
     "";
-  const localizedMetarReadRaw =
+  const localizedMetarRead =
     (isEn ? aiCityForecast?.metar_read_en : aiCityForecast?.metar_read_zh) ||
     "";
-  const localizedReasoningRaw =
+  const localizedReasoning =
     (isEn ? aiCityForecast?.reasoning_en : aiCityForecast?.reasoning_zh) ||
     "";
-  const localizedFinalJudgment = normalizeMetarReadTime(
-    localizedFinalJudgmentRaw,
-    metarReportTimeDisplay,
-    isEn,
-  );
-  const localizedMetarRead = normalizeMetarReadTime(
-    localizedMetarReadRaw,
-    metarReportTimeDisplay,
-    isEn,
-  );
-  const localizedReasoning = normalizeMetarReadTime(
-    localizedReasoningRaw,
-    metarReportTimeDisplay,
-    isEn,
-  );
   const localizedModelNote =
     (isEn
       ? aiCityForecast?.model_cluster_note_en
@@ -358,10 +334,24 @@ export function AiPinnedCityCard({
     : isEn
       ? `Model support is unavailable, so this city must rely on DEB path and ${observationSourceEn}.`
       : `暂无可用多模型支撑，需要主要参考 DEB 路径和${observationSourceZh}。`;
-  const aiPredictedMax = toFiniteDecisionNumber(aiCityForecast?.predicted_max);
-  const aiRangeLow = toFiniteDecisionNumber(aiCityForecast?.range_low);
-  const aiRangeHigh = toFiniteDecisionNumber(aiCityForecast?.range_high);
-  const aiConfidence = String(aiCityForecast?.confidence || "").trim() || null;
+  const rowAiPredictedMax =
+    toFiniteDecisionNumber(row?.ai_predicted_max) ??
+    toFiniteDecisionNumber(row?.ai_predicted_high) ??
+    toFiniteDecisionNumber(row?.cluster_median) ??
+    debNumber;
+  const aiPredictedMax =
+    toFiniteDecisionNumber(aiCityForecast?.predicted_max) ?? rowAiPredictedMax;
+  const aiRangeLow =
+    toFiniteDecisionNumber(aiCityForecast?.range_low) ??
+    toFiniteDecisionNumber(row?.ai_predicted_low) ??
+    modelMin;
+  const aiRangeHigh =
+    toFiniteDecisionNumber(aiCityForecast?.range_high) ??
+    toFiniteDecisionNumber(row?.ai_predicted_high) ??
+    modelMax;
+  const aiConfidence =
+    String(aiCityForecast?.confidence || row?.ai_forecast_confidence || "").trim() ||
+    (rowAiPredictedMax != null ? (isEn ? "fast" : "快速") : null);
   const decisionExpectedHighNumber = resolveExpectedHighCandidate({
     aiPredictedMax,
     currentTemp: currentTempNumber,
@@ -387,13 +377,6 @@ export function AiPinnedCityCard({
   const expectedHighText =
     decisionExpectedHighNumber != null
       ? formatTemperatureValue(decisionExpectedHighNumber, tempSymbol, { digits: 1 })
-      : "--";
-  const amosRange = detail?.amos?.runway_temp_range;
-  const observedLabel = amosRange ? (isEn ? "Runway" : "跑道实况") : undefined;
-  const currentTempText = amosRange
-    ? `${amosRange[0].toFixed(1)}~${amosRange[1].toFixed(1)}${tempSymbol}`
-    : currentTempNumber != null
-      ? formatTemperatureValue(currentTempNumber, tempSymbol, { digits: 1 })
       : "--";
   const debText =
     debNumber != null
@@ -464,32 +447,19 @@ export function AiPinnedCityCard({
   });
   const dataFreshnessRows = [
     {
-      label: isHkoObservation ? (isEn ? "HKO" : "天文台") : "METAR",
-      labelTitle: isHkoObservation
-        ? (isEn ? "Hong Kong Observatory official readings" : "香港天文台官方实测")
-        : (isEn ? "Meteorological Aerodrome Report — airport weather observation" : "机场气象观测报文"),
-      value: buildObservationFreshnessValue({
-        detail,
-        displayTime: metarReportTimeDisplay,
-        isEn,
-        isHkoObservation,
-      }),
-      tone: observationStale ? "stale" : "fresh",
-    },
-    {
       label: isEn ? "Models" : "模型",
       value: buildModelFreshnessValue(detail, locale, isEn),
-      tone: "fresh",
+      tone: "fresh" as const,
     },
     {
       label: isEn ? "Market" : "市场价格",
       value: buildMarketFreshnessValue({ isEn, marketScan, marketStatus }),
       tone:
         marketDecisionView.status === "ready"
-          ? "fresh"
+          ? ("fresh" as const)
           : marketDecisionView.status === "loading"
-            ? "loading"
-            : "stale",
+            ? ("loading" as const)
+            : ("stale" as const),
     },
   ];
   const freshnessSeparator = isEn ? ": " : "：";
@@ -569,15 +539,12 @@ export function AiPinnedCityCard({
           aiReadInProgressText={aiReadInProgressText}
           aiRuleEvidenceMode={aiRuleEvidenceMode}
           aiRuleEvidenceText={aiRuleEvidenceText}
-          currentTempText={currentTempText}
-          dataFreshnessRows={dataFreshnessRows}
           debPrediction={debNumber}
           decisionState={decisionState}
           detail={detail}
           displayName={displayName}
           expectedHighText={expectedHighText}
           fallbackAiReason={fallbackAiReason}
-          freshnessSeparator={freshnessSeparator}
           isEn={isEn}
           isHkoObservation={isHkoObservation}
           isRefreshing={isRefreshing}
@@ -588,7 +555,6 @@ export function AiPinnedCityCard({
           onRefresh={handleRefresh}
           onRemove={handleRemove}
           peakWindow={peakWindow}
-          rawObservationText={rawObservationText}
           removing={removing}
           tempSymbol={tempSymbol}
         />
@@ -599,14 +565,10 @@ export function AiPinnedCityCard({
             aiStatusTone={decisionState.aiStatusTone}
             collapseId={collapseId}
             collapsed={collapsed}
-            currentTempText={currentTempText}
-            observedLabel={observedLabel}
-            dataFreshnessRows={dataFreshnessRows}
             debText={debText}
             detailLocalTime={detail?.local_time}
             displayName={displayName}
             expectedHighText={expectedHighText}
-            freshnessSeparator={freshnessSeparator}
             isEn={isEn}
             isRefreshing={isRefreshing}
             modelRange={modelRange}
@@ -650,19 +612,9 @@ export function AiPinnedCityCard({
                   isHkoObservation={isHkoObservation}
                   localModelSupportNote={localModelSupportNote}
                   localizedFinalJudgment={localizedFinalJudgment}
-                  rawObservationText={rawObservationText}
                   tempSymbol={tempSymbol}
                 />
               </div>
-
-              {(detail?.name === "seoul" || detail?.name === "busan") ? (
-                <AmosRunwayPanel
-                  amos={detail?.amos}
-                  isEn={isEn}
-                  tempSymbol={tempSymbol}
-                  airportCurrent={detail?.airport_current ?? null}
-                />
-              ) : null}
 
               <ModelEvidencePanel detail={detail} isEn={isEn} />
             </div>

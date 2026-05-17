@@ -45,6 +45,42 @@ from web.services.city_payloads import (
 )
 
 TURKISH_MGM_CITIES = {"ankara", "istanbul"}
+HIGH_FREQ_AIRPORT_ANALYSIS_CITIES = {
+    "seoul",
+    "singapore",
+    "busan",
+    "tokyo",
+    "ankara",
+    "helsinki",
+    "amsterdam",
+    "istanbul",
+    "paris",
+    "hong kong",
+    "lau fau shan",
+    "taipei",
+    "beijing",
+    "shanghai",
+    "guangzhou",
+    "shenzhen",
+    "qingdao",
+    "chengdu",
+    "chongqing",
+    "wuhan",
+}
+
+
+def _mgm_hourly_high(mgm: Dict[str, Any]) -> Optional[float]:
+    hourly = mgm.get("hourly") if isinstance(mgm, dict) else []
+    if not isinstance(hourly, list):
+        return None
+    values = []
+    for row in hourly:
+        if not isinstance(row, dict):
+            continue
+        value = _sf(row.get("temp"))
+        if value is not None:
+            values.append(value)
+    return max(values) if values else None
 _ANALYSIS_CACHE_STATS_LOCK = threading.Lock()
 _ANALYSIS_CACHE_STATS: Dict[str, Any] = {
     "total_requests": 0,
@@ -374,6 +410,8 @@ def _analysis_ttl_for_city(city: str) -> int:
         return CACHE_TTL_ANKARA
     if city_lower in KOREAN_AMOS_CITIES:
         return CACHE_TTL_KOREAN_AMOS
+    if city_lower in HIGH_FREQ_AIRPORT_ANALYSIS_CITIES:
+        return 60
     return CACHE_TTL
 
 
@@ -1632,11 +1670,18 @@ def _archive_intraday_path_snapshot(city: str, result: Dict[str, Any]) -> None:
 def _analyze(
     city: str,
     force_refresh: bool = False,
+    force_refresh_observations_only: bool = False,
     include_llm_commentary: bool = False,
     detail_mode: str = "full",
 ) -> Dict[str, Any]:
-    """Fetch, analyse, and return structured weather data for one city."""
-    # Check cache
+    """Fetch, analyse, and return structured weather data for one city.
+
+    Set *force_refresh_observations_only* to True for high-frequency
+    observation loops that need fresh METAR/AMOS/runway data but should
+    keep the longer-lived multi-model forecast caches intact so the DEB
+    blending does not fall back to the current observed temperature.
+    """
+    # Check cache – skip when explicitly refreshing observations
     ttl = _analysis_ttl_for_city(city)
     normalized_detail_mode_raw = str(detail_mode or "full").strip().lower()
     if normalized_detail_mode_raw == "panel":
@@ -1648,8 +1693,8 @@ def _analyze(
     else:
         normalized_detail_mode = "full"
     cache_key = _analysis_cache_key(city, normalized_detail_mode)
-    
-    if not force_refresh:
+
+    if not force_refresh and not force_refresh_observations_only:
         cached = _cache.get(cache_key)
         if cached and _time.time() - cached["t"] < ttl:
             if include_llm_commentary:
@@ -1683,6 +1728,7 @@ def _analyze(
         lat=lat,
         lon=lon,
         force_refresh=force_refresh,
+        force_refresh_observations_only=force_refresh_observations_only,
         include_taf=not is_panel_mode and not is_nearby_mode and not is_market_mode,
         include_nearby=not is_panel_mode and not is_market_mode,
         include_ensemble=not is_panel_mode and not is_nearby_mode and not is_market_mode,
@@ -1983,11 +2029,14 @@ def _analyze(
     if om_today is None:
         nws_high = _sf(raw.get("nws", {}).get("today_high"))
         mgm_high = _sf(mgm.get("today_high")) if mgm else None
+        mgm_hourly_high = _mgm_hourly_high(mgm)
         fallback_high = (
             nws_high
             if nws_high is not None
             else mgm_high
             if mgm_high is not None
+            else mgm_hourly_high
+            if mgm_hourly_high is not None
             else max_so_far
             if max_so_far is not None
             else cur_temp
@@ -2019,8 +2068,11 @@ def _analyze(
     if nws_high is not None:
         current_forecasts["NWS"] = nws_high
     mgm_high = _sf(mgm.get("today_high")) if mgm else None
+    mgm_hourly_high = _mgm_hourly_high(mgm)
     if mgm_high is not None:
         current_forecasts["MGM"] = mgm_high
+    elif mgm_hourly_high is not None:
+        current_forecasts["MGM Hourly"] = mgm_hourly_high
 
     # ── 6. DEB fusion ──
     deb_val, deb_weights = None, ""
@@ -2842,6 +2894,7 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
     om_today = _sf(maxtemps[0]) if maxtemps else None
     nws_high = _sf((nws or {}).get("today_high")) if isinstance(nws, dict) else None
     mgm_high = _sf((mgm or {}).get("today_high")) if isinstance(mgm, dict) else None
+    mgm_hourly_high = _mgm_hourly_high(mgm)
 
     if om_today is None:
         fallback_high = (
@@ -2849,6 +2902,8 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             if nws_high is not None
             else mgm_high
             if mgm_high is not None
+            else mgm_hourly_high
+            if mgm_hourly_high is not None
             else max_so_far
             if max_so_far is not None
             else cur_temp
@@ -2866,6 +2921,8 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
         current_forecasts["NWS"] = nws_high
     if mgm_high is not None:
         current_forecasts["MGM"] = mgm_high
+    elif mgm_hourly_high is not None:
+        current_forecasts["MGM Hourly"] = mgm_hourly_high
     if hko_forecast is not None:
         current_forecasts["HKO"] = _sf(hko_forecast)
     current_forecasts = {

@@ -351,14 +351,22 @@ class NwsOpenMeteoSourceMixin:
         now_ts = time.time()
         # ── 429 冷却期检查（所有 Open-Meteo 端点共享）─────────────────
         with self._open_meteo_rl_lock:
-            if now_ts < self._open_meteo_rate_limit_until:
-                remaining = int(self._open_meteo_rate_limit_until - now_ts)
+            cooldown_until = self._refresh_open_meteo_rate_limit_until()
+            if now_ts < cooldown_until:
+                remaining = int(cooldown_until - now_ts)
                 logger.debug(f"Open-Meteo 冷却期中，跳过请求，还需 {remaining}s")
                 with self._open_meteo_cache_lock:
                         stale = self._open_meteo_cache.get(cache_key)
                         if stale and isinstance(stale.get("data"), dict):
                             record_source_call("open_meteo", "forecast", "stale_cache", (time.perf_counter() - started) * 1000.0)
                             return dict(stale["data"])
+                # Memory miss: force-reload from disk and retry once
+                self._load_open_meteo_disk_cache()
+                with self._open_meteo_cache_lock:
+                    stale2 = self._open_meteo_cache.get(cache_key)
+                    if stale2 and isinstance(stale2.get("data"), dict):
+                        record_source_call("open_meteo", "forecast", "disk_fallback", (time.perf_counter() - started) * 1000.0)
+                        return dict(stale2["data"])
                 record_source_call("open_meteo", "forecast", "cooldown_skip", (time.perf_counter() - started) * 1000.0)
                 return None
         with self._open_meteo_cache_lock:
@@ -386,6 +394,7 @@ class NwsOpenMeteoSourceMixin:
                 "daily": "temperature_2m_max,apparent_temperature_max,sunrise,sunset,sunshine_duration",
                 "timezone": "auto",
                 "forecast_days": forecast_days,
+                "past_days": 1,
             }
 
             # 显式指定单位，防止 API 默认行为漂移
@@ -486,7 +495,7 @@ class NwsOpenMeteoSourceMixin:
                 )
                 # 设置全局冷却期，避免短时内重复触发 429
                 with self._open_meteo_rl_lock:
-                    self._open_meteo_rate_limit_until = time.time() + cooldown_to_use
+                    self._set_open_meteo_rate_limit_until(time.time() + cooldown_to_use, reason="forecast_429")
                     logger.warning(f"Open-Meteo 触发限流，设置 {cooldown_to_use}s 冷却期")
             else:
                 logger.error(f"Open-Meteo forecast failed: {e}")
@@ -519,17 +528,24 @@ class NwsOpenMeteoSourceMixin:
         now_ts = time.time()
         # ── 429 冷却期检查（所有 Open-Meteo 端点共享）─────────────────
         with self._open_meteo_rl_lock:
-            if now_ts < self._open_meteo_rate_limit_until:
-                remaining = int(self._open_meteo_rate_limit_until - now_ts)
+            cooldown_until = self._refresh_open_meteo_rate_limit_until()
+            if now_ts < cooldown_until:
+                remaining = int(cooldown_until - now_ts)
                 logger.debug(f"Open-Meteo Ensemble 冷却期中，跳过请求，还需 {remaining}s")
                 with self._ensemble_cache_lock:
                     stale = self._ensemble_cache.get(cache_key)
                     if stale and isinstance(stale.get("data"), dict):
                         record_source_call("open_meteo", "ensemble", "stale_cache", (time.perf_counter() - started) * 1000.0)
                         return dict(stale["data"])
+                self._load_open_meteo_disk_cache()
+                with self._ensemble_cache_lock:
+                    stale2 = self._ensemble_cache.get(cache_key)
+                    if stale2 and isinstance(stale2.get("data"), dict):
+                        record_source_call("open_meteo", "ensemble", "disk_fallback", (time.perf_counter() - started) * 1000.0)
+                        return dict(stale2["data"])
                 record_source_call("open_meteo", "ensemble", "cooldown_skip", (time.perf_counter() - started) * 1000.0)
                 return None
-                
+
         with self._ensemble_cache_lock:
             cached = self._ensemble_cache.get(cache_key)
             if (
@@ -633,7 +649,7 @@ class NwsOpenMeteoSourceMixin:
                     f"Ensemble API rate limited (429), fallback to cache if available: lat={lat}, lon={lon}"
                 )
                 with self._open_meteo_rl_lock:
-                    self._open_meteo_rate_limit_until = time.time() + cooldown_to_use
+                    self._set_open_meteo_rate_limit_until(time.time() + cooldown_to_use, reason="ensemble_429")
             else:
                 logger.warning(f"Ensemble API 请求失败: {e}")
             with self._ensemble_cache_lock:
@@ -676,14 +692,21 @@ class NwsOpenMeteoSourceMixin:
         now_ts = time.time()
         # ── 429 冷却期检查（所有 Open-Meteo 端点共享）─────────────────
         with self._open_meteo_rl_lock:
-            if now_ts < self._open_meteo_rate_limit_until:
-                remaining = int(self._open_meteo_rate_limit_until - now_ts)
+            cooldown_until = self._refresh_open_meteo_rate_limit_until()
+            if now_ts < cooldown_until:
+                remaining = int(cooldown_until - now_ts)
                 logger.debug(f"Open-Meteo Multi-model 冷却期中，跳过请求，还需 {remaining}s")
                 with self._multi_model_cache_lock:
                     stale = self._multi_model_cache.get(cache_key)
                     if stale and isinstance(stale.get("data"), dict):
                         record_source_call("open_meteo", "multi_model", "stale_cache", (time.perf_counter() - started) * 1000.0)
                         return dict(stale["data"])
+                self._load_open_meteo_disk_cache()
+                with self._multi_model_cache_lock:
+                    stale2 = self._multi_model_cache.get(cache_key)
+                    if stale2 and isinstance(stale2.get("data"), dict):
+                        record_source_call("open_meteo", "multi_model", "disk_fallback", (time.perf_counter() - started) * 1000.0)
+                        return dict(stale2["data"])
                 record_source_call("open_meteo", "multi_model", "cooldown_skip", (time.perf_counter() - started) * 1000.0)
                 return None
 
@@ -788,7 +811,7 @@ class NwsOpenMeteoSourceMixin:
                     f"Multi-model API rate limited (429), fallback to cache if available: lat={lat}, lon={lon}"
                 )
                 with self._open_meteo_rl_lock:
-                    self._open_meteo_rate_limit_until = time.time() + cooldown_to_use
+                    self._set_open_meteo_rate_limit_until(time.time() + cooldown_to_use, reason="multi_model_429")
             else:
                 logger.warning(f"Multi-model API 请求失败: {e}")
             with self._multi_model_cache_lock:

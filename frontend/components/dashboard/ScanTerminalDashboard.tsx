@@ -12,7 +12,6 @@ import {
 } from "react";
 import styles from "./Dashboard.module.css";
 import { scanRootClass } from "./scan-root-styles";
-import { ProFeaturePaywall } from "@/components/dashboard/ProFeaturePaywall";
 import {
   DashboardStoreProvider,
   useDashboardStore,
@@ -20,16 +19,15 @@ import {
 } from "@/hooks/useDashboardStore";
 import { I18nProvider, useI18n } from "@/hooks/useI18n";
 import type {
-  CityDetail,
   ScanOpportunityRow,
 } from "@/lib/dashboard-types";
 import { AiPinnedForecastView } from "@/components/dashboard/scan-terminal/AiPinnedForecastView";
+import { MobileCityPicker } from "@/components/dashboard/scan-terminal/MobileCityPicker";
 import { WelcomeOverlay } from "@/components/dashboard/scan-terminal/WelcomeOverlay";
 import {
   ScanPaywallModal,
   ScanTerminalLoadingScreen,
   ScanTerminalTopBar,
-  ScanUpgradeAnnouncement,
   type ScanTerminalContentView,
 } from "@/components/dashboard/scan-terminal/ScanTerminalShellParts";
 import { findDetailForCity } from "@/components/dashboard/scan-terminal/city-detail-utils";
@@ -46,19 +44,6 @@ import {
   useUserLocalClock,
 } from "@/components/dashboard/scan-terminal/use-scan-terminal-ui-state";
 import { useRelativeTime } from "@/hooks/useRelativeTime";
-
-const MonitorPanel = dynamic(
-  () => import("@/components/dashboard/monitoring/MonitorPanel"),
-  { ssr: false },
-);
-
-const RunwayObservationsPanel = dynamic(
-  () =>
-    import(
-      "@/components/dashboard/scan-terminal/RunwayObservationsPanel"
-    ).then((module) => module.RunwayObservationsPanel),
-  { ssr: false },
-);
 
 const CityDetailPanel = dynamic(
   () =>
@@ -106,34 +91,24 @@ function ScanTerminalScreen() {
   const [activeView, setActiveView] = useState<ScanTerminalContentView>("map");
   const [mapSelectedCityName, setMapSelectedCityName] = useState<string | null>(null);
   const [showScanPaywall, setShowScanPaywall] = useState(false);
-  const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const media = window.matchMedia("(max-width: 768px)");
-    const syncMobileViewport = () => setIsMobileViewport(media.matches);
+    const syncMobileViewport = () => {
+      setIsMobileViewport(media.matches);
+      if (media.matches) {
+        setActiveView((current) => (current === "map" ? "city-list" : current));
+      } else {
+        setActiveView((current) => (current === "city-list" ? "map" : current));
+      }
+    };
     syncMobileViewport();
     media.addEventListener("change", syncMobileViewport);
     return () => media.removeEventListener("change", syncMobileViewport);
   }, []);
 
-  useEffect(() => {
-    if (isMobileViewport) {
-      setShowAnnouncement(false);
-      return;
-    }
-    const key = "polyweather_v156_announcement_seen_at";
-    const seen = localStorage.getItem(key);
-    const now = Date.now();
-    if (!seen) {
-      localStorage.setItem(key, String(now));
-      setShowAnnouncement(true);
-      return;
-    }
-    const elapsed = now - Number(seen);
-    setShowAnnouncement(elapsed < 3 * 24 * 60 * 60 * 1000);
-  }, [isMobileViewport]);
   const userLocalTime = useUserLocalClock();
   const { setThemeMode, themeMode } = useScanTerminalTheme();
   const lastMapSelectedCityRef = useRef<string>("");
@@ -296,8 +271,15 @@ function ScanTerminalScreen() {
     setMapSelectedCityName(cityName);
     lastMapSelectedCityRef.current = normalizeCityKey(cityName);
     const matchedRow = findRowForCity(timeSortedRows, cityName);
-    if (matchedRow) store.preloadCityFromRow(matchedRow);
-    setSelectedRowId(matchedRow?.id || null);
+    if (matchedRow) {
+      store.preloadCityFromRow(matchedRow);
+      setSelectedRowId(matchedRow.id);
+    } else {
+      // City not in scan rows — still preload its detail so the decision
+      // card can render immediately instead of showing a loading spinner.
+      void store.ensureCityDetail(cityName, false, "panel").catch(() => {});
+      setSelectedRowId(null);
+    }
     addAiPinnedCity(cityName);
     setActiveView("analysis");
   }, [addAiPinnedCity, store, timeSortedRows]);
@@ -350,32 +332,14 @@ function ScanTerminalScreen() {
   }, []);
 
   const renderMainView = () => {
-    if (resolvedView === "map") {
+    if (resolvedView === "city-list") {
       return (
-        <div className="scan-map-view">
-          <div className="scan-map-shell">
-            <MapCanvas
-              onCitySelect={handleMapCitySelect}
-              selectionMode="select"
-            />
-          </div>
-        </div>
-      );
-    }
-    if (resolvedView === "analysis") {
-      return (
-        <AiPinnedForecastView
-          items={aiPinnedCities}
+        <MobileCityPicker
+          isEn={isEn}
           rows={timeSortedRows}
-          detailsByName={store.cityDetailsByName}
-          locale={locale}
-          onRefreshCityDetail={refreshAiPinnedCityDetail}
-          onRemoveCity={removeAiPinnedCity}
+          onSelectCity={handleOpenDecisionRow}
         />
       );
-    }
-    if (resolvedView === "monitor" || resolvedView === "runway") {
-      return null; // MonitorPanel is rendered below the main view switch
     }
     if (!isPro) {
       return (
@@ -393,7 +357,35 @@ function ScanTerminalScreen() {
         </div>
       );
     }
-    return null;
+
+    // Keep MapCanvas always mounted — hiding with CSS avoids Leaflet
+    // reinitialization that causes a white background on tab switches.
+    // The analysis view overlays on top when active.
+    return (
+      <>
+        <div
+          className="scan-map-view"
+          style={{ display: resolvedView === "map" ? undefined : "none" }}
+        >
+          <div className="scan-map-shell">
+            <MapCanvas
+              onCitySelect={handleMapCitySelect}
+              selectionMode="select"
+            />
+          </div>
+        </div>
+        {resolvedView === "analysis" ? (
+          <AiPinnedForecastView
+            items={aiPinnedCities}
+            rows={timeSortedRows}
+            detailsByName={store.cityDetailsByName}
+            locale={locale}
+            onRefreshCityDetail={refreshAiPinnedCityDetail}
+            onRemoveCity={removeAiPinnedCity}
+          />
+        ) : null}
+      </>
+    );
   };
 
   if (proAccess.loading) {
@@ -413,6 +405,7 @@ function ScanTerminalScreen() {
       <div
         className={clsx(
           "scan-terminal",
+          resolvedView === "city-list" && "city-list-view-active",
           resolvedView === "map" && "map-view-active",
           resolvedView !== "map" && "focus-view-active",
           resolvedView === "analysis" && "analysis-view-active",
@@ -433,34 +426,35 @@ function ScanTerminalScreen() {
             userLocalTime={userLocalTime}
           />
 
-          {showAnnouncement && !isMobileViewport ? (
-            <ScanUpgradeAnnouncement
-              isEn={isEn}
-              onDismiss={() => {
-                localStorage.setItem(
-                  "polyweather_v156_announcement_seen_at",
-                  String(Date.now() + 90 * 24 * 60 * 60 * 1000),
-                );
-                setShowAnnouncement(false);
-              }}
-            />
-          ) : null}
-
           <section className="scan-list-section">
             <div className="scan-list-header">
               <div className="scan-list-tabs" role="tablist" aria-label={isEn ? "Content view" : "内容视图"}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={resolvedView === "map"}
-                  className={resolvedView === "map" ? "active" : ""}
-                  onClick={() => {
-                    lastMapSelectedCityRef.current = normalizeCityKey(store.selectedCity);
-                    setActiveView("map");
-                  }}
-                >
-                  {isEn ? "Distribution View" : "分布视图"}
-                </button>
+                {isMobileViewport ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={resolvedView === "city-list"}
+                    className={resolvedView === "city-list" ? "active" : ""}
+                    onClick={() => {
+                      setActiveView("city-list");
+                    }}
+                  >
+                    {isEn ? "City List" : "城市列表"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={resolvedView === "map"}
+                    className={resolvedView === "map" ? "active" : ""}
+                    onClick={() => {
+                      lastMapSelectedCityRef.current = normalizeCityKey(store.selectedCity);
+                      setActiveView("map");
+                    }}
+                  >
+                    {isEn ? "Distribution View" : "分布视图"}
+                  </button>
+                )}
                 <button
                   type="button"
                   role="tab"
@@ -471,24 +465,6 @@ function ScanTerminalScreen() {
                   }}
                 >
                   {isEn ? "Decision Cards" : "城市决策卡"}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={resolvedView === "monitor"}
-                  className={resolvedView === "monitor" ? "active" : ""}
-                  onClick={() => setActiveView("monitor")}
-                >
-                  🔥 {isEn ? "Monitor" : "市场监控"}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={resolvedView === "runway"}
-                  className={resolvedView === "runway" ? "active" : ""}
-                  onClick={() => setActiveView("runway")}
-                >
-                  🛬 {isEn ? "Runways" : "跑道观测"}
                 </button>
               </div>
               <div className="scan-list-status">
@@ -538,31 +514,6 @@ function ScanTerminalScreen() {
               </div>
             ) : (
               renderMainView()
-            )}
-            {resolvedView === "monitor" && (
-              isPro ? (
-                <MonitorPanel
-                  onCityClick={(cityName) => {
-                    const matchedRow = findRowForCity(timeSortedRows, cityName);
-                    if (matchedRow) {
-                      setSelectedRowId(matchedRow.id);
-                      store.preloadCityFromRow(matchedRow);
-                    }
-                    addAiPinnedCity(cityName);
-                    setActiveView("analysis");
-                    void store.selectCity(cityName);
-                  }}
-                />
-              ) : (
-                <ProFeaturePaywall feature="monitor" />
-              )
-            )}
-            {resolvedView === "runway" && (
-              isPro ? (
-                <RunwayObservationsPanel />
-              ) : (
-                <ProFeaturePaywall feature="monitor" />
-              )
             )}
           </section>
         </main>
