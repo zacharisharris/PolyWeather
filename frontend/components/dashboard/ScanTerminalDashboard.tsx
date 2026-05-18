@@ -275,14 +275,10 @@ function ScanTerminalScreen() {
       store.preloadCityFromRow(matchedRow);
       setSelectedRowId(matchedRow.id);
     } else {
-      // City not in scan rows — still preload its detail so the decision
-      // card can render immediately instead of showing a loading spinner.
       void store.ensureCityDetail(cityName, false, "panel").catch(() => {});
       setSelectedRowId(null);
     }
-    addAiPinnedCity(cityName);
-    setActiveView("analysis");
-  }, [addAiPinnedCity, store, timeSortedRows]);
+  }, [store, timeSortedRows]);
 
   useEffect(() => {
     if (activeView !== "map") return;
@@ -341,23 +337,6 @@ function ScanTerminalScreen() {
         />
       );
     }
-    if (!isPro) {
-      return (
-        <div className="scan-table-shell empty">
-          <div className="scan-empty-state">
-            <div className="scan-empty-title">
-              {isEn ? "Scan is available on Pro" : "扫描功能需 Pro 权限"}
-            </div>
-            <div className="scan-empty-copy">
-              {isEn
-                ? "Distribution view and city briefing remain available."
-                : "分布视图和右侧城市简报仍可查看。"}
-            </div>
-          </div>
-        </div>
-      );
-    }
-
     // Keep MapCanvas always mounted — hiding with CSS avoids Leaflet
     // reinitialization that causes a white background on tab switches.
     // The analysis view overlays on top when active.
@@ -374,7 +353,7 @@ function ScanTerminalScreen() {
             />
           </div>
         </div>
-        {resolvedView === "analysis" ? (
+        {resolvedView === "analysis" && isPro ? (
           <AiPinnedForecastView
             items={aiPinnedCities}
             rows={timeSortedRows}
@@ -455,17 +434,19 @@ function ScanTerminalScreen() {
                     {isEn ? "Distribution View" : "分布视图"}
                   </button>
                 )}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={resolvedView === "analysis"}
-                  className={resolvedView === "analysis" ? "active" : ""}
-                  onClick={() => {
-                    setActiveView("analysis");
-                  }}
-                >
-                  {isEn ? "Decision Cards" : "城市决策卡"}
-                </button>
+                {isPro ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={resolvedView === "analysis"}
+                    className={resolvedView === "analysis" ? "active" : ""}
+                    onClick={() => {
+                      setActiveView("analysis");
+                    }}
+                  >
+                    {isEn ? "Decision Cards" : "城市决策卡"}
+                  </button>
+                ) : null}
               </div>
               <div className="scan-list-status">
                 {terminalData?.generated_at ? (

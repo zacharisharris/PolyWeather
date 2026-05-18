@@ -2,17 +2,22 @@ import sqlite3
 import os
 import hashlib
 import json
+import secrets
+import threading
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 
 import requests
 from loguru import logger
 
 
 class DBManager:
+    _init_lock = threading.Lock()
+    _initialized_paths: Set[str] = set()
+
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = self._resolve_db_path(db_path)
-        self._init_db()
+        self._ensure_initialized()
 
     def _resolve_db_path(self, db_path: Optional[str]) -> str:
         raw = (db_path or os.getenv("POLYWEATHER_DB_PATH") or "").strip()
@@ -23,6 +28,17 @@ class DBManager:
 
     def _get_connection(self):
         return sqlite3.connect(self.db_path)
+
+    def _init_cache_key(self) -> str:
+        return os.path.abspath(self.db_path)
+
+    def _ensure_initialized(self) -> None:
+        cache_key = self._init_cache_key()
+        with self._init_lock:
+            if cache_key in self._initialized_paths:
+                return
+            self._init_db()
+            self._initialized_paths.add(cache_key)
 
     def _supabase_profiles_endpoint(self) -> str:
         supabase_url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
@@ -348,6 +364,17 @@ class DBManager:
             """)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_supabase_bindings_telegram_id ON supabase_bindings(telegram_id)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_bind_tokens (
+                    token TEXT PRIMARY KEY,
+                    telegram_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_bind_tokens_expires ON telegram_bind_tokens(expires_at)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS airport_obs_log (
@@ -1352,6 +1379,58 @@ class DBManager:
                     telegram_username=None,
                 )
             return {"ok": True, "reason": "unbound", "previous_supabase_user_id": current_uid}
+
+    def create_bind_token(self, telegram_id: int, ttl_minutes: int = 10) -> str:
+        token = secrets.token_urlsafe(16)
+        now = datetime.now()
+        expires_at = now + timedelta(minutes=max(1, int(ttl_minutes)))
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM telegram_bind_tokens
+                WHERE telegram_id = ? OR expires_at < ?
+                """,
+                (int(telegram_id), now.isoformat()),
+            )
+            conn.execute(
+                """
+                INSERT INTO telegram_bind_tokens (token, telegram_id, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (token, int(telegram_id), expires_at.isoformat()),
+            )
+            conn.commit()
+        return token
+
+    def consume_bind_token(self, token: str) -> Optional[int]:
+        token = str(token or "").strip()
+        if not token:
+            return None
+        now = datetime.now()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT telegram_id, expires_at
+                FROM telegram_bind_tokens
+                WHERE token = ?
+                LIMIT 1
+                """,
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+            except Exception:
+                expires_at = now
+            if now > expires_at:
+                conn.execute("DELETE FROM telegram_bind_tokens WHERE token = ?", (token,))
+                conn.commit()
+                return None
+            conn.execute("DELETE FROM telegram_bind_tokens WHERE token = ?", (token,))
+            conn.commit()
+            return int(row["telegram_id"])
 
     def add_message_activity(
         self,

@@ -20,7 +20,7 @@ KNMI_VERSION = "1.0"
 KNMI_API_BASE = "https://api.dataplatform.knmi.nl/open-data/v1"
 KNMI_STATION = {
     "amsterdam": {
-        "station": "240",
+        "station": "06240",
         "icao": "EHAM",
         "label": "Schiphol 10min (KNMI)",
     },
@@ -32,13 +32,13 @@ class KnmiSourceMixin:
         import os
         return str(os.getenv("KNMI_API_KEY") or "").strip()
 
-    def _knmi_http_get(self, url: str, api_key: str) -> bytes:
-        headers = {"Authorization": api_key}
+    def _knmi_http_get(self, url: str, api_key: str = "") -> bytes:
+        """Download file. Does NOT send auth header — download URLs are pre-signed S3 links."""
         getter = getattr(self, "_http_get", None)
         if callable(getter):
             resp = getter(url)
             return resp.content if hasattr(resp, "content") else resp
-        resp = self.session.get(url, timeout=self.timeout, headers=headers)
+        resp = self.session.get(url, timeout=self.timeout)
         resp.raise_for_status()
         return resp.content
 
@@ -46,7 +46,7 @@ class KnmiSourceMixin:
         headers = {"Authorization": api_key}
         getter = getattr(self, "_http_get_json", None)
         if callable(getter):
-            return getter(url)
+            return getter(url, headers=headers)
         resp = self.session.get(url, timeout=self.timeout, headers=headers)
         resp.raise_for_status()
         return resp.json()
@@ -117,20 +117,22 @@ class KnmiSourceMixin:
             try:
                 stn = meta["station"]
                 # Find station index
-                station_ids = list(nc.variables.get("station_id", [])[:])
-                if not station_ids:
-                    station_codes = []
-                    for s in nc.variables.get("station", []):
-                        try:
-                            station_codes.append(str(int(s)))
-                        except Exception:
-                            station_codes.append("")
-                    station_ids = station_codes
+                station_var = nc.variables.get("station_id") or nc.variables.get("station")
+                station_ids = []
+                for s in (station_var[:] if station_var is not None else []):
+                    try:
+                        val = str(int(s))
+                    except Exception:
+                        val = str(s).strip()
+                    station_ids.append(val)
 
                 try:
                     idx = station_ids.index(stn)
                 except ValueError:
-                    idx = station_ids.index(int(stn)) if stn.isdigit() else -1
+                    try:
+                        idx = station_ids.index(str(int(stn)))
+                    except (ValueError, TypeError):
+                        idx = -1
 
                 if idx < 0 or idx >= len(station_ids):
                     logger.warning("KNMI station {} not found in file", stn)
@@ -144,23 +146,29 @@ class KnmiSourceMixin:
                     return None
 
                 data = ta[:]
-                latest_temp = float(data[-1, idx]) if data.ndim == 2 else float(data[-1])
+                # Handle both old (time,station) and new (station,time) layouts
+                n_stations = len(station_ids)
+                if data.ndim == 2 and data.shape[0] == n_stations:
+                    latest_temp = float(data[idx, -1])
+                elif data.ndim == 2:
+                    latest_temp = float(data[-1, idx])
+                else:
+                    latest_temp = float(data[-1])
 
-                # Wind speed
-                ff = nc.variables.get("ff", None)
-                wind_ms = None
-                if ff is not None:
-                    wind_data = ff[:]
-                    wind_ms = float(wind_data[-1, idx] if wind_data.ndim == 2 else wind_data[-1])
+                def _read_2d(var, idx: int) -> Optional[float]:
+                    if var is None:
+                        return None
+                    vdata = var[:]
+                    if vdata.ndim == 2 and vdata.shape[0] == n_stations:
+                        return float(vdata[idx, -1])
+                    if vdata.ndim == 2:
+                        return float(vdata[-1, idx])
+                    return float(vdata[-1])
 
-                # Pressure
-                p0 = nc.variables.get("p0", None)
-                pressure_hpa = None
-                if p0 is not None:
-                    p_data = p0[:]
-                    pressure_hpa = float(p_data[-1, idx] if p_data.ndim == 2 else p_data[-1])
-                    if pressure_hpa > 5000:
-                        pressure_hpa = pressure_hpa / 100.0
+                wind_ms = _read_2d(nc.variables.get("ff"), idx)
+                pressure_hpa = _read_2d(nc.variables.get("p0"), idx)
+                if pressure_hpa is not None and pressure_hpa > 5000:
+                    pressure_hpa = pressure_hpa / 100.0
 
                 nc.close()
 
