@@ -15,15 +15,9 @@ from src.analysis.deb_algorithm import (
     update_daily_record,
     _is_excluded_model_name,
 )
-from src.analysis.probability_calibration import (
-    apply_probability_calibration,
-    build_probability_features,
-)
-from src.analysis.probability_snapshot_archive import append_probability_snapshot
 from src.analysis.settlement_rounding import apply_city_settlement, is_exact_settlement_city
 from src.data_collection.city_registry import CITY_REGISTRY
 from src.data_collection.city_risk_profiles import get_city_risk_profile
-from src.models.lgbm_daily_high import predict_lgbm_daily_high
 
 SETTLEMENT_SOURCE_LABELS = {
     "metar": "METAR",
@@ -420,32 +414,7 @@ def analyze_weather_trend(
         peak_status = "before"
 
     if city_name and current_forecasts and deb_prediction is not None:
-        lgbm_prediction, _ = predict_lgbm_daily_high(
-            city_name=city_name,
-            current_forecasts=current_forecasts,
-            deb_prediction=deb_prediction,
-            current_temp=cur_temp,
-            max_so_far=max_so_far,
-            humidity=_sf(primary_current.get("humidity")),
-            wind_speed_kt=_sf(primary_current.get("wind_speed_kt")),
-            visibility_mi=_sf(primary_current.get("visibility_mi")),
-            local_hour=local_hour,
-            local_date=local_date_str,
-            peak_status=peak_status,
-        )
-        if lgbm_prediction is not None:
-            current_forecasts["LGBM"] = lgbm_prediction
-            blended_high, weight_info = calculate_dynamic_weights(
-                city_name, current_forecasts
-            )
-            if blended_high is not None:
-                deb_prediction = blended_high
-                deb_weights = weight_info
-                _deb_to_save = blended_high
-                if insights and "DEB 融合预测" in insights[0]:
-                    insights[0] = (
-                        f"🧬 <b>DEB 融合预测</b>：<b>{blended_high}{temp_symbol}</b> ({weight_info})"
-                    )
+        # DEB blending uses the already-computed set of model forecasts
                 if ai_features and "DEB系统已通过历史偏差矫正算出期待点是" in ai_features[0]:
                     ai_features[0] = (
                         f"🧬 DEB系统已通过历史偏差矫正算出期待点是: {blended_high}{temp_symbol}。"
@@ -595,20 +564,7 @@ def analyze_weather_trend(
     # === Probability Engine ===
     probabilities: List[Dict[str, Any]] = []
     probabilities_all: List[Dict[str, Any]] = []
-    shadow_probabilities: List[Dict[str, Any]] = []
-    shadow_probabilities_all: List[Dict[str, Any]] = []
     forecast_miss_deg = 0.0
-    probability_features = None
-    calibration_summary = {
-        "mode": "legacy",
-        "engine": "legacy",
-        "raw_mu": None,
-        "raw_sigma": sigma,
-        "calibrated_mu": None,
-        "calibrated_sigma": None,
-        "calibration_version": None,
-        "calibration_source": None,
-    }
 
     if is_dead_market:
         settled_wu = apply_city_settlement(city_name, max_so_far) if max_so_far is not None else 0
@@ -662,7 +618,7 @@ def analyze_weather_trend(
                 f"实测最高 {max_so_far}{temp_symbol}，偏差 {forecast_miss_deg}°。当前趋势: {_trend_dir}。"
             )
 
-        # Probability Engine
+        # Probability (legacy Gaussian buckets)
         probs_result = calculate_prob_distribution(
             mu, sigma, max_so_far, temp_symbol, city_name
         )
@@ -670,45 +626,6 @@ def analyze_weather_trend(
         probabilities = probs_result.get("probabilities", [])
         probabilities_all = probs_result.get("probabilities_all", probabilities)
         sorted_probs = probs_result.get("sorted_probs", [])
-
-        probability_features = build_probability_features(
-            city_name=city_name or "",
-            raw_mu=mu,
-            raw_sigma=sigma,
-            deb_prediction=deb_prediction,
-            ens_data=ens_data,
-            current_forecasts=current_forecasts,
-            max_so_far=max_so_far,
-            peak_status=peak_status,
-            local_hour_frac=local_hour_frac,
-        )
-        calibration_result = apply_probability_calibration(
-            city_name=city_name or "",
-            temp_symbol=temp_symbol,
-            raw_mu=mu,
-            raw_sigma=sigma,
-            max_so_far=max_so_far,
-            legacy_distribution=probabilities,
-            features=probability_features,
-        )
-        calibration_summary = {
-            "mode": calibration_result.get("mode", "legacy"),
-            "engine": calibration_result.get("engine", "legacy"),
-            "raw_mu": calibration_result.get("raw_mu"),
-            "raw_sigma": calibration_result.get("raw_sigma"),
-            "calibrated_mu": calibration_result.get("calibrated_mu"),
-            "calibrated_sigma": calibration_result.get("calibrated_sigma"),
-            "calibration_version": calibration_result.get("calibration_version"),
-            "calibration_source": calibration_result.get("calibration_source"),
-        }
-        shadow_probabilities = calibration_result.get("shadow_distribution") or []
-        shadow_probabilities_all = calibration_result.get("shadow_distribution_all") or shadow_probabilities
-        if calibration_result.get("engine") == "emos":
-            mu = calibration_result.get("calibrated_mu", mu)
-            sigma = calibration_result.get("calibrated_sigma", sigma)
-            probabilities = calibration_result.get("distribution") or probabilities
-            probabilities_all = calibration_result.get("distribution_all") or probabilities_all or probabilities
-            sorted_probs = calibration_result.get("selected_sorted_probs") or sorted_probs
 
         if sorted_probs:
             prob_parts = [
@@ -868,7 +785,6 @@ def analyze_weather_trend(
     # === Save daily record (with μ + prob snapshot) ===
     try:
         _prob_list = None
-        _shadow_prob_list = None
         if sorted_probs:
             _prob_list = [
                 {"value": int(t), "probability": round(p, 3)}
@@ -876,12 +792,6 @@ def analyze_weather_trend(
             ]
         elif is_dead_market and max_so_far is not None:
             _prob_list = [{"value": apply_city_settlement(city_name, max_so_far), "probability": 1.0}]
-        if shadow_probabilities:
-            _shadow_prob_list = [
-                {"value": int(row.get("value")), "probability": round(float(row.get("probability") or 0.0), 3)}
-                for row in shadow_probabilities[:4]
-                if row.get("value") is not None
-            ]
 
         update_daily_record(
             city_name,
@@ -891,34 +801,6 @@ def analyze_weather_trend(
             deb_prediction=_deb_to_save,
             mu=mu,
             probabilities=_prob_list,
-            probability_features=probability_features,
-            shadow_probabilities=_shadow_prob_list,
-            calibration_summary=calibration_summary,
-        )
-    except Exception:
-        pass
-
-    try:
-        append_probability_snapshot(
-            city_name=city_name or "",
-            local_date=local_date_str,
-            observation_time=obs_time_raw or local_time_full or None,
-            temp_symbol=temp_symbol,
-            raw_mu=calibration_summary.get("raw_mu"),
-            raw_sigma=calibration_summary.get("raw_sigma"),
-            deb_prediction=_deb_to_save,
-            ens_data=ens_data,
-            current_forecasts=current_forecasts,
-            max_so_far=max_so_far,
-            current_temp=cur_temp,
-            humidity=_sf(primary_current.get("humidity")),
-            wind_speed_kt=_sf(primary_current.get("wind_speed_kt")),
-            visibility_mi=_sf(primary_current.get("visibility_mi")),
-            local_hour=local_hour_frac,
-            peak_status=peak_status,
-            probabilities=_prob_list,
-            shadow_probabilities=_shadow_prob_list,
-            calibration_summary=calibration_summary,
         )
     except Exception:
         pass
@@ -933,16 +815,7 @@ def analyze_weather_trend(
         "mu": mu,
         "probabilities": probabilities,
         "probabilities_all": probabilities_all or probabilities,
-        "shadow_probabilities": shadow_probabilities,
-        "shadow_probabilities_all": shadow_probabilities_all or shadow_probabilities,
-        "probability_engine": calibration_summary["engine"],
-        "probability_calibration_mode": calibration_summary["mode"],
-        "probability_calibration_version": calibration_summary["calibration_version"],
-        "probability_calibration_source": calibration_summary["calibration_source"],
-        "probability_raw_mu": calibration_summary["raw_mu"],
-        "probability_raw_sigma": calibration_summary["raw_sigma"],
-        "probability_calibrated_mu": calibration_summary["calibrated_mu"],
-        "probability_calibrated_sigma": calibration_summary["calibrated_sigma"],
+        "probability_engine": "legacy",
         "trend_info": {
             "direction": trend_direction if 'trend_direction' in dir() else "unknown",
             "recent": recent_list,

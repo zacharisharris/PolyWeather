@@ -136,6 +136,43 @@ function ScanTerminalScreen() {
     () => sortRowsByUserTime(terminalData?.rows || []),
     [terminalData?.rows],
   );
+
+  const cityListRows = useMemo(() => {
+    if (timeSortedRows.length > 0) return timeSortedRows;
+    return store.cities.map((city, index) => {
+      const cityKey = normalizeCityKey(city.name);
+      const summary =
+        store.citySummariesByName[cityKey] ??
+        Object.values(store.citySummariesByName).find(
+          (s) => normalizeCityKey(s?.name) === cityKey,
+        ) ??
+        null;
+      return {
+        id: `city-fallback:${cityKey}:${index}`,
+        city: cityKey,
+        city_display_name: city.display_name || city.name,
+        display_name: city.display_name || city.name,
+        temp_symbol: city.temp_unit === "fahrenheit" ? "°F" : "°C",
+        current_temp: summary?.current?.temp ?? null,
+        current_max_so_far: summary?.current?.temp ?? null,
+        deb_prediction: summary?.deb?.prediction ?? null,
+        airport: city.airport || null,
+        local_time: summary?.local_time ?? null,
+        risk_level: city.risk_level || "low",
+        market_slug: null,
+        market_question: null,
+        target_label: null,
+        side: null,
+        edge_percent: null,
+        final_score: null,
+        window_phase: null,
+        tradable: false,
+        active: false,
+        closed: false,
+        accepting_orders: false,
+      } satisfies ScanOpportunityRow;
+    });
+  }, [timeSortedRows, store.cities, store.citySummariesByName]);
   const {
     addAiPinnedCity,
     aiPinnedCities,
@@ -259,6 +296,21 @@ function ScanTerminalScreen() {
       : selectedRow;
   const scanStatus = terminalData?.status || "ready";
   const staleReason = terminalData?.stale_reason || null;
+  const proPreviewItems = isEn
+    ? [
+        "Intraday METAR rule analysis",
+        "Multi-model high-temp forecast",
+        "Real-time observation deviation",
+        "Future-date decision cards",
+        "Telegram group price $5",
+      ]
+    : [
+        "日内机场报文规则分析",
+        "多模型高温预测",
+        "实时观测偏差",
+        "未来日期城市决策卡",
+        "Telegram 群内价 5U",
+      ];
 
   useEffect(() => {
     if (!activeDetailRow) return;
@@ -332,8 +384,8 @@ function ScanTerminalScreen() {
       return (
         <MobileCityPicker
           isEn={isEn}
-          rows={timeSortedRows}
-          onSelectCity={handleOpenDecisionRow}
+          rows={cityListRows}
+          onSelectCity={isPro ? handleOpenDecisionRow : handleSelectRow}
         />
       );
     }
@@ -404,6 +456,45 @@ function ScanTerminalScreen() {
             toggleLocale={toggleLocale}
             userLocalTime={userLocalTime}
           />
+
+          {!isPro ? (
+            <section
+              className="scan-upgrade-announcement"
+              aria-label={isEn ? "Pro preview" : "Pro 能力预览"}
+            >
+              <div className="scan-upgrade-announcement-copy">
+                <span>{isEn ? "What Pro unlocks" : "开通 Pro 后可看到"}</span>
+                <strong>
+                  {isEn
+                    ? "Full weather decision context, not just the public map."
+                    : "不只是公开地图，而是完整天气交易辅助信息。"}
+                </strong>
+                <p>
+                  {isEn
+                    ? "Guests and free users can browse the map. Pro adds live evidence, model deltas and city-level decision cards for current and future dates."
+                    : "游客和免费用户可浏览地图；Pro 会补齐实时证据、模型偏差和当前/未来日期的城市决策卡。"}
+                </p>
+              </div>
+              <ul>
+                {proPreviewItems.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+              {proAccess.authenticated ? (
+                <button
+                  type="button"
+                  className="scan-primary-button"
+                  onClick={openScanPaywall}
+                >
+                  {isEn ? "View Pro" : "查看 Pro"}
+                </button>
+              ) : (
+                <a href={accountHref} className="scan-primary-button">
+                  {isEn ? "Sign in for Pro" : "登录查看 Pro"}
+                </a>
+              )}
+            </section>
+          ) : null}
 
           <section className="scan-list-section">
             <div className="scan-list-header">

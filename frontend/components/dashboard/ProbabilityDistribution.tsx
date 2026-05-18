@@ -343,7 +343,6 @@ function getRoundedModelVoteDistribution(
 
   Object.entries(view.models || {}).forEach(([name, rawValue]) => {
     const normalized = normalizeModelNameForVote(name);
-    if (normalized === "lgbm" || normalized.includes("meteoblue")) return;
     const value = Number(rawValue);
     if (!Number.isFinite(value)) return;
     const family = getModelVoteFamily(name);
@@ -841,17 +840,17 @@ export function ProbabilityDistribution({
           <div className="prob-distribution-head">
             <span>
               {locale === "en-US"
-                ? "EMOS probability distribution"
-                : "EMOS 概率分布"}
+                ? "Probability distribution"
+                : "概率分布"}
             </span>
             <em>
               {marketContractRows.length > 0
                 ? locale === "en-US"
-                  ? "market buckets are aggregated from single-degree EMOS buckets"
-                  : "市场合约桶由单点 EMOS 概率聚合"
+                  ? "market buckets are aggregated from single-degree probability buckets"
+                  : "市场合约桶由单点概率分布聚合"
                 : locale === "en-US"
-                  ? "calibrated temperature buckets"
-                  : "校准后的温度桶"}
+                  ? "temperature probability buckets"
+                  : "温度概率桶"}
             </em>
           </div>
           {probabilityRows.length === 0 ? (
