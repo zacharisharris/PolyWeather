@@ -367,6 +367,18 @@ class DBManager:
                 "CREATE INDEX IF NOT EXISTS idx_telegram_bind_tokens_expires ON telegram_bind_tokens(expires_at)"
             )
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS web_telegram_bind_tokens (
+                    token TEXT PRIMARY KEY,
+                    supabase_user_id TEXT NOT NULL,
+                    supabase_email TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_web_telegram_bind_tokens_expires ON web_telegram_bind_tokens(expires_at)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS airport_obs_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     icao TEXT NOT NULL,
@@ -988,6 +1000,38 @@ class DBManager:
                 return dict(row)
         return None
 
+    def list_supabase_user_ids_for_telegram(self, telegram_id: int) -> List[str]:
+        """Return all Supabase accounts currently bound to a Telegram user."""
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT supabase_user_id
+                FROM supabase_bindings
+                WHERE telegram_id = ?
+                ORDER BY updated_at DESC, supabase_user_id ASC
+                """,
+                (int(telegram_id),),
+            ).fetchall()
+            ids = {
+                str(row["supabase_user_id"] or "").strip().lower()
+                for row in rows
+                if str(row["supabase_user_id"] or "").strip()
+            }
+            legacy = conn.execute(
+                """
+                SELECT supabase_user_id
+                FROM users
+                WHERE telegram_id = ?
+                LIMIT 1
+                """,
+                (int(telegram_id),),
+            ).fetchone()
+            legacy_id = str((legacy["supabase_user_id"] if legacy else "") or "").strip().lower()
+            if legacy_id:
+                ids.add(legacy_id)
+            return sorted(ids)
+
     def search_users(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         text = str(query or "").strip()
         safe_limit = max(1, min(int(limit or 20), 100))
@@ -1419,6 +1463,100 @@ class DBManager:
             conn.execute("DELETE FROM telegram_bind_tokens WHERE token = ?", (token,))
             conn.commit()
             return int(row["telegram_id"])
+
+    def peek_web_bind_token(self, token: str) -> Optional[Dict[str, str]]:
+        token = str(token or "").strip()
+        if not token:
+            return None
+        now = datetime.now()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT supabase_user_id, supabase_email, expires_at
+                FROM web_telegram_bind_tokens
+                WHERE token = ?
+                LIMIT 1
+                """,
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+            except Exception:
+                expires_at = now
+            if now > expires_at:
+                conn.execute("DELETE FROM web_telegram_bind_tokens WHERE token = ?", (token,))
+                conn.commit()
+                return None
+            return {
+                "supabase_user_id": str(row["supabase_user_id"] or "").strip().lower(),
+                "supabase_email": str(row["supabase_email"] or "").strip(),
+            }
+
+    def create_web_bind_token(
+        self,
+        supabase_user_id: str,
+        supabase_email: str = "",
+        ttl_minutes: int = 10,
+    ) -> str:
+        normalized_uid = str(supabase_user_id or "").strip().lower()
+        if not normalized_uid:
+            raise ValueError("supabase_user_id is required")
+        token = secrets.token_urlsafe(16)
+        now = datetime.now()
+        expires_at = now + timedelta(minutes=max(1, int(ttl_minutes)))
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM web_telegram_bind_tokens
+                WHERE supabase_user_id = ? OR expires_at < ?
+                """,
+                (normalized_uid, now.isoformat()),
+            )
+            conn.execute(
+                """
+                INSERT INTO web_telegram_bind_tokens (
+                    token, supabase_user_id, supabase_email, expires_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (token, normalized_uid, str(supabase_email or "").strip(), expires_at.isoformat()),
+            )
+            conn.commit()
+        return token
+
+    def consume_web_bind_token(self, token: str) -> Optional[Dict[str, str]]:
+        token = str(token or "").strip()
+        if not token:
+            return None
+        now = datetime.now()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT supabase_user_id, supabase_email, expires_at
+                FROM web_telegram_bind_tokens
+                WHERE token = ?
+                LIMIT 1
+                """,
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+            except Exception:
+                expires_at = now
+            conn.execute("DELETE FROM web_telegram_bind_tokens WHERE token = ?", (token,))
+            conn.commit()
+            if now > expires_at:
+                return None
+            return {
+                "supabase_user_id": str(row["supabase_user_id"] or "").strip().lower(),
+                "supabase_email": str(row["supabase_email"] or "").strip(),
+            }
 
     def add_message_activity(
         self,
