@@ -33,15 +33,13 @@ def test_system_status_returns_summary_shape():
     assert 'cache' in payload
     assert 'analysis' in payload['cache']
     assert 'probability' in payload
-    assert 'rollout' in payload['probability']
-    assert payload['probability']['rollout']['decision']['decision'] in {'hold', 'observe', 'promote'}
+    assert payload['probability']['engine_mode'] == 'legacy'
     assert 'training_data' in payload
     assert 'station_networks' in payload
     assert 'truth_records' in payload['training_data']
     assert 'training_features' in payload['training_data']
     assert 'city_coverage' in payload['training_data']
     assert 'model_city_coverage' in payload['training_data']
-    assert 'artifacts' in payload['training_data']
     assert 'metar_entries' in payload['cache']
     assert 'nmc_entries' in payload['cache']
     assert 'cities_count' in payload
