@@ -1,0 +1,296 @@
+INFO:     Uvicorn running on http://127.0.0.1:49999 (Press CTRL+C to quit)
+INFO:     Started parent process [31992]
+2026-05-18 15:56:07.305 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.305 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.307 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.309 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.667 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.714 | INFO     | src.database.runtime_state:get_state_storage_mode:41 - runtime state storage mode=sqlite
+2026-05-18 15:56:07.731 | INFO     | src.data_collection.open_meteo_cache:_load_open_meteo_disk_cache:29 - ✅ 从 SQLite 加载 Open-Meteo 缓存 144 条
+2026-05-18 15:56:07.731 | INFO     | src.data_collection.weather_sources:__init__:267 - Open-Meteo 磁盘缓存路径: /Users/zacharisharris/Downloads/PolyWeather/data/open_meteo_cache.json (max_age=86400s)
+2026-05-18 15:56:07.731 | INFO     | src.data_collection.weather_sources:__init__:285 - 天气数据采集器初始化完成。
+2026-05-18 15:56:07.743 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.748 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.751 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.755 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.758 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+INFO:     Started server process [31996]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+2026-05-18 15:56:07.782 | INFO     | src.database.runtime_state:get_state_storage_mode:41 - runtime state storage mode=sqlite
+2026-05-18 15:56:07.784 | INFO     | src.database.runtime_state:get_state_storage_mode:41 - runtime state storage mode=sqlite
+2026-05-18 15:56:07.789 | INFO     | src.database.runtime_state:get_state_storage_mode:41 - runtime state storage mode=sqlite
+2026-05-18 15:56:07.799 | INFO     | src.data_collection.open_meteo_cache:_load_open_meteo_disk_cache:29 - ✅ 从 SQLite 加载 Open-Meteo 缓存 144 条
+2026-05-18 15:56:07.799 | INFO     | src.data_collection.weather_sources:__init__:267 - Open-Meteo 磁盘缓存路径: /Users/zacharisharris/Downloads/PolyWeather/data/open_meteo_cache.json (max_age=86400s)
+2026-05-18 15:56:07.799 | INFO     | src.data_collection.weather_sources:__init__:285 - 天气数据采集器初始化完成。
+2026-05-18 15:56:07.800 | INFO     | src.data_collection.open_meteo_cache:_load_open_meteo_disk_cache:29 - ✅ 从 SQLite 加载 Open-Meteo 缓存 144 条
+2026-05-18 15:56:07.800 | INFO     | src.data_collection.weather_sources:__init__:267 - Open-Meteo 磁盘缓存路径: /Users/zacharisharris/Downloads/PolyWeather/data/open_meteo_cache.json (max_age=86400s)
+2026-05-18 15:56:07.800 | INFO     | src.data_collection.weather_sources:__init__:285 - 天气数据采集器初始化完成。
+2026-05-18 15:56:07.805 | INFO     | src.data_collection.open_meteo_cache:_load_open_meteo_disk_cache:29 - ✅ 从 SQLite 加载 Open-Meteo 缓存 144 条
+2026-05-18 15:56:07.805 | INFO     | src.data_collection.weather_sources:__init__:267 - Open-Meteo 磁盘缓存路径: /Users/zacharisharris/Downloads/PolyWeather/data/open_meteo_cache.json (max_age=86400s)
+2026-05-18 15:56:07.805 | INFO     | src.data_collection.weather_sources:__init__:285 - 天气数据采集器初始化完成。
+2026-05-18 15:56:07.811 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.812 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.817 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.819 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.820 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:07.825 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+INFO:     Started server process [31999]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Started server process [31997]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Started server process [31998]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:63740 - "GET /healthz HTTP/1.1" 200 OK
+2026-05-18 15:56:07.857 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ ankara 使用摄氏度 (°C)
+2026-05-18 15:56:07.857 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ istanbul 使用摄氏度 (°C)
+2026-05-18 15:56:08.041 | WARNING  | src.data_collection.nws_open_meteo_sources:fetch_multi_model:810 - Multi-model API rate limited (429), fallback to cache if available: lat=40.1281, lon=32.9951
+2026-05-18 15:56:08.042 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 899s
+2026-05-18 15:56:08.625 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 899s
+2026-05-18 15:56:08.626 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 899s
+2026-05-18 15:56:08.937 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LTAC: 14.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:09.206 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LTFM: 22.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:09.391 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ moscow 使用摄氏度 (°C)
+2026-05-18 15:56:09.536 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ london 使用摄氏度 (°C)
+2026-05-18 15:56:09.537 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 898s
+2026-05-18 15:56:09.537 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 898s
+2026-05-18 15:56:09.631 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 898s
+2026-05-18 15:56:09.632 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 898s
+2026-05-18 15:56:10.157 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR EGLC: 14.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:10.180 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR UUWW: 26.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:10.423 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ paris 使用摄氏度 (°C)
+2026-05-18 15:56:10.424 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:10.425 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:10.456 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ seoul 使用摄氏度 (°C)
+2026-05-18 15:56:10.457 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:10.457 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:10.659 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR RKSI: 20.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:10.659 | INFO     | src.data_collection.weather_sources:_attach_korean_amos_data:1073 - AMOS: fetching for city=seoul
+2026-05-18 15:56:10.688 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LFPB: 15.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:10.951 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ busan 使用摄氏度 (°C)
+2026-05-18 15:56:10.951 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=busan source=wunderground reason=crawler_removed
+2026-05-18 15:56:10.953 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:10.954 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 897s
+2026-05-18 15:56:11.925 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR RKPK: 20.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:11.925 | INFO     | src.data_collection.weather_sources:_attach_korean_amos_data:1073 - AMOS: fetching for city=busan
+2026-05-18 15:56:13.803 | INFO     | src.data_collection.amos_station_sources:_amos_get_page:385 - AMOS page matched icao=RKSI length=48369
+2026-05-18 15:56:13.803 | INFO     | src.data_collection.amos_station_sources:fetch_amos_official_current:424 - AMOS fetch_amos_official_current: got HTML for RKSI (48369 chars), parsing METAR/runway
+2026-05-18 15:56:13.807 | INFO     | src.data_collection.weather_sources:_attach_korean_amos_data:1078 - AMOS: got data for city=seoul temp_c=20.0 source=metar runway_pairs=4
+2026-05-18 15:56:13.808 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:13.810 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:13.812 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:13.813 | INFO     | web.analysis_service:_analyze:1803 - AMOS _analyze: found amos data for city=seoul temp_c=20.0 source=amos
+2026-05-18 15:56:13.825 | INFO     | src.data_collection.amos_station_sources:_amos_get_page:385 - AMOS page matched icao=RKPK length=28321
+2026-05-18 15:56:13.826 | INFO     | src.data_collection.amos_station_sources:fetch_amos_official_current:424 - AMOS fetch_amos_official_current: got HTML for RKPK (28321 chars), parsing METAR/runway
+2026-05-18 15:56:13.827 | INFO     | src.data_collection.weather_sources:_attach_korean_amos_data:1078 - AMOS: got data for city=busan temp_c=20.0 source=metar runway_pairs=2
+2026-05-18 15:56:13.829 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:13.835 | INFO     | src.database.db_manager:_init_db:394 - Database initialized successfully path=/Users/zacharisharris/Downloads/PolyWeather/data/polyweather.db
+2026-05-18 15:56:13.837 | INFO     | web.analysis_service:_analyze:1803 - AMOS _analyze: found amos data for city=busan temp_c=20.0 source=amos
+2026-05-18 15:56:14.076 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ hong kong 使用摄氏度 (°C)
+2026-05-18 15:56:14.102 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ lau fau shan 使用摄氏度 (°C)
+2026-05-18 15:56:15.646 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:15.649 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:15.668 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:15.670 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:15.940 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ taipei 使用摄氏度 (°C)
+2026-05-18 15:56:15.967 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ shanghai 使用摄氏度 (°C)
+2026-05-18 15:56:15.969 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:15.970 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 892s
+2026-05-18 15:56:16.277 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZSPD: 22.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:17.555 | WARNING  | src.data_collection.settlement_sources:fetch_cwa_taipei_settlement_current:382 - CWA settlement fetch failed: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier (_ssl.c:1028)
+2026-05-18 15:56:18.079 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ singapore 使用摄氏度 (°C)
+2026-05-18 15:56:18.082 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:18.084 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:18.137 | WARNING  | src.data_collection.settlement_sources:fetch_cwa_taipei_forecast:413 - CWA Forecast request failed: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier (_ssl.c:1028)
+2026-05-18 15:56:18.140 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:18.143 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:18.275 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR WSSS: 27.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:18.606 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR RCSS: 25.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:18.856 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ kuala lumpur 使用摄氏度 (°C)
+2026-05-18 15:56:18.857 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=kuala lumpur source=wunderground reason=crawler_removed
+2026-05-18 15:56:18.859 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:18.861 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 889s
+2026-05-18 15:56:19.199 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR WMKK: 29.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:19.280 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ jakarta 使用摄氏度 (°C)
+2026-05-18 15:56:19.280 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=jakarta source=wunderground reason=crawler_removed
+2026-05-18 15:56:19.280 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.281 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.458 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ manila 使用摄氏度 (°C)
+2026-05-18 15:56:19.458 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=manila source=wunderground reason=crawler_removed
+2026-05-18 15:56:19.461 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.462 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.560 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR WIHH: 29.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:19.688 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR RPLL: 31.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:19.840 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ karachi 使用摄氏度 (°C)
+2026-05-18 15:56:19.840 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=karachi source=wunderground reason=crawler_removed
+2026-05-18 15:56:19.841 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.841 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.925 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ tokyo 使用摄氏度 (°C)
+2026-05-18 15:56:19.925 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:19.926 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 888s
+2026-05-18 15:56:20.002 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR RJTT: 22.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:20.023 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR OPKC: 32.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:20.255 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ tel aviv 使用摄氏度 (°C)
+2026-05-18 15:56:20.255 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.256 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.329 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LLBG: 31.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:20.374 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ toronto 使用摄氏度 (°C)
+2026-05-18 15:56:20.375 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.375 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.562 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR CYYZ: 16.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:20.603 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ buenos aires 使用摄氏度 (°C)
+2026-05-18 15:56:20.603 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.604 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.679 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR SAEZ: 5.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:20.791 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ wellington 使用摄氏度 (°C)
+2026-05-18 15:56:20.792 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.792 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.905 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ new york 使用华氏度 (°F)
+2026-05-18 15:56:20.905 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.906 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 887s
+2026-05-18 15:56:20.983 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KLGA: 71.1°F (obs: 2026-05-18T12:51:00.000Z)
+2026-05-18 15:56:21.755 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR NZWN: 7.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:21.998 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ los angeles 使用华氏度 (°F)
+2026-05-18 15:56:21.999 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 886s
+2026-05-18 15:56:22.000 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 886s
+2026-05-18 15:56:22.078 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KLAX: 61.0°F (obs: 2026-05-18T12:53:00.000Z)
+2026-05-18 15:56:22.230 | WARNING  | src.data_collection.madis_sources:_madis_latest_file:47 - MADIS: no HFMETAR files found in directory listing
+2026-05-18 15:56:23.060 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ san francisco 使用华氏度 (°F)
+2026-05-18 15:56:23.060 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 884s
+2026-05-18 15:56:23.061 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 884s
+2026-05-18 15:56:23.140 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KSFO: 64.9°F (obs: 2026-05-18T11:56:00.000Z)
+2026-05-18 15:56:23.165 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ denver 使用华氏度 (°F)
+2026-05-18 15:56:23.165 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 884s
+2026-05-18 15:56:23.166 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 884s
+2026-05-18 15:56:23.866 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KBKF: 44.6°F (obs: 2026-05-18T12:38:00.000Z)
+2026-05-18 15:56:24.106 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ austin 使用华氏度 (°F)
+2026-05-18 15:56:24.108 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 883s
+2026-05-18 15:56:24.110 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 883s
+2026-05-18 15:56:24.196 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KAUS: 78.1°F (obs: 2026-05-18T12:53:00.000Z)
+2026-05-18 15:56:25.124 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ houston 使用华氏度 (°F)
+2026-05-18 15:56:25.130 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ mexico city 使用摄氏度 (°C)
+2026-05-18 15:56:25.130 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:25.133 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:25.134 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:25.135 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:25.212 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KHOU: 79.0°F (obs: 2026-05-18T12:22:00.000Z)
+2026-05-18 15:56:25.607 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR MMMX: 13.0°C (obs: 2026-05-18T11:52:00.000Z)
+2026-05-18 15:56:25.964 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ chicago 使用华氏度 (°F)
+2026-05-18 15:56:25.967 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:25.969 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 882s
+2026-05-18 15:56:26.051 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KORD: 75.9°F (obs: 2026-05-18T12:51:00.000Z)
+2026-05-18 15:56:26.769 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ dallas 使用华氏度 (°F)
+2026-05-18 15:56:26.770 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 881s
+2026-05-18 15:56:26.771 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 881s
+2026-05-18 15:56:26.850 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KDAL: 79.0°F (obs: 2026-05-18T12:53:00.000Z)
+2026-05-18 15:56:27.559 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ miami 使用华氏度 (°F)
+2026-05-18 15:56:27.562 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 880s
+2026-05-18 15:56:27.563 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 880s
+2026-05-18 15:56:27.649 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KMIA: 82.9°F (obs: 2026-05-18T12:53:00.000Z)
+2026-05-18 15:56:33.889 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ atlanta 使用华氏度 (°F)
+2026-05-18 15:56:33.891 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 874s
+2026-05-18 15:56:33.893 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 874s
+2026-05-18 15:56:34.156 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KATL: 70.0°F (obs: 2026-05-18T12:52:00.000Z)
+2026-05-18 15:56:34.948 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ seattle 使用华氏度 (°F)
+2026-05-18 15:56:34.951 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 873s
+2026-05-18 15:56:34.953 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 873s
+2026-05-18 15:56:35.043 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR KSEA: 46.0°F (obs: 2026-05-18T12:53:00.000Z)
+2026-05-18 15:56:35.732 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ lucknow 使用摄氏度 (°C)
+2026-05-18 15:56:35.733 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 872s
+2026-05-18 15:56:35.734 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 872s
+2026-05-18 15:56:36.122 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ sao paulo 使用摄氏度 (°C)
+2026-05-18 15:56:36.125 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 871s
+2026-05-18 15:56:36.126 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 871s
+2026-05-18 15:56:36.599 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR SBGR: 19.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:36.874 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ munich 使用摄氏度 (°C)
+2026-05-18 15:56:36.877 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 871s
+2026-05-18 15:56:36.878 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 871s
+2026-05-18 15:56:36.964 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR EDDM: 20.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:37.213 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ milan 使用摄氏度 (°C)
+2026-05-18 15:56:37.214 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 870s
+2026-05-18 15:56:37.215 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 870s
+2026-05-18 15:56:37.497 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LIMC: 20.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:37.849 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ warsaw 使用摄氏度 (°C)
+2026-05-18 15:56:37.851 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 870s
+2026-05-18 15:56:37.853 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 870s
+2026-05-18 15:56:38.138 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR EPWA: 17.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:38.470 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ helsinki 使用摄氏度 (°C)
+2026-05-18 15:56:38.470 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=helsinki source=wunderground reason=crawler_removed
+2026-05-18 15:56:38.473 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 869s
+2026-05-18 15:56:38.475 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 869s
+2026-05-18 15:56:39.737 | WARNING  | src.data_collection.metar_sources:fetch_metar:147 - METAR VILK 24h 请求失败，尝试下一档 fallback: The read operation timed out
+2026-05-18 15:56:40.174 | WARNING  | src.data_collection.metar_sources:fetch_metar:137 - METAR VILK 12h fallback returned 24 records
+2026-05-18 15:56:40.176 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR VILK: 40.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:40.456 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ amsterdam 使用摄氏度 (°C)
+2026-05-18 15:56:40.456 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=amsterdam source=wunderground reason=crawler_removed
+2026-05-18 15:56:40.458 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 867s
+2026-05-18 15:56:40.459 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 867s
+2026-05-18 15:56:40.536 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR EHAM: 16.0°C (obs: 2026-05-18T12:25:00.000Z)
+2026-05-18 15:56:40.876 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ madrid 使用摄氏度 (°C)
+2026-05-18 15:56:40.879 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 867s
+2026-05-18 15:56:40.880 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 867s
+2026-05-18 15:56:42.478 | WARNING  | src.data_collection.metar_sources:fetch_metar:147 - METAR EFHK 24h 请求失败，尝试下一档 fallback: The read operation timed out
+2026-05-18 15:56:42.853 | WARNING  | src.data_collection.metar_sources:fetch_metar:137 - METAR EFHK 12h fallback returned 24 records
+2026-05-18 15:56:42.854 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR EFHK: 19.0°C (obs: 2026-05-18T12:50:00.000Z)
+2026-05-18 15:56:43.213 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ chengdu 使用摄氏度 (°C)
+2026-05-18 15:56:43.216 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 864s
+2026-05-18 15:56:43.218 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 864s
+2026-05-18 15:56:43.296 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZUUU: 25.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:44.680 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ chongqing 使用摄氏度 (°C)
+2026-05-18 15:56:44.682 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 863s
+2026-05-18 15:56:44.683 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 863s
+2026-05-18 15:56:44.759 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZUCK: 21.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:44.883 | WARNING  | src.data_collection.metar_sources:fetch_metar:147 - METAR LEMD 24h 请求失败，尝试下一档 fallback: The read operation timed out
+2026-05-18 15:56:45.064 | WARNING  | src.data_collection.metar_sources:fetch_metar:137 - METAR LEMD 12h fallback returned 23 records
+2026-05-18 15:56:45.064 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR LEMD: 22.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:45.391 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ shenzhen 使用摄氏度 (°C)
+2026-05-18 15:56:45.392 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=shenzhen source=wunderground reason=crawler_removed
+2026-05-18 15:56:45.394 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 862s
+2026-05-18 15:56:45.396 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 862s
+2026-05-18 15:56:45.476 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZGSZ: 27.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:46.158 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ guangzhou 使用摄氏度 (°C)
+2026-05-18 15:56:46.158 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=guangzhou source=wunderground reason=crawler_removed
+2026-05-18 15:56:46.160 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 861s
+2026-05-18 15:56:46.162 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 861s
+2026-05-18 15:56:46.440 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZGGG: 28.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:46.557 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ qingdao 使用摄氏度 (°C)
+2026-05-18 15:56:46.557 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=qingdao source=wunderground reason=crawler_removed
+2026-05-18 15:56:46.557 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 861s
+2026-05-18 15:56:46.558 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 861s
+2026-05-18 15:56:46.740 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZSQD: 18.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:47.815 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ beijing 使用摄氏度 (°C)
+2026-05-18 15:56:47.821 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 860s
+2026-05-18 15:56:47.822 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 860s
+2026-05-18 15:56:48.099 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZBAA: 21.0°C (obs: 2026-05-18T12:30:00.000Z)
+2026-05-18 15:56:48.128 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ wuhan 使用摄氏度 (°C)
+2026-05-18 15:56:48.129 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 859s
+2026-05-18 15:56:48.130 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 859s
+2026-05-18 15:56:49.554 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ panama city 使用摄氏度 (°C)
+2026-05-18 15:56:49.554 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=panama city source=wunderground reason=crawler_removed
+2026-05-18 15:56:49.555 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 858s
+2026-05-18 15:56:49.555 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 858s
+2026-05-18 15:56:50.816 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR MPMG: 26.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:51.112 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ lagos 使用摄氏度 (°C)
+2026-05-18 15:56:51.112 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=lagos source=wunderground reason=crawler_removed
+2026-05-18 15:56:51.113 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 856s
+2026-05-18 15:56:51.113 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 856s
+2026-05-18 15:56:51.335 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR DNMM: 28.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:51.728 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ cape town 使用摄氏度 (°C)
+2026-05-18 15:56:51.728 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=cape town source=wunderground reason=crawler_removed
+2026-05-18 15:56:51.729 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 856s
+2026-05-18 15:56:51.731 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 856s
+2026-05-18 15:56:52.096 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR FACT: 23.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:52.132 | WARNING  | src.data_collection.metar_sources:fetch_metar:147 - METAR ZHHH 24h 请求失败，尝试下一档 fallback: The read operation timed out
+2026-05-18 15:56:52.305 | WARNING  | src.data_collection.metar_sources:fetch_metar:137 - METAR ZHHH 12h fallback returned 12 records
+2026-05-18 15:56:52.305 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR ZHHH: 23.0°C (obs: 2026-05-18T12:00:00.000Z)
+2026-05-18 15:56:52.440 | INFO     | src.data_collection.weather_sources:_log_temperature_unit:819 - 🌡️ jeddah 使用摄氏度 (°C)
+2026-05-18 15:56:52.440 | INFO     | src.data_collection.settlement_sources:fetch_settlement_current:627 - Settlement current skipped city=jeddah source=wunderground reason=crawler_removed
+2026-05-18 15:56:52.442 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_multi_model:698 - Open-Meteo Multi-model 冷却期中，跳过请求，还需 855s
+2026-05-18 15:56:52.443 | DEBUG    | src.data_collection.nws_open_meteo_sources:fetch_from_open_meteo:357 - Open-Meteo 冷却期中，跳过请求，还需 855s
+2026-05-18 15:56:56.445 | WARNING  | src.data_collection.metar_sources:fetch_metar:147 - METAR OEJN 24h 请求失败，尝试下一档 fallback: The read operation timed out
+2026-05-18 15:56:57.404 | WARNING  | src.data_collection.metar_sources:fetch_metar:137 - METAR OEJN 12h fallback returned 13 records
+2026-05-18 15:56:57.404 | INFO     | src.data_collection.metar_sources:fetch_metar:329 - ✈️ METAR OEJN: 47.0°C (obs: 2026-05-18T12:00:00.000Z)
+INFO:     127.0.0.1:63741 - "GET /api/scan/terminal?force_refresh=true HTTP/1.1" 200 OK
