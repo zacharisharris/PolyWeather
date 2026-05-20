@@ -45,7 +45,7 @@ import {
   getCurrentPaymentHost,
   isPaymentHostAllowed,
 } from "@/lib/payment-host";
-import { trackAppEvent } from "@/lib/app-analytics";
+import { markAnalyticsOnce, trackAppEvent } from "@/lib/app-analytics";
 import { useI18n } from "@/hooks/useI18n";
 import { UnlockProOverlay } from "@/components/subscription/UnlockProOverlay";
 
@@ -241,6 +241,8 @@ const TELEGRAM_TOPICS_GROUP_URL = TELEGRAM_GROUP_URL;
 const SUBSCRIPTION_HELP_HREF = "/subscription-help";
 const PAYMENT_RECOVERY_STORAGE_KEY = "polyweather:lastPaymentRecovery";
 const PAYMENT_RECOVERY_TTL_MS = 6 * 60 * 60 * 1000;
+const WALLET_REQUEST_TIMEOUT_MS = 60_000;
+const WALLET_TRANSACTION_REQUEST_TIMEOUT_MS = 120_000;
 
 let walletConnectProviderCache: EvmProvider | null = null;
 let walletConnectProviderChainId: number | null = null;
@@ -365,19 +367,13 @@ function detectWalletLabel(
   if (!provider && !detail) return "EVM 钱包";
   const announcedName = String(detail?.info?.name || "").trim();
   const announcedRdns = String(detail?.info?.rdns || "").toLowerCase();
+  
   if (
     provider?.isOkxWallet ||
     announcedName.toLowerCase().includes("okx") ||
     announcedRdns.includes("okx")
   ) {
     return "OKX Wallet";
-  }
-  if (
-    provider?.isMetaMask ||
-    announcedName.toLowerCase().includes("metamask") ||
-    announcedRdns.includes("metamask")
-  ) {
-    return "MetaMask";
   }
   if (
     provider?.isRabby ||
@@ -393,6 +389,21 @@ function detectWalletLabel(
     announcedRdns.includes("bitget")
   ) {
     return "Bitget Wallet";
+  }
+  if (
+    (provider as any)?.isBinance ||
+    (provider as any)?.bnbSign ||
+    announcedName.toLowerCase().includes("binance") ||
+    announcedRdns.includes("binance")
+  ) {
+    return "Binance Web3 Wallet";
+  }
+  if (
+    provider?.isMetaMask ||
+    announcedName.toLowerCase().includes("metamask") ||
+    announcedRdns.includes("metamask")
+  ) {
+    return "MetaMask";
   }
   if (announcedName) return announcedName;
   return "EVM 钱包";
@@ -560,6 +571,31 @@ function buildApproveCalldata(spender: string, amount: bigint) {
 
 function buildBalanceOfCalldata(owner: string) {
   return `0x70a08231${toPaddedAddress(owner)}`;
+}
+
+async function requestWalletWithTimeout<T>(
+  provider: EvmProvider,
+  args: { method: string; params?: unknown[] },
+  actionLabel = "钱包操作",
+  timeoutMs = WALLET_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return (await Promise.race([
+      provider.request(args),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(
+            new Error(
+              `${actionLabel}长时间无响应，请确认钱包弹窗是否被拦截；如使用 Binance Web3 Wallet，请回到钱包确认或重新连接后再试。`,
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ])) as T;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 function formatTokenUnits(amount: bigint, decimals: number) {
@@ -890,6 +926,23 @@ export function AccountCenter() {
     () => isPaymentHostAllowed(currentPaymentHost),
     [currentPaymentHost],
   );
+
+  useEffect(() => {
+    if (!authIsAuthenticated || !authUserId) return;
+    const actorKey = authUserId.toLowerCase();
+    if (markAnalyticsOnce(`signup_completed:${actorKey}`, "local")) {
+      trackAppEvent("signup_completed", {
+        entry: "account_center",
+        user_id: authUserId,
+      });
+    }
+    if (markAnalyticsOnce(`dashboard_active:${actorKey}`, "session")) {
+      trackAppEvent("dashboard_active", {
+        entry: "account_center",
+        user_id: authUserId,
+      });
+    }
+  }, [authIsAuthenticated, authUserId]);
 
   useEffect(() => {
     let canceled = false;
@@ -1272,7 +1325,7 @@ export function AccountCenter() {
 
   const loadSnapshot = useCallback(async () => {
     setErrorText("");
-    try {
+    const attempt = async (retry: boolean): Promise<void> => {
       const userPromise = supabaseReady
         ? getSupabaseBrowserClient().auth.getUser()
         : Promise.resolve({ data: { user: null as User | null } });
@@ -1289,12 +1342,20 @@ export function AccountCenter() {
       ]);
       setUser(userResult.data?.user ?? null);
       if (!backendResult.ok) {
+        if (retry && backendResult.status === 401) {
+          // Supabase session may not be hydrated yet; wait and retry once.
+          await new Promise((r) => setTimeout(r, 1200));
+          return attempt(false);
+        }
         const raw = (await backendResult.text()).slice(0, 260);
         throw new Error(`HTTP ${backendResult.status} ${raw}`.trim());
       }
       const backendJson = (await backendResult.json()) as AuthMeResponse;
       setBackend(backendJson);
       setUpdatedAt(new Date().toISOString());
+    };
+    try {
+      await attempt(true);
     } catch (error) {
       setErrorText(String(error));
     }
@@ -1726,7 +1787,7 @@ export function AccountCenter() {
     const planAmount =
       Number.isFinite(parsedPlanAmount) && parsedPlanAmount > 0
         ? parsedPlanAmount
-        : 5;
+        : 10;
 
     const pointsCfg = paymentConfig?.points_redemption || {};
     const pointsEnabled = pointsCfg.enabled !== false;
@@ -1815,17 +1876,23 @@ export function AccountCenter() {
 
   const waitForReceipt = async (
     txHash: string,
+    provider?: EvmProvider,
     timeoutMs = 120000,
     pollMs = 3000,
   ) => {
-    const eth = getEvmProvider();
+    const eth = provider || getEvmProvider();
     if (!eth) throw new Error("No EVM wallet provider found");
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
-      const receipt = (await eth.request({
-        method: "eth_getTransactionReceipt",
-        params: [txHash],
-      })) as { status?: string } | null;
+      const receipt = await requestWalletWithTimeout<{ status?: string } | null>(
+        eth,
+        {
+          method: "eth_getTransactionReceipt",
+          params: [txHash],
+        },
+        "查询授权交易确认",
+        15_000,
+      );
       if (receipt && receipt.status) {
         if (receipt.status === "0x1") return receipt;
         throw new Error(`transaction reverted: ${txHash}`);
@@ -1918,31 +1985,53 @@ export function AccountCenter() {
     targetChainId: number,
   ): Promise<void> => {
     const currentChainIdHex = String(
-      (await eth.request({ method: "eth_chainId" })) || "",
+      (await requestWalletWithTimeout<string>(
+        eth,
+        { method: "eth_chainId" },
+        "读取钱包网络",
+      )) || "",
     );
     const targetChainHex = `0x${targetChainId.toString(16)}`;
     if (currentChainIdHex.toLowerCase() === targetChainHex.toLowerCase())
       return;
     try {
-      await eth.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: targetChainHex }],
-      });
+      await requestWalletWithTimeout(
+        eth,
+        {
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: targetChainHex }],
+        },
+        "切换钱包网络",
+      );
     } catch (err: any) {
       const code = Number(err?.code);
-      if (code !== 4902 || targetChainId !== 137) throw err;
-      await eth.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: "0x89",
-            chainName: "Polygon Mainnet",
-            nativeCurrency: { name: "POL", symbol: "POL", decimals: 18 },
-            rpcUrls: ["https://polygon-rpc.com"],
-            blockExplorerUrls: ["https://polygonscan.com"],
-          },
-        ],
-      });
+      const msg = String(err?.message || "").toLowerCase();
+      
+      // If the error code indicates the chain is not added (4902), or it's Polygon (137)
+      if (code === 4902 || targetChainId === 137) {
+        try {
+          await requestWalletWithTimeout(
+            eth,
+            {
+              method: "wallet_addEthereumChain",
+              params: [
+              {
+                chainId: "0x89",
+                chainName: "Polygon Mainnet",
+                nativeCurrency: { name: "POL", symbol: "POL", decimals: 18 },
+                rpcUrls: ["https://polygon-rpc.com"],
+                blockExplorerUrls: ["https://polygonscan.com"],
+              },
+              ],
+            },
+            "添加 Polygon 网络",
+          );
+          return;
+        } catch (addErr: any) {
+          err = addErr;
+        }
+      }
+      throw new Error(`请在钱包中手动切换到 Polygon (Matic) 网络后再试。(${err?.message || "网络切换失败"})`);
     }
   };
 
@@ -1965,6 +2054,9 @@ export function AccountCenter() {
       );
       const eth = providerSelection.provider;
       const walletLabel = providerSelection.label;
+      const binanceBindHint = walletLabel.toLowerCase().includes("binance")
+        ? " Binance 扩展已绑定；如支付卡住，请优先使用 WalletConnect 扫码支付。"
+        : "";
 
       // Ensure we have a valid token BEFORE opening the wallet modal.
       let accessToken: string;
@@ -1980,9 +2072,11 @@ export function AccountCenter() {
         Authorization: `Bearer ${accessToken}`,
       };
 
-      const accounts = (await eth.request({
-        method: "eth_requestAccounts",
-      })) as string[];
+      const accounts = await requestWalletWithTimeout<string[]>(
+        eth,
+        { method: "eth_requestAccounts" },
+        "连接绑定钱包",
+      );
       const address = String(accounts?.[0] || "").toLowerCase();
       if (!address)
         throw new Error(isEn ? "Wallet account is empty." : "钱包账户为空");
@@ -1994,7 +2088,7 @@ export function AccountCenter() {
         setWalletAddress(address);
         setSelectedWallet(address);
         setPaymentInfo(
-          `${walletLabel} 已绑定: ${shortAddress(address)}。现在可点击“立即订阅并激活服务”。`,
+          `${walletLabel} 已绑定: ${shortAddress(address)}。${binanceBindHint || "现在可点击“立即订阅并激活服务”。"}`,
         );
         await Promise.all([loadSnapshot(), loadPaymentSnapshot()]);
         if (options.openOverlayAfterBind) setShowOverlay(true);
@@ -2033,7 +2127,7 @@ export function AccountCenter() {
       }
 
       setPaymentInfo(
-        `${walletLabel} 绑定成功: ${shortAddress(address)}。现在可点击“立即订阅并激活服务”。`,
+        `${walletLabel} 绑定成功: ${shortAddress(address)}。${binanceBindHint || "现在可点击“立即订阅并激活服务”。"}`,
       );
       setProviderMode(providerSelection.mode);
       if (options.openOverlayAfterBind) setShowOverlay(true);
@@ -2179,9 +2273,11 @@ export function AccountCenter() {
         selectedInjectedProviderKey,
       );
       const eth = providerSelection.provider;
-      const activeAccounts = (await eth.request({
-        method: "eth_requestAccounts",
-      })) as string[];
+      const activeAccounts = await requestWalletWithTimeout<string[]>(
+        eth,
+        { method: "eth_requestAccounts" },
+        "连接付款钱包",
+      );
       const activeAddress = String(activeAccounts?.[0] || "").toLowerCase();
       if (!activeAddress)
         throw new Error(isEn ? "Wallet account is empty." : "钱包账户为空");
@@ -2300,16 +2396,20 @@ export function AccountCenter() {
           6,
       );
 
-      const balanceHex = (await eth.request({
-        method: "eth_call",
-        params: [
+      const balanceHex = await requestWalletWithTimeout<string>(
+        eth,
+        {
+          method: "eth_call",
+          params: [
           {
             to: tokenAddress,
             data: buildBalanceOfCalldata(payingWallet),
           },
           "latest",
-        ],
-      })) as string;
+          ],
+        },
+        `读取 ${tokenSymbol} 余额`,
+      );
       const tokenBalance = BigInt(String(balanceHex || "0x0"));
       if (tokenBalance < amountUnits) {
         const need = formatTokenUnits(amountUnits, tokenDecimals);
@@ -2319,49 +2419,63 @@ export function AccountCenter() {
         );
       }
 
-      const allowanceHex = (await eth.request({
-        method: "eth_call",
-        params: [
+      const allowanceHex = await requestWalletWithTimeout<string>(
+        eth,
+        {
+          method: "eth_call",
+          params: [
           {
             to: tokenAddress,
             data: buildAllowanceCalldata(payingWallet, txPayload.to),
           },
           "latest",
-        ],
-      })) as string;
+          ],
+        },
+        `读取 ${tokenSymbol} 授权额度`,
+      );
       const allowance = BigInt(String(allowanceHex || "0x0"));
 
       if (allowance < amountUnits) {
         setPaymentInfo(`检测到授权不足，正在发起 ${tokenSymbol} 授权...`);
-        const approveHash = (await eth.request({
-          method: "eth_sendTransaction",
-          params: [
-            {
-              from: payingWallet,
-              to: tokenAddress,
-              data: buildApproveCalldata(txPayload.to, amountUnits),
-              value: "0x0",
-            },
-          ],
-        })) as string;
-        await waitForReceipt(String(approveHash || ""));
+        const approveParams: Record<string, any> = {
+          from: payingWallet,
+          to: tokenAddress,
+          data: buildApproveCalldata(txPayload.to, amountUnits),
+        };
+        const approveHash = await requestWalletWithTimeout<string>(
+          eth,
+          {
+            method: "eth_sendTransaction",
+            params: [approveParams],
+          },
+          `发起 ${tokenSymbol} 授权`,
+          WALLET_TRANSACTION_REQUEST_TIMEOUT_MS,
+        );
+        await waitForReceipt(String(approveHash || ""), eth);
         approvedInThisRun = true;
         setPaymentInfo(`${tokenSymbol} 授权成功，正在发起支付...`);
       } else {
         setPaymentInfo("授权额度充足，正在发起支付...");
       }
 
-      const txHash = (await eth.request({
-        method: "eth_sendTransaction",
-        params: [
-          {
-            from: payingWallet,
-            to: txPayload.to,
-            data: txPayload.data,
-            value: txPayload.value || "0x0",
-          },
-        ],
-      })) as string;
+      const payParams: Record<string, any> = {
+        from: payingWallet,
+        to: txPayload.to,
+        data: txPayload.data,
+      };
+      if (txPayload.value && txPayload.value !== "0x0" && txPayload.value !== "0") {
+        payParams.value = txPayload.value;
+      }
+      
+      const txHash = await requestWalletWithTimeout<string>(
+        eth,
+        {
+          method: "eth_sendTransaction",
+          params: [payParams],
+        },
+        "发起支付交易",
+        WALLET_TRANSACTION_REQUEST_TIMEOUT_MS,
+      );
       const txHashNorm = String(txHash || "").toLowerCase();
       setLastTxHash(txHashNorm);
       setLastPaymentStartedAt(Date.now());
@@ -3184,6 +3298,9 @@ export function AccountCenter() {
                       <p className="text-[11px] leading-relaxed text-slate-400">
                         方式一：绑定您的 EVM 钱包（如 MetaMask 扩展或 WalletConnect 扫码），通过智能合约自动签名付款，额度即时到账。
                       </p>
+                      <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-amber-100">
+                        钱包里需要少量 Polygon POL/MATIC 作为 gas 手续费；只有 USDC 可能无法完成授权或支付。请确认当前钱包在 Polygon 网络，并预留一点 POL/MATIC 后再支付。
+                      </div>
                       
                       {boundWallets.length ? (
                         <div className="space-y-3">

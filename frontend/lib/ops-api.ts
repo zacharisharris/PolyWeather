@@ -105,4 +105,42 @@ export const opsApi = {
       count: number;
     }>(`/api/ops/subscriptions/user?email=${encodeURIComponent(email)}`);
   },
+  trainingAccuracy() {
+    return opsFetch<{
+      accuracy: Array<{
+        city_id: string;
+        name: string;
+        deb?: {
+          hit_rate: number;
+          mae: number;
+          total_days: number;
+          details_str: string;
+        } | null;
+        mu?: {
+          mae: number;
+          hit_rate: number;
+          brier_score: number | null;
+          total_days: number;
+          details_str: string;
+        } | null;
+      }>;
+    }>("/api/ops/training/accuracy");
+  },
+  telegramAudit() {
+    return opsFetch<{
+      anomalies: Array<{
+        telegram_id: number;
+        username: string;
+        chat_id: string;
+        status: string;
+        anomaly_type: "unbound" | "expired" | "trial_only";
+        reason: string;
+        email: string | null;
+        expires_at: string | null;
+      }>;
+      valid_count: number;
+      anomaly_count: number;
+      error?: string;
+    }>("/api/ops/telegram/members-audit");
+  },
 };

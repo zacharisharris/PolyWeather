@@ -14,6 +14,7 @@ from web.services.ops_api import (
     get_ops_weekly_leaderboard,
     get_ops_user_subscriptions,
     grant_ops_points,
+    transfer_ops_points,
     grant_ops_subscription,
     list_ops_memberships,
     list_ops_payment_incidents,
@@ -21,6 +22,8 @@ from web.services.ops_api import (
     list_ops_payments,
     search_ops_users,
     update_ops_config,
+    get_ops_training_accuracy,
+    get_ops_telegram_audit,
 )
 
 router = APIRouter(tags=["ops"])
@@ -76,6 +79,17 @@ async def ops_grant_points(request: Request, body: GrantPointsRequest):
     return grant_ops_points(request, body)
 
 
+@router.post("/api/ops/users/transfer-points")
+async def ops_transfer_points(request: Request):
+    import json as _json
+    body_bytes = await request.body()
+    body = _json.loads(body_bytes.decode("utf-8"))
+    from_email = str(body.get("from_email") or "").strip()
+    to_email = str(body.get("to_email") or "").strip()
+    amount = int(body.get("amount") or 0)
+    return transfer_ops_points(request, from_email=from_email, to_email=to_email, amount=amount)
+
+
 @router.get("/api/ops/analytics/funnel")
 async def ops_analytics_funnel(request: Request, days: int = 30):
     return get_ops_analytics_funnel(request, days=days)
@@ -128,7 +142,8 @@ async def ops_subscription_grant(request: Request):
     email = str(body.get("email") or "").strip()
     plan_code = str(body.get("plan_code") or "pro_monthly").strip()
     days = int(body.get("days") or 30)
-    return grant_ops_subscription(request, email=email, plan_code=plan_code, days=days)
+    deduct_points = int(body.get("deduct_points") or 0)
+    return grant_ops_subscription(request, email=email, plan_code=plan_code, days=days, deduct_points=deduct_points)
 
 
 @router.post("/api/ops/subscriptions/extend")
@@ -160,3 +175,15 @@ async def ops_logs(
 @router.get("/api/ops/health-check")
 async def ops_health_check(request: Request):
     return get_ops_health_check(request)
+
+
+@router.get("/api/ops/training/accuracy")
+async def ops_training_accuracy(request: Request):
+    return get_ops_training_accuracy(request)
+
+
+@router.get("/api/ops/telegram/members-audit")
+async def ops_telegram_audit(request: Request):
+    return get_ops_telegram_audit(request)
+
+

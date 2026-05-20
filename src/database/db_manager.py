@@ -403,6 +403,35 @@ class DBManager:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_airport_obs_log_icao_time ON airport_obs_log(icao, created_at DESC)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runway_obs_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    icao TEXT NOT NULL,
+                    city TEXT NOT NULL,
+                    runway TEXT NOT NULL,
+                    tdz_temp REAL,
+                    mid_temp REAL,
+                    end_temp REAL,
+                    target_runway_max REAL,
+                    wind_dir INTEGER,
+                    wind_speed REAL,
+                    rvr INTEGER,
+                    mor REAL,
+                    humidity REAL,
+                    otime_utc TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runway_obs_log_icao_otime "
+                "ON runway_obs_log(icao, otime_utc DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runway_obs_log_city_time "
+                "ON runway_obs_log(city, created_at DESC)"
+            )
             self._ensure_column(conn, "users", "daily_points", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "users", "daily_points_date", "TEXT")
             self._ensure_column(conn, "users", "weekly_points", "INTEGER DEFAULT 0")
@@ -1228,6 +1257,80 @@ class DBManager:
                 "points_added": points,
                 "points_after": after,
             }
+
+    def deduct_points_by_supabase_email(
+        self,
+        supabase_email: str,
+        amount: int,
+    ) -> Dict[str, Any]:
+        email = str(supabase_email or "").strip().lower()
+        points = int(amount or 0)
+        if not email:
+            return {"ok": False, "reason": "invalid_supabase_email"}
+        if points <= 0:
+            return {"ok": False, "reason": "invalid_amount"}
+
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT telegram_id, username, points, supabase_email
+                FROM users
+                WHERE lower(trim(COALESCE(supabase_email, ''))) = ?
+                LIMIT 1
+                """,
+                (email,),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "reason": "user_not_found", "supabase_email": email}
+
+            telegram_id = int(row["telegram_id"] or 0)
+            before = int(row["points"] or 0)
+            if before < points:
+                return {
+                    "ok": False,
+                    "reason": "insufficient_points",
+                    "points_available": before,
+                    "points_needed": points,
+                }
+            after = before - points
+            conn.execute(
+                "UPDATE users SET points = ? WHERE telegram_id = ?",
+                (after, telegram_id),
+            )
+            conn.commit()
+            self._sync_points_to_supabase_user_metadata(telegram_id)
+            return {
+                "ok": True,
+                "telegram_id": telegram_id,
+                "username": str(row["username"] or ""),
+                "supabase_email": str(row["supabase_email"] or email),
+                "points_before": before,
+                "points_deducted": points,
+                "points_after": after,
+            }
+
+    def transfer_points_by_email(
+        self,
+        from_email: str,
+        to_email: str,
+        amount: int,
+    ) -> Dict[str, Any]:
+        """Transfer points from one user to another within a single transaction."""
+        r_from = self.deduct_points_by_supabase_email(from_email, amount)
+        if not r_from.get("ok"):
+            return {"ok": False, "reason": f"deduct_failed: {r_from.get('reason')}", "from": r_from}
+        r_to = self.grant_points_by_supabase_email(to_email, amount)
+        if not r_to.get("ok"):
+            # Rollback: grant back to source
+            self.grant_points_by_supabase_email(from_email, amount)
+            return {"ok": False, "reason": f"grant_failed: {r_to.get('reason')}", "to": r_to}
+        return {
+            "ok": True,
+            "from": r_from,
+            "to": r_to,
+            "amount": amount,
+        }
 
     def upsert_user(self, telegram_id: int, username: str):
         with self._get_connection() as conn:
@@ -2196,6 +2299,74 @@ class DBManager:
                 """
                 SELECT icao, city, temp_c, wind_kt, pressure_hpa, obs_time, created_at
                 FROM airport_obs_log
+                WHERE icao = ? AND created_at >= datetime('now', ? || ' minutes')
+                ORDER BY created_at ASC
+                """,
+                (str(icao).strip().upper(), str(-int(minutes))),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def append_runway_obs(
+        self,
+        icao: str,
+        city: str,
+        runway: str,
+        tdz_temp: Optional[float] = None,
+        mid_temp: Optional[float] = None,
+        end_temp: Optional[float] = None,
+        target_runway_max: Optional[float] = None,
+        wind_dir: Optional[int] = None,
+        wind_speed: Optional[float] = None,
+        rvr: Optional[int] = None,
+        mor: Optional[float] = None,
+        humidity: Optional[float] = None,
+        otime_utc: str = "",
+    ) -> None:
+        """Insert one runway observation row (deduplicated by icao+runway+otime_utc)."""
+        safe_icao = str(icao or "").strip().upper()
+        safe_city = str(city or "").strip().lower()
+        safe_runway = str(runway or "").strip().upper()
+        safe_otime = str(otime_utc or "").strip()
+        if not safe_icao or not safe_runway or not safe_otime:
+            return
+        with self._get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM runway_obs_log WHERE icao=? AND runway=? AND otime_utc=? LIMIT 1",
+                (safe_icao, safe_runway, safe_otime),
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """
+                INSERT INTO runway_obs_log (
+                    icao, city, runway,
+                    tdz_temp, mid_temp, end_temp, target_runway_max,
+                    wind_dir, wind_speed, rvr, mor, humidity,
+                    otime_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    safe_icao, safe_city, safe_runway,
+                    tdz_temp, mid_temp, end_temp, target_runway_max,
+                    wind_dir, wind_speed, rvr, mor, humidity,
+                    safe_otime,
+                ),
+            )
+            conn.commit()
+
+    def get_runway_obs_recent(
+        self, icao: str, minutes: int = 60
+    ) -> List[Dict[str, Any]]:
+        """Get recent runway observations for trend analysis."""
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT icao, city, runway,
+                       tdz_temp, mid_temp, end_temp, target_runway_max,
+                       wind_dir, wind_speed, rvr, mor, humidity,
+                       otime_utc, created_at
+                FROM runway_obs_log
                 WHERE icao = ? AND created_at >= datetime('now', ? || ' minutes')
                 ORDER BY created_at ASC
                 """,

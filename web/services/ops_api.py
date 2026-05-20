@@ -12,7 +12,8 @@ import web.routes as legacy_routes
 
 
 def _require_ops(request: Request) -> Dict[str, Any] | None:
-    legacy_routes._assert_entitlement(request)
+    # Ops admins are authenticated via Supabase identity + email whitelist.
+    # They do NOT need an active Pro subscription to manage the system.
     return legacy_routes._require_ops_admin(request)
 
 
@@ -238,6 +239,29 @@ def grant_ops_points(request: Request, body: GrantPointsRequest) -> Dict[str, An
     return result
 
 
+def transfer_ops_points(
+    request: Request,
+    from_email: str = "",
+    to_email: str = "",
+    amount: int = 0,
+) -> Dict[str, Any]:
+    """Transfer points from one user to another."""
+    admin = _require_ops(request) or {}
+    from_email = str(from_email or "").strip()
+    to_email = str(to_email or "").strip()
+    amount = int(amount or 0)
+    if not from_email or not to_email:
+        raise HTTPException(status_code=400, detail="from_email and to_email are required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    db = DBManager()
+    result = db.transfer_points_by_email(from_email, to_email, amount)
+    result["operator_email"] = admin.get("email")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 def get_ops_analytics_funnel(request: Request, days: int = 30) -> Dict[str, Any]:
     _require_ops(request)
     db = DBManager()
@@ -360,6 +384,7 @@ def grant_ops_subscription(
     email: str,
     plan_code: str = "pro_monthly",
     days: int = 30,
+    deduct_points: int = 0,
 ) -> dict[str, Any]:
     _require_ops(request)
     import os
@@ -371,11 +396,12 @@ def grant_ops_subscription(
     if not supabase_url or not service_role_key:
         raise HTTPException(status_code=503, detail="Supabase not configured")
 
-    allowed_plans = {"pro_monthly", "pro_quarterly", "pro_yearly"}
+    allowed_plans = {"pro_monthly"}
     if plan_code not in allowed_plans:
         raise HTTPException(status_code=400, detail=f"invalid plan_code, allowed: {allowed_plans}")
 
     safe_days = max(1, min(365, int(days or 30)))
+    safe_deduct = max(0, int(deduct_points or 0))
     normalized_email = str(email or "").strip().lower()
     if not normalized_email:
         raise HTTPException(status_code=400, detail="email is required")
@@ -419,9 +445,22 @@ def grant_ops_subscription(
         json=payload,
         timeout=10,
     )
-    if resp.ok:
-        return {"ok": True, "user_id": user_id, "plan_code": plan_code, "days": safe_days, "expires_at": expires_at}
-    raise HTTPException(status_code=500, detail=f"Supabase insert failed: {resp.text[:200]}")
+    if not resp.ok:
+        raise HTTPException(status_code=500, detail=f"Supabase insert failed: {resp.text[:200]}")
+
+    result: dict[str, Any] = {
+        "ok": True, "user_id": user_id, "plan_code": plan_code,
+        "days": safe_days, "expires_at": expires_at,
+    }
+
+    # Optionally deduct points from the user (manual Pro grant with points payment)
+    if safe_deduct > 0:
+        db = DBManager()
+        deduct_result = db.deduct_points_by_supabase_email(normalized_email, safe_deduct)
+        result["points_deducted"] = safe_deduct
+        result["points_result"] = deduct_result
+
+    return result
 
 
 def extend_ops_subscription(
@@ -783,3 +822,227 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
 
     all_ok = all(v.get("ok") for v in results.values())
     return {"ok": all_ok, "checked_at": __import__("datetime").datetime.utcnow().isoformat() + "Z", "services": results}
+
+
+def get_ops_training_accuracy(request: Request) -> Dict[str, Any]:
+    _require_ops(request)
+    from src.analysis.deb_algorithm import get_deb_accuracy, get_mu_accuracy
+    from src.data_collection.city_registry import CITY_REGISTRY
+
+    accuracy_data = []
+    for city_id, info in CITY_REGISTRY.items():
+        name = info.get("name") or city_id
+
+        # Calculate DEB accuracy
+        deb_acc = get_deb_accuracy(city_id)
+        deb_payload = None
+        if deb_acc:
+            deb_payload = {
+                "hit_rate": deb_acc[0],
+                "mae": deb_acc[1],
+                "total_days": deb_acc[2],
+                "details_str": deb_acc[3]
+            }
+
+        # Calculate Mu accuracy
+        mu_acc = get_mu_accuracy(city_id)
+        mu_payload = None
+        if mu_acc:
+            mu_payload = {
+                "mae": mu_acc[0],
+                "hit_rate": mu_acc[1],
+                "brier_score": mu_acc[2],
+                "total_days": mu_acc[3],
+                "details_str": mu_acc[4]
+            }
+
+        if deb_payload or mu_payload:
+            accuracy_data.append({
+                "city_id": city_id,
+                "name": name,
+                "deb": deb_payload,
+                "mu": mu_payload
+            })
+
+    # Sort by total days of DEB or Mu
+    accuracy_data.sort(
+        key=lambda x: max(
+            x["deb"]["total_days"] if x["deb"] else 0,
+            x["mu"]["total_days"] if x["mu"] else 0
+        ),
+        reverse=True
+    )
+
+    return {"accuracy": accuracy_data}
+
+
+def get_ops_telegram_audit(request: Request) -> Dict[str, Any]:
+    _require_ops(request)
+    import concurrent.futures
+    import os
+    import sqlite3
+    import requests
+    from src.database.db_manager import DBManager
+    from src.utils.telegram_chat_ids import get_telegram_chat_ids_from_env
+
+    db = DBManager()
+
+    # 1. Fetch all distinct telegram users from database
+    with db._get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        users_rows = conn.execute("SELECT telegram_id, username FROM users").fetchall()
+        bindings_rows = conn.execute("SELECT telegram_id, supabase_user_id, supabase_email FROM supabase_bindings").fetchall()
+
+    user_info = {}
+    for r in users_rows:
+        tid = int(r["telegram_id"])
+        user_info[tid] = {
+            "telegram_id": tid,
+            "username": r["username"] or f"ID: {tid}",
+            "supabase_user_id": None,
+            "supabase_email": None,
+            "is_bound": False
+        }
+
+    for r in bindings_rows:
+        tid = int(r["telegram_id"])
+        if tid not in user_info:
+            user_info[tid] = {
+                "telegram_id": tid,
+                "username": f"ID: {tid}",
+                "supabase_user_id": r["supabase_user_id"],
+                "supabase_email": r["supabase_email"],
+                "is_bound": True
+            }
+        else:
+            user_info[tid]["supabase_user_id"] = r["supabase_user_id"]
+            user_info[tid]["supabase_email"] = r["supabase_email"]
+            user_info[tid]["is_bound"] = True
+
+    # 2. Get Telegram Bot settings
+    bot_token = str(os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_ids = get_telegram_chat_ids_from_env()
+
+    # Add other group IDs if configured
+    for env_name in ["POLYWEATHER_TELEGRAM_GROUP_ID", "POLYWEATHER_TELEGRAM_TOPICS_GROUP_ID"]:
+        val = str(os.getenv(env_name) or "").strip()
+        if val and val not in chat_ids:
+            chat_ids.append(val)
+
+    if not bot_token or not chat_ids:
+        return {"error": "Telegram Bot Token or Chat IDs not configured", "anomalies": []}
+
+    # 3. Check membership status for all users in parallel
+    results = []
+
+    def check_user_chat(tg_id, chat_id):
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{bot_token}/getChatMember",
+                params={"chat_id": chat_id, "user_id": tg_id},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok"):
+                    res_status = data["result"].get("status")
+                    return chat_id, res_status
+            return chat_id, None
+        except Exception:
+            return chat_id, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {}
+        for tg_id in user_info.keys():
+            for c_id in chat_ids:
+                f = executor.submit(check_user_chat, tg_id, c_id)
+                futures[f] = (tg_id, c_id)
+
+        for f in concurrent.futures.as_completed(futures):
+            tg_id, c_id = futures[f]
+            try:
+                _, status = f.result()
+                if status in {"creator", "administrator", "member"}:
+                    results.append((tg_id, c_id, status))
+            except Exception:
+                pass
+
+    # 4. Filter and categorize members
+    anomalies = []
+    valid_members = []
+
+    from web.services.ops_api import legacy_routes
+    active_subs = legacy_routes.SUPABASE_ENTITLEMENT.list_active_subscriptions(limit=5000)
+    active_subs_map = {}
+    for sub in active_subs:
+        uid = str(sub.get("user_id") or "").strip().lower()
+        if uid:
+            active_subs_map[uid] = sub
+
+    for tg_id, chat_id, status in results:
+        info = user_info[tg_id]
+
+        if not info["is_bound"]:
+            anomalies.append({
+                "telegram_id": tg_id,
+                "username": info["username"],
+                "chat_id": chat_id,
+                "status": status,
+                "anomaly_type": "unbound",
+                "reason": "未绑定网页账号",
+                "email": None,
+                "expires_at": None,
+            })
+        else:
+            uid = str(info["supabase_user_id"]).strip().lower()
+            sub = active_subs_map.get(uid)
+            is_paid = False
+            plan_code = ""
+            expires_at = None
+
+            if sub:
+                plan_code = str(sub.get("plan_code") or "").strip().lower()
+                source = str(sub.get("source") or "").strip().lower()
+                is_paid = "trial" not in plan_code and "trial" not in source
+                expires_at = sub.get("expires_at")
+
+            if not sub:
+                anomalies.append({
+                    "telegram_id": tg_id,
+                    "username": info["username"],
+                    "chat_id": chat_id,
+                    "status": status,
+                    "anomaly_type": "expired",
+                    "reason": "没有有效的会员订阅",
+                    "email": info["supabase_email"],
+                    "expires_at": None,
+                })
+            elif not is_paid:
+                anomalies.append({
+                    "telegram_id": tg_id,
+                    "username": info["username"],
+                    "chat_id": chat_id,
+                    "status": status,
+                    "anomaly_type": "trial_only",
+                    "reason": f"仅拥有试用会员 ({plan_code})",
+                    "email": info["supabase_email"],
+                    "expires_at": expires_at,
+                })
+            else:
+                valid_members.append({
+                    "telegram_id": tg_id,
+                    "username": info["username"],
+                    "chat_id": chat_id,
+                    "status": status,
+                    "email": info["supabase_email"],
+                    "plan_code": plan_code,
+                    "expires_at": expires_at,
+                })
+
+    return {
+        "anomalies": anomalies,
+        "valid_count": len(valid_members),
+        "anomaly_count": len(anomalies),
+    }
+
+
