@@ -12,7 +12,8 @@ import web.routes as legacy_routes
 
 
 def _require_ops(request: Request) -> Dict[str, Any] | None:
-    legacy_routes._assert_entitlement(request)
+    # Ops admins are authenticated via Supabase identity + email whitelist.
+    # They do NOT need an active Pro subscription to manage the system.
     return legacy_routes._require_ops_admin(request)
 
 
@@ -238,6 +239,29 @@ def grant_ops_points(request: Request, body: GrantPointsRequest) -> Dict[str, An
     return result
 
 
+def transfer_ops_points(
+    request: Request,
+    from_email: str = "",
+    to_email: str = "",
+    amount: int = 0,
+) -> Dict[str, Any]:
+    """Transfer points from one user to another."""
+    admin = _require_ops(request) or {}
+    from_email = str(from_email or "").strip()
+    to_email = str(to_email or "").strip()
+    amount = int(amount or 0)
+    if not from_email or not to_email:
+        raise HTTPException(status_code=400, detail="from_email and to_email are required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    db = DBManager()
+    result = db.transfer_points_by_email(from_email, to_email, amount)
+    result["operator_email"] = admin.get("email")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 def get_ops_analytics_funnel(request: Request, days: int = 30) -> Dict[str, Any]:
     _require_ops(request)
     db = DBManager()
@@ -360,6 +384,7 @@ def grant_ops_subscription(
     email: str,
     plan_code: str = "pro_monthly",
     days: int = 30,
+    deduct_points: int = 0,
 ) -> dict[str, Any]:
     _require_ops(request)
     import os
@@ -371,11 +396,12 @@ def grant_ops_subscription(
     if not supabase_url or not service_role_key:
         raise HTTPException(status_code=503, detail="Supabase not configured")
 
-    allowed_plans = {"pro_monthly", "pro_quarterly", "pro_yearly"}
+    allowed_plans = {"pro_monthly"}
     if plan_code not in allowed_plans:
         raise HTTPException(status_code=400, detail=f"invalid plan_code, allowed: {allowed_plans}")
 
     safe_days = max(1, min(365, int(days or 30)))
+    safe_deduct = max(0, int(deduct_points or 0))
     normalized_email = str(email or "").strip().lower()
     if not normalized_email:
         raise HTTPException(status_code=400, detail="email is required")
@@ -419,9 +445,22 @@ def grant_ops_subscription(
         json=payload,
         timeout=10,
     )
-    if resp.ok:
-        return {"ok": True, "user_id": user_id, "plan_code": plan_code, "days": safe_days, "expires_at": expires_at}
-    raise HTTPException(status_code=500, detail=f"Supabase insert failed: {resp.text[:200]}")
+    if not resp.ok:
+        raise HTTPException(status_code=500, detail=f"Supabase insert failed: {resp.text[:200]}")
+
+    result: dict[str, Any] = {
+        "ok": True, "user_id": user_id, "plan_code": plan_code,
+        "days": safe_days, "expires_at": expires_at,
+    }
+
+    # Optionally deduct points from the user (manual Pro grant with points payment)
+    if safe_deduct > 0:
+        db = DBManager()
+        deduct_result = db.deduct_points_by_supabase_email(normalized_email, safe_deduct)
+        result["points_deducted"] = safe_deduct
+        result["points_result"] = deduct_result
+
+    return result
 
 
 def extend_ops_subscription(
