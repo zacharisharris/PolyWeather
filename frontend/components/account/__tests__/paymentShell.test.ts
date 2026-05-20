@@ -25,6 +25,28 @@ export function runTests() {
     path.join(projectRoot, "app", "api", "analytics", "events", "route.ts"),
     "utf8",
   );
+  const grantRouteSource = fs.readFileSync(
+    path.join(
+      projectRoot,
+      "app",
+      "api",
+      "ops",
+      "subscriptions",
+      "grant",
+      "route.ts",
+    ),
+    "utf8",
+  );
+  const subscriptionsPageSource = fs.readFileSync(
+    path.join(
+      projectRoot,
+      "components",
+      "ops",
+      "subscriptions",
+      "SubscriptionsPageClient.tsx",
+    ),
+    "utf8",
+  );
 
   assert(
     accountCenterSource.includes(
@@ -65,5 +87,19 @@ export function runTests() {
     accountCenterSource.includes('trackAppEvent("signup_completed"') &&
       accountCenterSource.includes('trackAppEvent("dashboard_active"'),
     "account center must emit signup_completed and dashboard_active so the ops funnel has top-of-funnel data",
+  );
+  assert(
+    subscriptionsPageSource.includes("getSupabaseBrowserClient") &&
+      subscriptionsPageSource.includes("refreshSession") &&
+      subscriptionsPageSource.includes("Authorization") &&
+      subscriptionsPageSource.includes("/api/ops/subscriptions/grant") &&
+      subscriptionsPageSource.includes("/api/ops/subscriptions/extend"),
+    "ops manual subscription grant/extend must send the Supabase bearer token to avoid 401 when route cookies are stale",
+  );
+  assert(
+    grantRouteSource.includes("grantSubscriptionDirectly") &&
+      grantRouteSource.includes("res.status === 404") &&
+      grantRouteSource.includes('"status": "active"'),
+    "ops subscription grant route must fall back to direct Supabase grant when the VPS backend route is missing",
   );
 }
