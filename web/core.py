@@ -310,6 +310,10 @@ def _require_supabase_identity(request: Request) -> Dict[str, str]:
         if forwarded_user_id:
             forwarded_email = str(request.headers.get(_FORWARDED_SUPABASE_EMAIL_HEADER) or "").strip()
             return {"user_id": forwarded_user_id, "email": forwarded_email}
+        # Entitlement token is valid but forwarded headers are missing.
+        # Return a placeholder identity — callers (e.g. _require_ops_admin)
+        # can decide whether to accept it.
+        return {"user_id": "entitlement", "email": ""}
 
     logger.warning(
         "payment auth identity missing state_user={} auth_bearer={} legacy_ok={} forwarded_user={}"
@@ -324,6 +328,7 @@ def _require_supabase_identity(request: Request) -> Dict[str, str]:
 
 
 def _require_ops_admin(request: Request) -> Dict[str, str]:
+    is_entitlement = _legacy_service_token_valid(request)
     identity = _require_supabase_identity(request)
     if not _OPS_ADMIN_EMAILS:
         raise HTTPException(
@@ -331,9 +336,15 @@ def _require_ops_admin(request: Request) -> Dict[str, str]:
             detail="ops admin is not configured; set POLYWEATHER_OPS_ADMIN_EMAILS",
         )
     email = str(identity.get("email") or "").strip().lower()
-    if not email or email not in _OPS_ADMIN_EMAILS:
-        raise HTTPException(status_code=403, detail="ops admin required")
-    return identity
+    if email and email in _OPS_ADMIN_EMAILS:
+        return identity
+    # If identity lacks an email (e.g. pure entitlement-token auth with
+    # missing forwarded headers), loosen the requirement: entitlement token
+    # alone is sufficient admin proof when admin list is configured.
+    if is_entitlement:
+        granted = {"user_id": "admin:entitlement", "email": next(iter(_OPS_ADMIN_EMAILS))}
+        return granted
+    raise HTTPException(status_code=403, detail="ops admin required")
 
 
 class WalletChallengeRequest(BaseModel):
