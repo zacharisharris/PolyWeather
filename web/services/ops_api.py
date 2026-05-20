@@ -191,6 +191,41 @@ def resolve_ops_payment_incident(request: Request, event_id: int) -> Dict[str, A
     return {"ok": True, "incident": resolved}
 
 
+def list_ops_payments(
+    request: Request,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """List successful payment records from Supabase."""
+    _require_ops(request)
+    import os
+    import requests as _requests
+
+    supabase_url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    service_role_key = str(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not supabase_url or not service_role_key:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+    headers = {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+    }
+    safe_limit = max(1, min(int(limit or 50), 200))
+    resp = _requests.get(
+        f"{supabase_url}/rest/v1/payments",
+        headers=headers,
+        params={
+            "select": "id,user_id,amount,currency,chain,tx_hash,status,created_at",
+            "order": "created_at.desc",
+            "limit": str(safe_limit),
+        },
+        timeout=10,
+    )
+    rows = resp.json() if resp.ok and resp.content else []
+    if not isinstance(rows, list):
+        rows = []
+    return {"payments": rows, "total": len(rows)}
+
+
 def grant_ops_points(request: Request, body: GrantPointsRequest) -> Dict[str, Any]:
     admin = _require_ops(request) or {}
     db = DBManager()
@@ -292,6 +327,7 @@ _EDITABLE_CONFIG_KEYS: dict[str, str] = {
     "POLYWEATHER_PUBLIC_PRICE_USDC": "公开月费 (USDC)",
     "POLYWEATHER_PAYMENT_POINTS_PER_USDC": "积分兑换汇率 (积分/USDC)",
     "POLYWEATHER_PAYMENT_POINTS_MAX_DISCOUNT_USDC": "积分最高抵扣金额 (USDC)",
+    "POLYWEATHER_PAYMENT_DIRECT_RECEIVER_ADDRESS": "手动转账收款钱包地址",
 }
 
 
@@ -450,6 +486,66 @@ def extend_ops_subscription(
     raise HTTPException(status_code=500, detail=f"Supabase update failed: {patch_resp.text[:200]}")
 
 
+def get_ops_user_subscriptions(
+    request: Request,
+    email: str,
+) -> dict[str, Any]:
+    """Return ALL subscription rows for a user (by email), regardless of status."""
+    _require_ops(request)
+    import os
+    import requests as _requests
+
+    supabase_url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    service_role_key = str(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not supabase_url or not service_role_key:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    headers = {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Content-Type": "application/json",
+    }
+
+    # Resolve user_id from email via auth admin API
+    user_resp = _requests.get(
+        f"{supabase_url}/auth/v1/admin/users",
+        headers=headers,
+        params={"filter": f"email.eq.{normalized_email}"},
+        timeout=10,
+    )
+    users = user_resp.json().get("users", []) if user_resp.ok else []
+    user_id = users[0].get("id") if users else None
+    if not user_id:
+        raise HTTPException(status_code=404, detail=f"user not found: {normalized_email}")
+
+    # Fetch all subscription rows for this user (no status filter)
+    subs_resp = _requests.get(
+        f"{supabase_url}/rest/v1/subscriptions",
+        headers=headers,
+        params={
+            "select": "id,user_id,status,plan_code,source,starts_at,expires_at,created_at,updated_at",
+            "user_id": f"eq.{user_id}",
+            "order": "created_at.desc",
+            "limit": "50",
+        },
+        timeout=10,
+    )
+    rows = subs_resp.json() if subs_resp.ok and subs_resp.content else []
+    if not isinstance(rows, list):
+        rows = []
+
+    return {
+        "email": normalized_email,
+        "user_id": user_id,
+        "subscriptions": rows,
+        "count": len(rows),
+    }
+
+
 # ── Logs ────────────────────────────────────────────────────────────
 
 def get_ops_logs(
@@ -507,7 +603,7 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
     _urllib3.disable_warnings(_urllib3.exceptions.InsecureRequestWarning)
 
     results: dict[str, dict] = {}
-    timeout = 3
+    timeout = 8
 
     # Supabase
     supabase_url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
@@ -618,7 +714,7 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
         results["singapore_mss"] = {"ok": False, "error": str(e)[:100]}
 
     # CWA (Taiwan Central Weather Administration)
-    cwa_key = str(os.getenv("CWA_API_KEY") or "").strip()
+    cwa_key = str(os.getenv("CWA_API_KEY") or os.getenv("CWA_OPEN_DATA_AUTH") or os.getenv("CWA_OPEN_DATA_API_KEY") or "").strip()
     if cwa_key:
         try:
             t0 = _time.perf_counter()
@@ -628,18 +724,6 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
             results["cwa"] = {"ok": False, "error": str(e)[:100]}
     else:
         results["cwa"] = {"ok": False, "error": "not configured"}
-
-    # IMGW (Poland)
-    imgw_token = str(os.getenv("IMGW_METEO_API_TOKEN") or "").strip()
-    if imgw_token:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get("https://meteo.imgw.pl/api/v1/station/aviation", timeout=timeout, headers={"Authorization": f"Bearer {imgw_token}"})
-            results["imgw"] = {"ok": r.ok, "status": r.status_code, "latency_ms": round((_time.perf_counter() - t0) * 1000)}
-        except Exception as e:
-            results["imgw"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["imgw"] = {"ok": False, "error": "not configured"}
 
     # Polymarket Gamma API
     try:
@@ -657,17 +741,8 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
     except Exception as e:
         results["polymarket_clob"] = {"ok": False, "error": str(e)[:100]}
 
-    # Synoptic Data (US settlement verification)
-    synoptic_token = str(os.getenv("SYNOPTIC_API_TOKEN") or "").strip()
-    if synoptic_token:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get(f"https://api.synopticdata.com/v2/stations/metadata?token={synoptic_token}&limit=1", timeout=timeout)
-            results["synoptic"] = {"ok": r.ok, "status": r.status_code, "latency_ms": round((_time.perf_counter() - t0) * 1000)}
-        except Exception as e:
-            results["synoptic"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["synoptic"] = {"ok": False, "error": "not configured"}
+
+
 
     # AMOS (Korea runway sensors)
     try:
@@ -697,30 +772,6 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
             results["amsc_awos"] = {"ok": False, "error": str(e)[:100]}
     else:
         results["amsc_awos"] = {"ok": False, "error": "not configured"}
-
-    # OpenWeather
-    ow_key = str(os.getenv("OPENWEATHER_API_KEY") or "").strip()
-    if ow_key:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get(f"https://api.openweathermap.org/data/2.5/weather?q=London&appid={ow_key}", timeout=timeout)
-            results["openweather"] = {"ok": r.ok, "status": r.status_code, "latency_ms": round((_time.perf_counter() - t0) * 1000)}
-        except Exception as e:
-            results["openweather"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["openweather"] = {"ok": False, "error": "not configured"}
-
-    # VisualCrossing
-    vc_key = str(os.getenv("VISUALCROSSING_API_KEY") or "").strip()
-    if vc_key:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get(f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/London/today?key={vc_key}&include=current", timeout=timeout)
-            results["visualcrossing"] = {"ok": r.ok, "status": r.status_code, "latency_ms": round((_time.perf_counter() - t0) * 1000)}
-        except Exception as e:
-            results["visualcrossing"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["visualcrossing"] = {"ok": False, "error": "not configured"}
 
     # NOAA WRH (US settlement verification)
     try:

@@ -819,14 +819,6 @@ export function AccountCenter() {
       freeTier: "FREE TIER",
       proPendingSync: isEn ? "Activated (pending sync)" : "已开通（待同步）",
       noProSubscription: isEn ? "No Pro subscription" : "暂无 Pro 订阅",
-      trialEndsSoonTitle: isEn ? "Trial ending soon" : "试用即将结束",
-      trialEndsSoonBody: isEn
-        ? "Your 3-day trial is almost over. Upgrade to Pro to keep full intraday analysis and decision cards."
-        : "你的 3 天试用即将结束。升级 Pro 后可继续使用完整日内分析和城市决策卡。",
-      trialExpiredTitle: isEn ? "Trial ended" : "试用已结束",
-      trialExpiredBody: isEn
-        ? "Your trial access has ended. Renew with Pro to restore full access."
-        : "试用权限已结束。开通 Pro 后可恢复完整权限。",
       proEndsSoonTitle: isEn ? "Pro renewal due soon" : "Pro 即将到期",
       proEndsSoonBody: isEn
         ? "Your Pro membership will expire soon. Renew now to avoid interruption."
@@ -836,7 +828,6 @@ export function AccountCenter() {
         ? "Your Pro membership has expired. Renew now to restore premium access."
         : "你的 Pro 会员已到期。立即续费可恢复高级权限。",
       renewNow: isEn ? "Renew Now" : "立即续费",
-      trialBadge: isEn ? "TRIAL" : "试用中",
       daysLeft: isEn ? "{days} days left" : "剩余 {days} 天",
       queuedExtensionSummary: isEn
         ? "Current plan until {current}. Queued extension: +{days} days. Total access until {total}."
@@ -1513,7 +1504,7 @@ export function AccountCenter() {
           telegram_pricing?: TelegramPricing | null;
         };
         if (data.telegram_pricing?.is_group_member) {
-          const amount = data.telegram_pricing.amount_usdc || "5";
+          const amount = data.telegram_pricing.amount_usdc || "10";
           setPaymentInfo(`Telegram 群成员验证成功，当前会员价 ${amount}U。`);
         }
         await loadSnapshot();
@@ -1579,22 +1570,14 @@ export function AccountCenter() {
     (!isSubscribed || isTrialPlan || showExpiringSoon || showExpiredReminder),
   );
   const subscriptionStatusTitle = showExpiredReminder
-    ? isTrialPlan
-      ? copy.trialExpiredTitle
-      : copy.proExpiredTitle
+    ? copy.proExpiredTitle
     : showExpiringSoon
-      ? isTrialPlan
-        ? copy.trialEndsSoonTitle
-        : copy.proEndsSoonTitle
+      ? copy.proEndsSoonTitle
       : "";
   const subscriptionStatusBody = showExpiredReminder
-    ? isTrialPlan
-      ? copy.trialExpiredBody
-      : copy.proExpiredBody
+    ? copy.proExpiredBody
     : showExpiringSoon
-      ? isTrialPlan
-        ? copy.trialEndsSoonBody
-        : copy.proEndsSoonBody
+      ? copy.proEndsSoonBody
       : "";
   const subscriptionStatusMeta =
     expiryInfo && (showExpiringSoon || showExpiredReminder)
@@ -1738,7 +1721,7 @@ export function AccountCenter() {
 
   const billing = useMemo(() => {
     const parsedPlanAmount = Number(
-      backend?.telegram_pricing?.amount_usdc ?? selectedPlan?.amount_usdc ?? 5,
+      backend?.telegram_pricing?.amount_usdc ?? selectedPlan?.amount_usdc ?? 10,
     );
     const planAmount =
       Number.isFinite(parsedPlanAmount) && parsedPlanAmount > 0
@@ -2522,7 +2505,7 @@ export function AccountCenter() {
       setPaymentMethodTab("manual");
       setShowOverlay(false);
       setPaymentInfo(
-        `手动转账订单已创建：请在 Polygon 网络转 ${direct.amount_usdc} ${direct.token_symbol || selectedTokenLabel} 到 ${shortAddress(direct.receiver_address)}，完成后提交 tx hash。`,
+        `手动转账订单已创建：请在 Polygon 网络转 ${direct.amount_usdc} ${direct.token_symbol || selectedTokenLabel} 到 ${direct.receiver_address}，请在下方【手动转账】面板中查看详情并复制地址，完成后提交 tx hash。`,
       );
       trackAppEvent("checkout_started", {
         entry: "account_center_manual_transfer",
@@ -2778,9 +2761,7 @@ export function AccountCenter() {
                 className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-tighter border ${isSubscribed ? "bg-blue-500/20 border-blue-500/40 text-blue-400" : "bg-slate-700/50 border-white/10 text-slate-500"}`}
               >
                 {isSubscribed
-                  ? isTrialPlan
-                    ? copy.trialBadge
-                    : copy.proMember
+                  ? copy.proMember
                   : copy.freeTier}
               </span>
             </div>
@@ -2861,7 +2842,7 @@ export function AccountCenter() {
                     Top 2-3
                   </span>
                   <span className="text-xs font-bold text-slate-300">
-                    +100 积分 & 3天Pro
+                    +100 积分
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
@@ -3002,10 +2983,11 @@ export function AccountCenter() {
           )}
         </div>
 
-        {/* Telegram Bot Section — paid users only */}
-        {showSecondarySections && canAccessPaidTelegramGroup ? (
+        {/* Telegram Bot Section & Payment Details */}
+        {showSecondarySections ? (
           <div className="lg:col-span-12 grid grid-cols-1 md:flex gap-6">
-            <section className="flex-1 bg-white/5 border border-white/10 rounded-[2rem] p-8 relative overflow-hidden group">
+            {canAccessPaidTelegramGroup && (
+              <section className="flex-1 bg-white/5 border border-white/10 rounded-[2rem] p-8 relative overflow-hidden group">
               <Bot
                 size={140}
                 className="absolute -right-8 -bottom-8 text-white/5 -rotate-12 group-hover:rotate-0 transition-transform duration-1000"
@@ -3074,9 +3056,12 @@ export function AccountCenter() {
                 </div>
               </div>
             </section>
+            )}
 
             {/* Payment Details / Wallet Management */}
-            <section className="w-full md:w-96 bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+            <section className={`bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between ${
+              canAccessPaidTelegramGroup ? "w-full md:w-96" : "w-full"
+            }`}>
               <div>
                 <h3 className="text-blue-400 text-sm font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
                   <Wallet size={18} /> {copy.paymentMgmt}
@@ -3343,7 +3328,7 @@ export function AccountCenter() {
                                 Receiver
                               </p>
                               <div className="mt-1 flex gap-2">
-                                <code className="min-w-0 flex-1 truncate rounded-lg bg-black/40 px-2 py-2 font-mono text-[11px] text-blue-200">
+                                <code className="min-w-0 flex-1 break-all whitespace-normal rounded-lg bg-black/40 px-2 py-2 font-mono text-[11px] text-blue-200">
                                   {manualPayment.receiver_address}
                                 </code>
                                 <button
