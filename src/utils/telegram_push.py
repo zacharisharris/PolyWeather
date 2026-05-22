@@ -921,7 +921,8 @@ def _build_airport_status_message(
     runway_pairs = runway_data.get("runway_pairs") or []
     runway_temps = runway_data.get("temperatures") or []
     point_temps = runway_data.get("point_temperatures") or []
-    is_amsc = amos.get("source") == "amsc_awos"
+    is_amsc = amos.get("source") in ("amsc_awos", "amos")
+    has_runway = bool(is_amsc and (point_temps or runway_temps))
     amos_icao = amos.get("icao") or HIGH_FREQ_AIRPORT_ICAO.get(city, "")
     settlement_pair = _settlement_runway_for_city(city)
 
@@ -964,8 +965,6 @@ def _build_airport_status_message(
     wind_label = _wind_regime_label(city, wind_dir) if is_amsc and wind_dir is not None else None
 
     max_so_far, max_temp_time = _get_airport_daily_high(city_weather)
-    has_runway = bool(is_amsc and point_temps)
-
     # ── Build message ──
     lines: List[str] = []
 
@@ -1031,6 +1030,37 @@ def _build_airport_status_message(
         if wind_label:
             wind_str += f"  {wind_label}"
         lines.append(wind_str)
+    # --- AMSC METAR temp + time for Chinese cities (Beijing time) ---
+    if is_amsc:
+        raw_metar = amos.get("raw_metar") or ""
+        if raw_metar:
+            parts = raw_metar.split()
+            # Extract temp/dew: "20/17" → 20
+            metar_temp = None
+            for p in parts:
+                m = re.match(r"^(M?\d{2})/(M?\d{2})$", p)
+                if m:
+                    t = m.group(1)
+                    metar_temp = str(int(t.replace("M", "-")))
+                    break
+            # Extract time: "211930Z" → Beijing time (UTC+8)
+            metar_time = None
+            for p in parts:
+                m = re.match(r"^(\d{2})(\d{2})(\d{2})Z$", p)
+                if m:
+                    _day, hh, mm = int(m.group(1)), int(m.group(2)), m.group(3)
+                    bj_h = hh + 8
+                    if bj_h >= 24:
+                        bj_h -= 24
+                    metar_time = f"北京时 {bj_h:02d}:{mm}"
+                    break
+            if metar_temp or metar_time:
+                bits = []
+                if metar_temp:
+                    bits.append(f"{metar_temp}{temp_symbol}")
+                if metar_time:
+                    bits.append(metar_time)
+                lines.append(f"报文: {'  '.join(bits)}")
     if deb_pred is not None:
         if display_temp is not None and display_temp > deb_pred:
             lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}（已突破 +{display_temp - deb_pred:.1f}°）")
