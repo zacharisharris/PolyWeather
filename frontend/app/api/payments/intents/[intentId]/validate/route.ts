@@ -27,7 +27,7 @@ export async function POST(
     const proxiedHeaders = new Headers(auth.headers);
     proxiedHeaders.set("Content-Type", "application/json");
     const res = await fetch(
-      `${API_BASE}/api/payments/intents/${encodeURIComponent(intentId)}/submit`,
+      `${API_BASE}/api/payments/intents/${encodeURIComponent(intentId)}/validate`,
       {
         method: "POST",
         headers: proxiedHeaders,
@@ -53,7 +53,7 @@ export async function POST(
     return applyAuthResponseCookies(response, auth.response);
   } catch (error) {
     return buildProxyExceptionResponse(error, {
-      publicMessage: "Failed to submit payment tx",
+      publicMessage: "Failed to validate payment tx",
     });
   }
 }
