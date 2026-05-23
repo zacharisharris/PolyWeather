@@ -10,7 +10,6 @@ import { MobileDecisionCard } from "@/components/dashboard/scan-terminal/MobileD
 import { ModelEvidencePanel } from "@/components/dashboard/scan-terminal/ModelEvidencePanel";
 import { WeatherDecisionBand } from "@/components/dashboard/scan-terminal/WeatherDecisionBand";
 import {
-  buildMarketDecisionView,
   buildWeatherDecisionView,
   resolveExpectedHighCandidate,
 } from "@/components/dashboard/scan-terminal/city-card-decision-utils";
@@ -24,7 +23,6 @@ import { LoadingSignal } from "@/components/dashboard/scan-terminal/LoadingSigna
 import type { AiPinnedCity } from "@/components/dashboard/scan-terminal/types";
 import {
   useAiCityForecast,
-  useCityMarketScan,
 } from "@/components/dashboard/scan-terminal/use-ai-city-card-data";
 import { getDisplayAirportPrimary } from "@/lib/airport-observation-display";
 import type { CityDetail, ScanOpportunityRow } from "@/lib/dashboard-types";
@@ -184,28 +182,6 @@ function buildModelFreshnessValue(detail: CityDetail | null, locale: string, isE
   );
 }
 
-function buildMarketFreshnessValue({
-  isEn,
-  marketScan,
-  marketStatus,
-}: {
-  isEn: boolean;
-  marketScan: ReturnType<typeof useCityMarketScan>["marketScan"];
-  marketStatus: ReturnType<typeof useCityMarketScan>["marketStatus"];
-}) {
-  if (marketStatus === "loading") return isEn ? "syncing" : "同步中";
-  if (!marketScan?.available) return isEn ? "temporarily unavailable" : "暂不可用";
-  const quoteAgeMs = Number(
-    marketScan.quote_age_ms ??
-      marketScan.yes_token?.quote_age_ms ??
-      marketScan.no_token?.quote_age_ms,
-  );
-  if (Number.isFinite(quoteAgeMs) && quoteAgeMs >= 0) {
-    return formatFreshnessAge(quoteAgeMs / 60_000, isEn);
-  }
-  return isEn ? "synced" : "已同步";
-}
-
 export function AiPinnedCityCard({
   item,
   detail,
@@ -287,11 +263,6 @@ export function AiPinnedCityCard({
     locale,
     report,
   });
-  const { marketScan, marketStatus } = useCityMarketScan({
-    detail,
-    detailCityName,
-    enabled: Boolean(detail),
-  });
   const isRefreshing = refreshingDetail || aiForecast.status === "loading";
   const [isCompactCard, setIsCompactCard] = useState(false);
 
@@ -334,13 +305,10 @@ export function AiPinnedCityCard({
     : isEn
       ? `Model support is unavailable, so this city must rely on DEB path and ${observationSourceEn}.`
       : `暂无可用多模型支撑，需要主要参考 DEB 路径和${observationSourceZh}。`;
-  const rowAiPredictedMax =
-    toFiniteDecisionNumber(row?.ai_predicted_max) ??
-    toFiniteDecisionNumber(row?.ai_predicted_high) ??
-    toFiniteDecisionNumber(row?.cluster_median) ??
-    debNumber;
   const aiPredictedMax =
-    toFiniteDecisionNumber(aiCityForecast?.predicted_max) ?? rowAiPredictedMax;
+    aiForecast.status === "ready"
+      ? toFiniteDecisionNumber(aiCityForecast?.predicted_max)
+      : null;
   const aiRangeLow =
     toFiniteDecisionNumber(aiCityForecast?.range_low) ??
     toFiniteDecisionNumber(row?.ai_predicted_low) ??
@@ -350,8 +318,7 @@ export function AiPinnedCityCard({
     toFiniteDecisionNumber(row?.ai_predicted_high) ??
     modelMax;
   const aiConfidence =
-    String(aiCityForecast?.confidence || row?.ai_forecast_confidence || "").trim() ||
-    (rowAiPredictedMax != null ? (isEn ? "fast" : "快速") : null);
+    String(aiCityForecast?.confidence || row?.ai_forecast_confidence || "").trim() || null;
   const decisionExpectedHighNumber = resolveExpectedHighCandidate({
     aiPredictedMax,
     currentTemp: currentTempNumber,
@@ -382,13 +349,6 @@ export function AiPinnedCityCard({
     debNumber != null
       ? formatTemperatureValue(debNumber, tempSymbol, { digits: 1 })
       : "--";
-  const marketDecisionView = buildMarketDecisionView({
-    expectedHigh: decisionExpectedHighNumber,
-    isEn,
-    marketScan,
-    marketStatus,
-    tempSymbol,
-  });
   const aiMeta = aiCityForecast?._polyweather_meta || null;
   const guardReason = aiMeta?.deterministic_guard_reason || {};
   const observationStale = Boolean(
@@ -436,7 +396,6 @@ export function AiPinnedCityCard({
     aiRuleEvidenceMode,
     isEn,
     isHkoObservation,
-    marketDecisionView,
     modelHighlyConsistent,
     needsNextBulletin,
     observationStale,
@@ -450,16 +409,6 @@ export function AiPinnedCityCard({
       label: isEn ? "Models" : "模型",
       value: buildModelFreshnessValue(detail, locale, isEn),
       tone: "fresh" as const,
-    },
-    {
-      label: isEn ? "Market" : "市场价格",
-      value: buildMarketFreshnessValue({ isEn, marketScan, marketStatus }),
-      tone:
-        marketDecisionView.status === "ready"
-          ? ("fresh" as const)
-          : marketDecisionView.status === "loading"
-            ? ("loading" as const)
-            : ("stale" as const),
     },
   ];
   const freshnessSeparator = isEn ? ": " : "：";
@@ -480,17 +429,6 @@ export function AiPinnedCityCard({
     (isEn ? aiForecast.payload?.reason_en : aiForecast.payload?.reason_zh) ||
     aiForecast.payload?.reason ||
     "";
-  const marketLineText =
-    marketDecisionView.status === "ready"
-      ? `${marketDecisionView.bucketLabel} · ${marketDecisionView.priceText}`
-      : marketDecisionView.status === "loading"
-        ? isEn
-          ? "syncing"
-          : "同步中"
-        : isEn
-          ? "temporarily unavailable"
-          : "暂不可用";
-
   const collapseId = `ai-city-body-${normalizeCityKey(item.cityName) || item.addedAt}`;
   const loadingCopy = getCityLoadingCopy({ isEn, isHkoObservation });
   const handleRefresh = (event: MouseEvent<HTMLButtonElement>) => {
@@ -522,7 +460,6 @@ export function AiPinnedCityCard({
       tabIndex={-1}
       data-ai-status={decisionState.aiStatus}
       data-evidence-quality={decisionState.evidenceQuality}
-      data-market-status={decisionState.marketStatus}
       data-recommendation={decisionState.recommendation}
       data-urgency={decisionState.urgency}
     >
@@ -550,8 +487,6 @@ export function AiPinnedCityCard({
           isRefreshing={isRefreshing}
           localModelSupportNote={localModelSupportNote}
           localizedFinalJudgment={localizedFinalJudgment}
-          marketDecisionView={marketDecisionView}
-          marketLineText={marketLineText}
           onRefresh={handleRefresh}
           onRemove={handleRemove}
           peakWindow={peakWindow}
@@ -587,8 +522,6 @@ export function AiPinnedCityCard({
                 decisionView={decisionView}
                 decisionWhyText={decisionState.primaryReason}
                 isEn={isEn}
-                marketDecisionView={marketDecisionView}
-                marketLineText={marketLineText}
                 paceDeltaText={paceView?.deltaText || "--"}
               />
 
