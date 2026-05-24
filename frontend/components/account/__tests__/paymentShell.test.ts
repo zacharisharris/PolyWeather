@@ -39,6 +39,9 @@ export function runTests() {
     "wallet.ts",
     "payment-utils.ts",
     "usePaymentState.ts",
+    "useWalletBind.ts",
+    "usePaymentFlow.ts",
+    "useBilling.ts",
   ]
     .map((file) => fs.readFileSync(path.join(accountDir, file), "utf8"))
     .join("\n");
@@ -51,10 +54,17 @@ export function runTests() {
       accountCenterSource.includes('const copy = useMemo(() => createAccountCopy(isEn), [isEn]);'),
     "AccountCenter copy text must be centralized in account-copy.ts instead of an inline 170+ line object",
   );
+  const hookPath = path.join(accountDir, "useAccountPayment.ts");
+  const hookSource = fs.existsSync(hookPath)
+    ? fs.readFileSync(hookPath, "utf8")
+    : "";
   assert(
-    accountCenterSource.includes('import { usePaymentState } from "./usePaymentState";') &&
-      accountCenterSource.includes("clearPaymentState") &&
-      accountCenterSource.includes("clearPaymentMessages"),
+    (accountCenterSource.includes('import { usePaymentState } from "./usePaymentState";') ||
+      hookSource.includes('import { usePaymentState } from "./usePaymentState";')) &&
+      (accountCenterSource.includes("clearPaymentState") ||
+        hookSource.includes("clearPaymentState")) &&
+      (accountCenterSource.includes("clearPaymentMessages") ||
+        hookSource.includes("clearPaymentMessages")),
     "payment UI state reset/message helpers must be centralized in usePaymentState.ts",
   );
   const serviceWorkerSource = fs.readFileSync(serviceWorkerPath, "utf8");
