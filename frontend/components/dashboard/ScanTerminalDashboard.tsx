@@ -1,624 +1,955 @@
 "use client";
 
 import clsx from "clsx";
-import dynamic from "next/dynamic";
-import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import styles from "./Dashboard.module.css";
-import { scanRootClass } from "./scan-root-styles";
+import Link from "next/link";
 import {
-  DashboardStoreProvider,
-  useDashboardStore,
-  useProAccess,
-} from "@/hooks/useDashboardStore";
-import { I18nProvider, useI18n } from "@/hooks/useI18n";
-import type { ScanOpportunityRow } from "@/lib/dashboard-types";
-import { AiPinnedForecastView } from "@/components/dashboard/scan-terminal/AiPinnedForecastView";
-import { MobileCityPicker } from "@/components/dashboard/scan-terminal/MobileCityPicker";
-import { WelcomeOverlay } from "@/components/dashboard/scan-terminal/WelcomeOverlay";
-import { ProFeaturePaywall } from "@/components/dashboard/ProFeaturePaywall";
+  Activity,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  GraduationCap,
+  Menu,
+  Search,
+  Table2,
+  UserRound,
+} from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { ProAccessState, ScanOpportunityRow } from "@/lib/dashboard-types";
+import { getInitialLocaleFromNavigator } from "@/lib/i18n";
+import { isBrowserLocalFullAccess } from "@/lib/local-dev-access";
+import { sortRowsByUserTime } from "@/components/dashboard/scan-terminal/decision-utils";
+import { ProductAccessRequired } from "@/components/dashboard/scan-terminal/ProductAccessRequired";
 import {
-  ScanPaywallModal,
-  ScanTerminalLoadingScreen,
-  ScanTerminalTopBar,
-  type ScanTerminalContentView,
-} from "@/components/dashboard/scan-terminal/ScanTerminalShellParts";
-import { findDetailForCity } from "@/components/dashboard/scan-terminal/city-detail-utils";
-import {
-  findRowForCity,
-  normalizeCityKey,
-  rowMatchesCity,
-  sortRowsByUserTime,
-} from "@/components/dashboard/scan-terminal/decision-utils";
-import { useAiPinnedCityWorkspace } from "@/components/dashboard/scan-terminal/use-ai-pinned-city-workspace";
+  type ContinentGroup,
+  buildContinentGroups,
+  formatPrice,
+  formatSpreadLiquidity,
+  GAP_COLOR_MAP,
+  getDefaultExpanded,
+  getGapColor,
+  getSignalLabel,
+  getSignalState,
+  resolveTradingRegionKey,
+  TRADING_REGIONS,
+} from "@/components/dashboard/scan-terminal/continent-grouping";
+import { MobileCityCard } from "@/components/dashboard/scan-terminal/MobileCityCard";
+import { MobileRegionTabs } from "@/components/dashboard/scan-terminal/MobileRegionTabs";
 import { useScanTerminalQuery } from "@/components/dashboard/scan-terminal/use-scan-terminal-query";
 import {
   useScanTerminalTheme,
   useUserLocalClock,
 } from "@/components/dashboard/scan-terminal/use-scan-terminal-ui-state";
+import { ScanTerminalLoadingScreen } from "@/components/dashboard/scan-terminal/ScanTerminalShellParts";
+import { scanRootClass } from "@/components/dashboard/scan-root-styles";
 import { useRelativeTime } from "@/hooks/useRelativeTime";
+import { Panel } from "@/components/dashboard/scan-terminal/Panel";
+import { GroupedMarketTable } from "@/components/dashboard/scan-terminal/GroupedMarketTable";
+import { TrainingDashboard } from "@/components/dashboard/scan-terminal/TrainingDashboard";
+import { LiveTemperatureThresholdChart } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
+import { MarketOverviewView } from "@/components/dashboard/scan-terminal/MarketOverviewView";
+import { rowName, pct, money, temp, edgeClass } from "@/components/dashboard/scan-terminal/utils";
 
-const CityDetailPanel = dynamic(
-  () =>
-    import("@/components/dashboard/DetailPanel").then(
-      (module) => module.DetailPanel,
-    ),
-  { ssr: false },
-);
+function createEmptyAccess(loading = true): ProAccessState {
+  return {
+    loading,
+    authenticated: false,
+    userId: null,
+    subscriptionActive: false,
+    subscriptionPlanCode: null,
+    subscriptionExpiresAt: null,
+    subscriptionTotalExpiresAt: null,
+    subscriptionQueuedDays: 0,
+    points: 0,
+    error: null,
+  };
+}
 
-const FutureForecastModal = dynamic(
-  () =>
-    import("@/components/dashboard/FutureForecastModal").then(
-      (module) => module.FutureForecastModal,
-    ),
-  { ssr: false },
-);
+function createLocalAccess(): ProAccessState {
+  return {
+    loading: false,
+    authenticated: true,
+    userId: "local-dev",
+    subscriptionActive: true,
+    subscriptionPlanCode: "local-full-access",
+    subscriptionExpiresAt: "2099-12-31T23:59:59Z",
+    subscriptionTotalExpiresAt: "2099-12-31T23:59:59Z",
+    subscriptionQueuedDays: 0,
+    points: 999_999,
+    error: null,
+  };
+}
 
-const MapCanvas = dynamic(
-  () =>
-    import("@/components/dashboard/MapCanvas").then(
-      (module) => module.MapCanvas,
-    ),
-  { ssr: false },
-);
 
-function ScanTerminalScreen() {
-  const store = useDashboardStore();
-  const { proAccess } = useProAccess();
-  const { locale, toggleLocale } = useI18n();
-  const isEn = locale === "en-US";
-  const isPro = proAccess.subscriptionActive;
-  const accountHref = proAccess.authenticated
-    ? "/account"
-    : "/auth/login?next=%2Faccount";
-  const { refreshScanTerminalManually, scanError, scanLoading, terminalData } =
-    useScanTerminalQuery({
-      isPro,
-      proAccessLoading: proAccess.loading,
-    });
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ScanTerminalContentView>("map");
-  const [mapSelectedCityName, setMapSelectedCityName] = useState<string | null>(
-    null,
+
+const TERM = {
+  cityContract: { en: "City / Contract", zh: "城市 / 合约" },
+  live: { en: "Live", zh: "实测" },
+  deb: { en: "DEB", zh: "DEB" },
+  mkt: { en: "Mkt", zh: "市场" },
+  edge: { en: "Edge", zh: "优势" },
+  liq: { en: "Liq", zh: "流动性" },
+  signal: { en: "Signal", zh: "信号" },
+  searchPlaceholder: { en: "Search city, contract, station, or signal", zh: "搜索城市、合约、站点或信号" },
+  weatherContracts: { en: "Weather Contracts", zh: "天气合约" },
+  selectedContractMonitor: { en: "Selected Contract Monitor", zh: "选中合约监控" },
+  probabilityDistribution: { en: "Probability Distribution", zh: "概率分布" },
+  marketList: { en: "Market List", zh: "市场列表" },
+  watchlist: { en: "Watchlist", zh: "观察列表" },
+  rows: { en: "Rows", zh: "行数" },
+  avgEdge: { en: "Avg Edge", zh: "平均优势" },
+  liquidity: { en: "Liquidity", zh: "流动性" },
+  intradayPerformance: { en: "Intraday Performance", zh: "日内表现" },
+  spread: { en: "Spread", zh: "价差" },
+  model: { en: "Model", zh: "模型" },
+  noData: { en: "No data", zh: "无数据" },
+  noDistributionData: { en: "No distribution data", zh: "无分布数据" },
+  selectContract: {
+    en: "Select a weather contract to inspect model edge, market price, and live evidence.",
+    zh: "选择天气合约以查看模型优势、市场价格和实况证据。",
+  },
+  signInToContinue: { en: "Sign in to continue", zh: "请先登录" },
+  signInHint: {
+    en: "The terminal is only available to registered users. Please sign in or create an account.",
+    zh: "决策台仅对注册用户开放。请登录或创建账号。",
+  },
+  logIn: { en: "Log in", zh: "登录" },
+  createAccount: { en: "Create an account", zh: "注册账号" },
+  learnAbout: { en: "Learn about PolyWeather", zh: "了解 PolyWeather" },
+  proAccessRequired: { en: "Pro Access Required", zh: "需要付费订阅" },
+  proDesc: {
+    en: "The PolyWeather terminal is a paid product. Subscribe to unlock real-time weather-market intelligence.",
+    zh: "PolyWeather 决策台为付费产品。订阅以解锁实时天气市场情报。",
+  },
+  subscriptionTerms: {
+    en: "Billed monthly. Cancel anytime. Payment via USDC on Polygon.",
+    zh: "按月计费，随时可取消。通过 Polygon 链 USDC 支付。",
+  },
+  month: { en: "/ month", zh: "/ 月" },
+  subscribeNow: { en: "Subscribe Now — $10/mo", zh: "立即订阅 — $10/月" },
+  subscribePrompt: {
+    en: "You need an active subscription to access the terminal.",
+    zh: "你需要开通有效订阅才能访问决策台。",
+  },
+  backToProduct: { en: "Back to product overview", zh: "返回产品介绍页" },
+  dashboard: { en: "PolyWeather Terminal", zh: "PolyWeather 交易决策台" },
+  refresh: { en: "Refresh", zh: "刷新" },
+  switchLang: { en: "Switch to Chinese", zh: "切换到英文" },
+  globalWeatherFactors: { en: "Global Weather Factors", zh: "全球天气因子" },
+  heat: { en: "Heat", zh: "高温风险" },
+  active: { en: "Active", zh: "活跃" },
+  watch: { en: "Watch", zh: "观察" },
+  tradable: { en: "Tradable", zh: "可交易" },
+  primary: { en: "Primary", zh: "主信号" },
+  ai: { en: "AI", zh: "AI" },
+  closed: { en: "Closed", zh: "已关闭" },
+} as const;
+
+function t(key: keyof typeof TERM, isEn: boolean) {
+  return isEn ? TERM[key].en : TERM[key].zh;
+}
+
+function decisionLabel(row?: ScanOpportunityRow | null) {
+  const raw =
+    row?.ai_decision ||
+    row?.v4_metar_decision ||
+    row?.action ||
+    row?.signal_status ||
+    "";
+  const value = String(raw || "").toLowerCase();
+  if (value.includes("approve")) return "Approve";
+  if (value.includes("veto")) return "Veto";
+  if (value.includes("watch")) return "Watch";
+  if (value.includes("downgrade")) return "Downgrade";
+  if (row?.tradable) return "Tradable";
+  return "Monitor";
+}
+
+function tablePrice(row: ScanOpportunityRow) {
+  return formatPrice(row.midpoint, row.ask, row.bid);
+}
+
+function KoyfinRowsTable({
+  compact = false,
+  isEn,
+  onSelect,
+  rows,
+  selectedId,
+}: {
+  compact?: boolean;
+  isEn: boolean;
+  onSelect: (row: ScanOpportunityRow) => void;
+  rows: ScanOpportunityRow[];
+  selectedId?: string | null;
+}) {
+  return (
+    <table className="w-full border-collapse text-[11px]">
+      <thead>
+        <tr className="border-b border-slate-200 bg-[#f3f5f7] text-[11px] uppercase tracking-wide text-slate-500">
+          <th className="w-5 px-2 py-1 text-left font-black">
+            <span className="block h-3 w-3 rounded-[2px] border border-slate-300 bg-white" />
+          </th>
+          <th className="px-1.5 py-1 text-left font-black">
+            {isEn ? "City" : "城市"}
+          </th>
+          <th className="px-1.5 py-1 text-right font-black">
+            {isEn ? "Price" : "价格"}
+          </th>
+          <th className="px-1.5 py-1 text-right font-black">
+            {isEn ? "Chg" : "变化"}
+          </th>
+          <th className="px-2 py-1 text-right font-black">%</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const edge = Number(row.edge_percent ?? row.signed_gap ?? row.gap ?? 0);
+          const positive = edge >= 0;
+          return (
+            <tr
+              key={row.id}
+              onClick={() => onSelect(row)}
+              className={clsx(
+                "cursor-pointer border-b border-slate-100 hover:bg-blue-50/70",
+                selectedId === row.id && "bg-blue-50",
+              )}
+            >
+              <td className="px-2 py-1">
+                <span className="block h-3 w-3 rounded-[2px] border border-slate-300 bg-white" />
+              </td>
+              <td className="px-1.5 py-1">
+                <div className="truncate font-bold text-slate-800">
+                  {rowName(row)}
+                </div>
+                <div className="truncate text-[10px] font-medium text-slate-400">
+                  {row.target_label || row.market_question || row.airport || "--"}
+                </div>
+              </td>
+              <td className="px-1.5 py-1 text-right font-mono font-bold text-slate-800">
+                {tablePrice(row)}
+              </td>
+              <td
+                className={clsx(
+                  "px-1.5 py-1 text-right font-mono font-bold",
+                  positive ? "text-emerald-700" : "text-red-600",
+                )}
+              >
+                {Number.isFinite(edge) ? `${positive ? "+" : ""}${edge.toFixed(1)}` : "--"}
+              </td>
+              <td
+                className={clsx(
+                  "px-2 py-1 text-right font-mono font-bold",
+                  positive ? "text-emerald-700" : "text-red-600",
+                )}
+              >
+                {pct(row.market_probability ?? row.market_event_probability ?? row.model_probability)}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
-  const [showScanPaywall, setShowScanPaywall] = useState(false);
-  const [isMobileViewport, setIsMobileViewport] = useState(false);
+}
 
+function KoyfinMarketPanel({
+  compact,
+  isEn,
+  onSelect,
+  rows,
+  selectedId,
+  title,
+}: {
+  compact?: boolean;
+  isEn: boolean;
+  onSelect: (row: ScanOpportunityRow) => void;
+  rows: ScanOpportunityRow[];
+  selectedId?: string | null;
+  title: string;
+}) {
+  return (
+    <Panel title={title}>
+      <CityGroupedTable
+        compact={compact}
+        isEn={isEn}
+        onSelect={onSelect}
+        rows={rows}
+        selectedId={selectedId}
+      />
+    </Panel>
+  );
+}
+
+function CityGroupedTable({
+  compact,
+  isEn,
+  onSelect,
+  rows,
+  selectedId,
+}: {
+  compact?: boolean;
+  isEn: boolean;
+  onSelect: (row: ScanOpportunityRow) => void;
+  rows: ScanOpportunityRow[];
+  selectedId?: string | null;
+}) {
+  const [expandedCities, setExpandedCities] = useState<Set<string>>(new Set());
+
+  const cityGroups = useMemo(() => {
+    const map = new Map<string, ScanOpportunityRow[]>();
+    rows.forEach((row) => {
+      const key = String(row.city || "").toLowerCase();
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(row);
+    });
+    return Array.from(map.entries())
+      .map(([city, cityRows]) => {
+        const best = cityRows.reduce((a, b) =>
+          Math.abs(Number(b.edge_percent || 0)) > Math.abs(Number(a.edge_percent || 0)) ? b : a
+        );
+        const buckets = [...cityRows].sort((a, b) =>
+          Number(b.edge_percent || 0) - Number(a.edge_percent || 0)
+        );
+        return { city, displayName: rowName(best), best, buckets };
+      })
+      .sort((a, b) =>
+        Math.abs(Number(b.best.edge_percent || 0)) - Math.abs(Number(a.best.edge_percent || 0))
+      );
+  }, [rows]);
+
+  const toggle = (city: string) => {
+    setExpandedCities((prev) => {
+      const next = new Set(prev);
+      if (next.has(city)) next.delete(city);
+      else next.add(city);
+      return next;
+    });
+  };
+
+  const labelExpand = isEn ? "Expand" : "展开";
+  const labelBuckets = isEn ? "buckets" : "档位";
+
+  return (
+    <div className="overflow-auto h-full">
+      <table className="w-full min-w-[780px] border-collapse text-[11px]">
+        <thead>
+          <tr className="border-b border-slate-200 bg-[#f3f5f7] text-[9px] uppercase tracking-wide text-slate-500">
+            <th className="w-6 px-2 py-1.5 text-left font-black" />
+            <th className="px-1.5 py-1.5 text-left font-black">
+              {isEn ? "City / Best Signal" : "城市 / 最佳信号"}
+            </th>
+            <th className="px-1.5 py-1.5 text-right font-black">{isEn ? "Edge" : "优势"}</th>
+            <th className="px-1.5 py-1.5 text-right font-black">{isEn ? "Model" : "模型"}</th>
+            <th className="px-1.5 py-1.5 text-right font-black">Live</th>
+            <th className="px-1.5 py-1.5 text-right font-black">DEB</th>
+            <th className="px-1.5 py-1.5 text-right font-black">{isEn ? "Mkt" : "盘口"}</th>
+            <th className="px-1.5 py-1.5 text-right font-black">{isEn ? "Spr/Liq" : "价差/流动性"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cityGroups.map(({ city, displayName, best, buckets }) => {
+            const isExpanded = expandedCities.has(city);
+            const hasMultiple = buckets.length > 1;
+            return (
+              <Fragment key={city}>
+                <tr
+                  className={clsx(
+                    "cursor-pointer border-b border-slate-100 hover:bg-slate-50/80",
+                    selectedId === best.id && "bg-blue-50/50"
+                  )}
+                  onClick={() => { onSelect(best); if (hasMultiple) toggle(city); }}
+                >
+                  <td className="px-2 py-1.5">
+                    <button
+                      type="button"
+                      className="grid h-4 w-4 place-items-center text-slate-400 hover:text-slate-700"
+                      onClick={(e) => { e.stopPropagation(); toggle(city); }}
+                      title={`${labelExpand} ${hasMultiple ? `${buckets.length} ${labelBuckets}` : ""}`}
+                    >
+                      {hasMultiple ? (
+                        isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />
+                      ) : (
+                        <span className="text-[8px] text-slate-300">—</span>
+                      )}
+                    </button>
+                  </td>
+                  <td className="px-1.5 py-1.5">
+                    <div className="font-bold text-slate-800">{displayName}</div>
+                    <div className="text-[9px] text-slate-400">
+                      {best.target_label || ""}
+                      {hasMultiple && !isExpanded ? ` +${buckets.length - 1}` : ""}
+                    </div>
+                  </td>
+                  <td className={clsx("px-1.5 py-1.5 text-right font-mono font-bold", edgeClass(best.edge_percent))}>
+                    {pct(best.edge_percent)}
+                  </td>
+                  <td className="px-1.5 py-1.5 text-right font-mono text-blue-700">{pct(best.model_probability ?? best.model_event_probability)}</td>
+                  <td className="px-1.5 py-1.5 text-right font-mono">{temp(best.current_temp || best.current_max_so_far, best.temp_symbol)}</td>
+                  <td className="px-1.5 py-1.5 text-right font-mono">{temp(best.deb_prediction, best.temp_symbol)}</td>
+                  <td className="px-1.5 py-1.5 text-right font-mono">{formatPrice(best.midpoint, best.ask, best.bid)}</td>
+                  <td className="px-1.5 py-1.5 text-right font-mono">{formatSpreadLiquidity(best.spread, best.book_liquidity ?? best.market_liquidity)}</td>
+                </tr>
+                {isExpanded && buckets.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="border-b border-slate-50 bg-slate-50/30 text-slate-500"
+                  >
+                    <td className="px-2 py-1 pl-2" />
+                    <td className="px-1.5 py-1 pl-3">
+                      <span className="text-[10px]">{row.target_label || "--"}</span>
+                    </td>
+                    <td className={clsx("px-1.5 py-1 text-right font-mono text-[10px] font-bold", edgeClass(row.edge_percent))}>
+                      {pct(row.edge_percent)}
+                    </td>
+                    <td className="px-1.5 py-1 text-right font-mono text-[10px] text-blue-700">{pct(row.model_probability ?? row.model_event_probability)}</td>
+                    <td className="px-1.5 py-1 text-right font-mono text-[10px]">{temp(row.current_temp || row.current_max_so_far, row.temp_symbol)}</td>
+                    <td className="px-1.5 py-1 text-right font-mono text-[10px]">{temp(row.deb_prediction, row.temp_symbol)}</td>
+                    <td className="px-1.5 py-1 text-right font-mono text-[10px]">{formatPrice(row.midpoint, row.ask, row.bid)}</td>
+                    <td className="px-1.5 py-1 text-right font-mono text-[10px]">{formatSpreadLiquidity(row.spread, row.book_liquidity ?? row.market_liquidity)}</td>
+                  </tr>
+                ))}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PolyWeatherTerminal({
+  generatedText,
+  isEn,
+  locale,
+  onRefresh,
+  refreshing,
+  rows,
+  selectedRow,
+  setSelectedRow,
+  toggleLocale,
+  userLocalTime,
+  searchQuery,
+  setSearchQuery,
+  searchInputRef,
+}: {
+  generatedText: string;
+  isEn: boolean;
+  locale: "zh-CN" | "en-US";
+  onRefresh: () => void;
+  refreshing: boolean;
+  rows: ScanOpportunityRow[];
+  selectedRow: ScanOpportunityRow | null;
+  setSelectedRow: (row: ScanOpportunityRow) => void;
+  toggleLocale: () => void;
+  userLocalTime: string;
+  searchQuery: string;
+  setSearchQuery: (val: string) => void;
+  searchInputRef: React.RefObject<HTMLInputElement | null>;
+}) {
   useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const media = window.matchMedia("(max-width: 768px)");
-    const syncMobileViewport = () => {
-      setIsMobileViewport(media.matches);
-      if (media.matches) {
-        setActiveView((current) => (current === "map" ? "city-list" : current));
-      } else {
-        setActiveView((current) => (current === "city-list" ? "map" : current));
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isInputFocused =
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          (activeEl instanceof HTMLElement && activeEl.isContentEditable));
+      if (e.key === "/" && !isInputFocused) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+      if (e.key === "Escape" && activeEl === searchInputRef.current) {
+        setSearchQuery("");
+        searchInputRef.current?.blur();
       }
     };
-    syncMobileViewport();
-    media.addEventListener("change", syncMobileViewport);
-    return () => media.removeEventListener("change", syncMobileViewport);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [searchInputRef, setSearchQuery]);
+  const [navExpanded, setNavExpanded] = useState(false);
+  const [activeNavKey, setActiveNavKey] = useState<string>("contracts");
+  const [selectedRegionKey, setSelectedRegionKey] = useState<string>("east_asia");
+
+  const NAV_ITEMS = [
+    { key: "contracts", Icon: Table2, labelEn: "Contracts", labelZh: "天气合约" },
+    { key: "markets", Icon: Activity, labelEn: "Markets", labelZh: "市场概览" },
+    { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
+  ];
+
+  const filteredRegionRows = useMemo(() => {
+    return rows.filter(
+      (row) =>
+        resolveTradingRegionKey(row) === selectedRegionKey &&
+        row.is_primary_signal !== false,
+    );
+  }, [rows, selectedRegionKey]);
+
+  const watchRows = useMemo(() => {
+    return filteredRegionRows
+      .filter((row) => decisionLabel(row) === "Watch" || !row.tradable)
+      .slice(0, 8);
+  }, [filteredRegionRows]);
+  const topRows = filteredRegionRows.slice(0, 18);
+  const heatRows = filteredRegionRows
+    .filter((row) => row.risk_level === "high" || Number(row.current_temp ?? 0) >= 30)
+    .slice(0, 10);
+  const liquidRows = [...filteredRegionRows]
+    .sort(
+      (a, b) =>
+        Number(b.book_liquidity || b.market_liquidity || b.volume || 0) -
+        Number(a.book_liquidity || a.market_liquidity || a.volume || 0),
+    )
+    .slice(0, 9);
+  const negativeRows = filteredRegionRows
+    .filter((row) => Number(row.edge_percent ?? row.signed_gap ?? row.gap ?? 0) < 0)
+    .slice(0, 8);
+
+  const selectedSignal = selectedRow ? getSignalState(selectedRow) : "data" as const;
+  const selectedLabel = selectedRow ? getSignalLabel(selectedSignal, isEn) : "";
+
+  const continentGroups = useMemo(
+    () => buildContinentGroups(filteredRegionRows, isEn),
+    [filteredRegionRows, isEn]
+  );
+  const [mobileTab, setMobileTab] = useState<string>("active_signals");
+  const mobileActiveGroup = useMemo(
+    () => continentGroups.find((g) => g.key === mobileTab) || continentGroups[0],
+    [continentGroups, mobileTab]
+  );
+  useEffect(() => {
+    if (continentGroups.length > 0 && !continentGroups.find((g) => g.key === mobileTab)) {
+      setMobileTab(continentGroups[0].key);
+    }
+  }, [continentGroups, mobileTab]);
+  useEffect(() => {
+    if (!filteredRegionRows.length) return;
+    if (!selectedRow || !filteredRegionRows.some((row) => row.id === selectedRow.id)) {
+      setSelectedRow(filteredRegionRows[0]);
+    }
+  }, [filteredRegionRows, selectedRow, setSelectedRow]);
+
+  const avgEdge = useMemo(() => {
+    const list = filteredRegionRows;
+    return list.reduce((sum, row) => sum + Number(row.edge_percent || 0), 0) / Math.max(list.length, 1);
+  }, [filteredRegionRows]);
+
+  const totalLiquidity = useMemo(() => {
+    const list = filteredRegionRows;
+    return list.reduce(
+      (sum, row) => sum + Number(row.book_liquidity || row.market_liquidity || row.volume || 0),
+      0
+    );
+  }, [filteredRegionRows]);
+
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-[#e9edf3] text-[#202833]">
+      <aside
+        className={clsx(
+          "flex shrink-0 flex-col bg-[#11161d] py-3 text-slate-400 transition-all duration-200",
+          navExpanded ? "w-[172px] items-start px-3" : "w-[52px] items-center gap-2",
+        )}
+      >
+        {/* Logo row */}
+        <div className={clsx(
+          "flex items-center w-full",
+          navExpanded ? "gap-3 mb-3 px-1" : "justify-center mb-2",
+        )}>
+          <Link
+            href="/"
+            className="block h-7 w-7 shrink-0 overflow-hidden rounded transition hover:opacity-90"
+            title="PolyWeather"
+          >
+            <img src="/apple-touch-icon.png" alt="PolyWeather" className="h-full w-full object-cover" />
+          </Link>
+          {navExpanded && (
+            <span className="text-sm font-black text-white tracking-tight truncate">
+              PolyWeather
+            </span>
+          )}
+        </div>
+
+        {/* Toggle button */}
+        <button
+          type="button"
+          onClick={() => setNavExpanded((prev) => !prev)}
+          className={clsx(
+            "flex items-center gap-3 transition-colors hover:text-white",
+            navExpanded
+              ? "w-full h-8 px-1 mb-2"
+              : "grid h-9 w-full place-items-center mb-2",
+          )}
+        >
+          {navExpanded ? (
+            <>
+              <ChevronLeft size={14} />
+              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                {isEn ? "Collapse" : "收起"}
+              </span>
+            </>
+          ) : (
+            <Menu size={18} />
+          )}
+        </button>
+
+        {/* Nav items */}
+        {NAV_ITEMS.map(({ key, Icon, labelEn, labelZh }) => {
+          const isActive = activeNavKey === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => { setActiveNavKey(key); }}
+              className={clsx(
+                "flex items-center gap-3 transition-colors rounded",
+                navExpanded
+                  ? "w-full h-9 px-2 text-left"
+                  : "grid h-9 w-full place-items-center border-l-4",
+                isActive
+                  ? navExpanded
+                    ? "bg-white/8 text-white"
+                    : "border-blue-500 bg-white/5 text-white"
+                  : navExpanded
+                    ? "hover:bg-white/5 hover:text-white"
+                    : "border-transparent hover:bg-white/5 hover:text-white",
+              )}
+              title={isEn ? labelEn : labelZh}
+            >
+              <Icon size={16} className="shrink-0" />
+              {navExpanded && (
+                <span className="text-xs font-semibold whitespace-nowrap">
+                  {isEn ? labelEn : labelZh}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#d2d9e2] bg-white px-4 text-slate-800">
+          <div className="flex min-w-0 items-center gap-4">
+            <div className="flex h-8 min-w-[320px] items-center gap-2 rounded border border-[#cfd6df] bg-[#f8fafc] px-2.5 text-slate-600">
+              <Search size={14} className="text-slate-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t("searchPlaceholder", isEn)}
+                className="w-full bg-transparent text-xs font-semibold text-slate-800 placeholder-slate-400 outline-none"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    searchInputRef.current?.focus();
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-700"
+                >
+                  ✕
+                </button>
+              )}
+              <kbd className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-mono text-slate-400">
+                /
+              </kbd>
+            </div>
+            <div className="hidden items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 lg:flex">
+              <Activity size={13} />
+              {t("dashboard", isEn)}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="hidden font-mono md:inline text-slate-500">{userLocalTime}</span>
+            <button
+              type="button"
+              onClick={toggleLocale}
+              className="h-7 rounded border border-slate-300 bg-white px-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              title={t("switchLang", isEn)}
+            >
+              {isEn ? "中文" : "EN"}
+            </button>
+            <Link
+              href="/account"
+              className="grid h-7 w-7 place-items-center rounded-full border border-slate-300 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-900"
+              title="User Account"
+            >
+              <UserRound size={13} />
+            </Link>
+          </div>
+        </header>
+
+        <main className="min-h-0 flex-1 overflow-hidden flex flex-col p-2 bg-[#eef2f6]">
+          {activeNavKey === "training" ? (
+            <TrainingDashboard isEn={isEn} />
+          ) : activeNavKey === "markets" ? (
+            <MarketOverviewView
+              isEn={isEn}
+              rows={rows}
+              onSelectRow={(row) => {
+                const regionKey = resolveTradingRegionKey(row);
+                if (regionKey) setSelectedRegionKey(regionKey);
+                setSelectedRow(row);
+                setActiveNavKey("contracts");
+              }}
+            />
+          ) : (
+            <>
+              {/* Region tabs */}
+              <div className="flex shrink-0 items-center gap-1 overflow-x-auto rounded-[4px] border border-[#cfd6df] bg-white p-1 mb-2 scrollbar-none">
+                {TRADING_REGIONS.map((r) => ({
+                    key: r.key,
+                    labelEn: r.labelEn.toUpperCase(),
+                    labelZh: r.labelZh,
+                  })).map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setSelectedRegionKey(tab.key)}
+                    className={clsx(
+                      "px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-[3px] transition-all whitespace-nowrap",
+                      selectedRegionKey === tab.key
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                    )}
+                  >
+                    {isEn ? tab.labelEn : tab.labelZh}
+                  </button>
+                ))}
+              </div>
+              {/* Mobile layout */}
+              <div className="flex flex-col gap-2 lg:hidden overflow-auto flex-1 pb-6">
+                <MobileRegionTabs
+                  activeTab={mobileTab}
+                  groups={continentGroups}
+                  isEn={isEn}
+                  onSelectTab={setMobileTab}
+                />
+                <div className="space-y-2 px-1">
+                  {mobileActiveGroup?.rows.map((row) => (
+                    <MobileCityCard
+                      key={row.id}
+                      row={row}
+                      isEn={isEn}
+                      onClick={setSelectedRow}
+                    />
+                  ))}
+                </div>
+                {/* Mobile Selected Row Detail */}
+                {selectedRow && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                    <h3 className="text-sm font-black text-slate-900 mb-2">{rowName(selectedRow)}</h3>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {[
+                        ["Obs", temp(selectedRow.current_temp, selectedRow.temp_symbol)],
+                        ["High", temp(selectedRow.current_max_so_far, selectedRow.temp_symbol)],
+                        ["DEB", temp(selectedRow.deb_prediction, selectedRow.temp_symbol)],
+                        ["Gap", temp(selectedRow.signed_gap ?? selectedRow.gap_to_target, selectedRow.temp_symbol)],
+                        ["Edge", pct(selectedRow.edge_percent)],
+                        ["Market", formatPrice(selectedRow.midpoint, selectedRow.ask, selectedRow.bid)],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded border border-slate-200 bg-slate-50 p-2">
+                          <div className="text-[10px] font-black uppercase text-slate-500">{label}</div>
+                          <div className="font-mono font-bold text-slate-900">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop layout */}
+              <div className="hidden h-full min-h-0 lg:grid lg:grid-cols-[0.96fr_1.72fr] gap-2">
+                <div className="flex min-h-0 flex-col gap-2">
+                  <KoyfinMarketPanel
+                    isEn={isEn}
+                    onSelect={setSelectedRow}
+                    rows={filteredRegionRows}
+                    selectedId={selectedRow?.id}
+                    title={isEn ? "Weather Contract Markets" : "天气合约市场"}
+                  />
+                </div>
+
+                <div className="min-h-0">
+                  <LiveTemperatureThresholdChart isEn={isEn} row={selectedRow} />
+                </div>
+              </div>
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function ScanTerminalScreen() {
+  const [proAccess, setProAccess] = useState<ProAccessState>(() =>
+    createEmptyAccess(true),
+  );
+  const [locale, setLocale] = useState<"zh-CN" | "en-US">("zh-CN");
+  const isEn = locale === "en-US";
+  const toggleLocale = () =>
+    setLocale((prev) => (prev === "zh-CN" ? "en-US" : "zh-CN"));
+  const [hydrated, setHydrated] = useState(false);
+  const [localFullAccess, setLocalFullAccess] = useState(false);
+  const canUseLocalFullAccess = hydrated && localFullAccess;
+  const isAuthenticated =
+    hydrated && (proAccess.authenticated || canUseLocalFullAccess);
+  const isPro =
+    hydrated && (proAccess.subscriptionActive || canUseLocalFullAccess);
+  const userLocalTime = useUserLocalClock();
+  const { themeMode } = useScanTerminalTheme();
+
+  useEffect(() => {
+    let cancelled = false;
+    setHydrated(true);
+    setLocale(getInitialLocaleFromNavigator());
+    const localAccess = isBrowserLocalFullAccess();
+    setLocalFullAccess(localAccess);
+    if (localAccess) {
+      setProAccess(createLocalAccess());
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (typeof fetch !== "function") {
+      setProAccess(createEmptyAccess(false));
+      return () => {
+        cancelled = true;
+      };
+    }
+    fetch("/api/auth/me", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<{
+          authenticated?: boolean;
+          user_id?: string | null;
+          subscription_active?: boolean | null;
+          subscription_plan_code?: string | null;
+          subscription_expires_at?: string | null;
+          subscription_total_expires_at?: string | null;
+          subscription_queued_days?: number | null;
+          points?: number | null;
+        }>;
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setProAccess({
+          loading: false,
+          authenticated: Boolean(payload.authenticated),
+          userId: payload.user_id ?? null,
+          subscriptionActive: payload.subscription_active === true,
+          subscriptionPlanCode: payload.subscription_plan_code ?? null,
+          subscriptionExpiresAt: payload.subscription_expires_at ?? null,
+          subscriptionTotalExpiresAt:
+            payload.subscription_total_expires_at ??
+            payload.subscription_expires_at ??
+            null,
+          subscriptionQueuedDays: Math.max(
+            0,
+            Number(payload.subscription_queued_days ?? 0),
+          ),
+          points: Number(payload.points ?? 0),
+          error: null,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setProAccess({
+          ...createEmptyAccess(false),
+          error: String(error),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const userLocalTime = useUserLocalClock();
-  const { setThemeMode, themeMode } = useScanTerminalTheme();
-  const lastMapSelectedCityRef = useRef<string>("");
-  const lastFetchedAtRef = useRef<number>(0);
-  const serverAgeText = useRelativeTime(terminalData?.generated_at ?? null);
-  const localAgeText = useRelativeTime(
-    lastFetchedAtRef.current
-      ? new Date(lastFetchedAtRef.current).toISOString()
-      : null,
-  );
-
-  useEffect(() => {
-    if (terminalData?.generated_at) {
-      lastFetchedAtRef.current = Date.now();
-    }
-  }, [terminalData?.generated_at]);
-
-  useEffect(() => {
-    if (activeView === "map") {
-      const timer = setTimeout(() => {
-        window.dispatchEvent(new Event("resize"));
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [activeView]);
-
-  const scanTerminalRootClassName = clsx(
-    styles.root,
-    scanRootClass,
-    themeMode === "light" && "light",
-  );
-
-  const timeSortedRows = useMemo(
+  const { refreshScanTerminalManually, scanLoading, terminalData } =
+    useScanTerminalQuery({
+      isPro,
+      proAccessLoading: !hydrated || (proAccess.loading && !canUseLocalFullAccess),
+    });
+  const rows = useMemo(
     () => sortRowsByUserTime(terminalData?.rows || []),
     [terminalData?.rows],
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const cityListRows = useMemo(
-    () =>
-      store.cities.map((city, index) => {
-        const cityKey = normalizeCityKey(city.name);
-        const summary =
-          store.citySummariesByName[cityKey] ??
-          Object.values(store.citySummariesByName).find(
-            (s) => normalizeCityKey(s?.name) === cityKey,
-          ) ??
-          null;
-        return {
-          id: `city-fallback:${cityKey}:${index}`,
-          city: cityKey,
-          city_display_name: city.display_name || city.name,
-          display_name: city.display_name || city.name,
-          temp_symbol: city.temp_unit === "fahrenheit" ? "°F" : "°C",
-          current_temp: summary?.current?.temp ?? null,
-          current_max_so_far: summary?.current?.temp ?? null,
-          deb_prediction: summary?.deb?.prediction ?? null,
-          airport: city.airport || null,
-          local_time: summary?.local_time ?? null,
-          risk_level: city.risk_level || "low",
-          market_slug: null,
-          market_question: null,
-          target_label: null,
-          side: null,
-          edge_percent: null,
-          final_score: null,
-          window_phase: null,
-          tradable: false,
-          active: false,
-          closed: false,
-          accepting_orders: false,
-        } satisfies ScanOpportunityRow;
-      }),
-    [store.cities, store.citySummariesByName],
-  );
-  const {
-    addAiPinnedCity,
-    aiPinnedCities,
-    refreshAiPinnedCityDetail,
-    removeAiPinnedCity,
-  } = useAiPinnedCityWorkspace({
-    locale,
-    store,
-    timeSortedRows,
-  });
-  const selectedRow = useMemo(() => {
-    if (!timeSortedRows.length) return null;
-    return (
-      timeSortedRows.find((row) => row.id === selectedRowId) ||
-      timeSortedRows[0] ||
-      null
-    );
-  }, [timeSortedRows, selectedRowId]);
-
-  useEffect(() => {
-    if (!timeSortedRows.length) return;
-    if (selectedRowId && timeSortedRows.some((row) => row.id === selectedRowId))
-      return;
-    setSelectedRowId(timeSortedRows[0].id);
-  }, [selectedRowId, timeSortedRows]);
-
-  const mapFocusedRow = useMemo(() => {
-    return findRowForCity(
-      timeSortedRows,
-      mapSelectedCityName || store.selectedCity,
-    );
-  }, [mapSelectedCityName, store.selectedCity, timeSortedRows]);
-  const mapFallbackRow = useMemo(() => {
-    const rawCityName = mapSelectedCityName || store.selectedCity;
-    const cityKey = normalizeCityKey(rawCityName);
-    if (!cityKey || mapFocusedRow) return null;
-    const selectedDetail =
-      store.selectedDetail &&
-      normalizeCityKey(store.selectedDetail.name) === cityKey
-        ? store.selectedDetail
-        : Object.values(store.cityDetailsByName).find(
-            (detail) => normalizeCityKey(detail?.name) === cityKey,
-          ) || null;
-    const selectedSummary =
-      Object.values(store.citySummariesByName).find(
-        (summary) => normalizeCityKey(summary?.name) === cityKey,
-      ) || null;
-    const selectedCityItem =
-      store.cities.find(
-        (city) =>
-          normalizeCityKey(city.name) === cityKey ||
-          normalizeCityKey(city.display_name) === cityKey,
-      ) || null;
-    const canonicalCity =
-      selectedDetail?.name ||
-      selectedSummary?.name ||
-      selectedCityItem?.name ||
-      String(rawCityName || "").trim();
-    if (!canonicalCity) return null;
-
-    const tempSymbol =
-      selectedDetail?.temp_symbol ||
-      selectedSummary?.temp_symbol ||
-      (selectedCityItem?.temp_unit === "fahrenheit" ? "°F" : "°C");
-    const displayName =
-      selectedDetail?.display_name ||
-      selectedSummary?.display_name ||
-      selectedCityItem?.display_name ||
-      canonicalCity;
-    const currentTemp =
-      selectedDetail?.current?.temp ?? selectedSummary?.current?.temp ?? null;
-
-    return {
-      id: `map-city:${canonicalCity}`,
-      city: canonicalCity,
-      city_display_name: displayName,
-      display_name: displayName,
-      selected_date: selectedDetail?.local_date || null,
-      local_date: selectedDetail?.local_date || null,
-      local_time:
-        selectedDetail?.local_time || selectedSummary?.local_time || null,
-      temp_symbol: tempSymbol,
-      current_temp: currentTemp,
-      current_max_so_far:
-        selectedDetail?.current?.max_so_far ?? currentTemp ?? null,
-      deb_prediction:
-        selectedDetail?.deb?.prediction ??
-        selectedSummary?.deb?.prediction ??
-        null,
-      airport:
-        selectedDetail?.risk?.airport ||
-        selectedCityItem?.airport ||
-        selectedCityItem?.settlement_station_label ||
-        null,
-      risk_level:
-        selectedDetail?.risk?.level ||
-        selectedSummary?.risk?.level ||
-        selectedCityItem?.risk_level ||
-        "low",
-      market_slug: null,
-      market_question: isEn ? "City briefing" : "城市简报",
-      target_label: isEn ? "City snapshot" : "城市概况",
-      side: null,
-      edge_percent: null,
-      final_score: null,
-      window_phase: "city_snapshot",
-      tradable: false,
-      active: false,
-      closed: false,
-      accepting_orders: false,
-    } satisfies ScanOpportunityRow;
-  }, [
-    isEn,
-    mapFocusedRow,
-    mapSelectedCityName,
-    store.cityDetailsByName,
-    store.citySummariesByName,
-    store.cities,
-    store.selectedCity,
-    store.selectedDetail,
-  ]);
-
-  const resolvedView: ScanTerminalContentView = activeView;
-  const mapFocusedCity = mapSelectedCityName || store.selectedCity;
-  const activeDetailRow =
-    resolvedView === "map" && mapFocusedCity
-      ? mapFocusedRow || mapFallbackRow
-      : selectedRow;
-  const scanStatus = terminalData?.status || "ready";
-  const staleReason = terminalData?.stale_reason || null;
-  const proPreviewItems = isEn
-    ? [
-        "Real-time METAR & official station data for 52 cities",
-        "Multi-model DEB blend vs market-implied temperature",
-        "Probability buckets mapped to Polymarket contracts",
-        "Live observation deviation & mispricing signals",
-        "City decision cards for current & future settlement dates",
+  const filteredRows = useMemo(() => {
+    if (!searchQuery.trim()) return rows;
+    const q = searchQuery.toLowerCase().trim();
+    return rows.filter((row) => {
+      const haystack = [
+        row.city,
+        row.city_display_name,
+        row.display_name,
+        row.airport,
+        row.trading_region_label,
+        row.trading_region_label_zh,
+        row.market_question,
+        row.target_label,
+        row.ai_decision,
+        row.v4_metar_decision,
+        row.signal_status,
       ]
-    : [
-        "52 城实时机场报文与官方观测站数据",
-        "多模型 DEB 融合预测 vs 市场隐含温度",
-        "概率分布桶对照 Polymarket 合约",
-        "实时观测偏差与错价信号",
-        "当前日与未来结算日的城市决策卡",
-        "未来日期城市决策卡",
-      ];
+        .filter(Boolean)
+        .map((v) => String(v).toLowerCase());
+      return haystack.some((s) => s.includes(q));
+    });
+  }, [rows, searchQuery]);
 
-  useEffect(() => {
-    if (!activeDetailRow) return;
-    if (!findDetailForCity(store.cityDetailsByName, activeDetailRow.city)) {
-      void store
-        .ensureCityDetail(activeDetailRow.city, false, "panel")
-        .catch(() => {});
-    }
-  }, [activeDetailRow, store.cityDetailsByName, store.ensureCityDetail]);
-
-  const handleMapCitySelect = useCallback(
-    (cityName: string) => {
-      setMapSelectedCityName(cityName);
-      lastMapSelectedCityRef.current = normalizeCityKey(cityName);
-      const matchedRow = findRowForCity(timeSortedRows, cityName);
-      if (matchedRow) {
-        store.preloadCityFromRow(matchedRow);
-        setSelectedRowId(matchedRow.id);
-      } else {
-        void store.ensureCityDetail(cityName, false, "panel").catch(() => {});
-        setSelectedRowId(null);
-      }
-      void store.selectCity(cityName);
-      addAiPinnedCity(cityName);
-      setActiveView("analysis");
-    },
-    [store, timeSortedRows, addAiPinnedCity],
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedRow = useMemo(
+    () => filteredRows.find((row) => row.id === selectedId) || filteredRows[0] || null,
+    [filteredRows, selectedId],
   );
+  const generatedText = useRelativeTime(terminalData?.generated_at ?? null);
 
-  useEffect(() => {
-    if (activeView !== "map") return;
-    const selectedCity = String(store.selectedCity || "").trim();
-    const selectedKey = normalizeCityKey(selectedCity);
-    if (!selectedKey || selectedKey === lastMapSelectedCityRef.current) return;
-    lastMapSelectedCityRef.current = selectedKey;
-    setMapSelectedCityName(selectedCity);
-    const matchedRow = findRowForCity(timeSortedRows, selectedCity);
-    setSelectedRowId(matchedRow?.id || null);
-    addAiPinnedCity(selectedCity);
-  }, [activeView, addAiPinnedCity, store.selectedCity, timeSortedRows]);
-
-  const handleSelectRow = useCallback(
-    (row: ScanOpportunityRow) => {
-      const cityName =
-        row.city || row.city_display_name || row.display_name || "";
-      if (!cityName) return;
-      setSelectedRowId(row.id);
-      store.preloadCityFromRow(row);
-      const selectedCityKey = normalizeCityKey(store.selectedCity);
-      const rowCityKey = normalizeCityKey(cityName);
-      const hasCachedDetail =
-        Boolean(findDetailForCity(store.cityDetailsByName, cityName)) ||
-        Object.values(store.cityDetailsByName).some((detail) =>
-          rowMatchesCity(row, detail?.name || detail?.display_name || ""),
-        );
-      if (store.isPanelOpen && selectedCityKey === rowCityKey) {
-        if (!hasCachedDetail) {
-          void store.ensureCityDetail(cityName, false, "panel").catch(() => {});
-        }
-        return;
-      }
-      void store.selectCity(cityName);
-    },
-    [store],
-  );
-
-  const handleOpenDecisionRow = useCallback(
-    (row: ScanOpportunityRow) => {
-      const cityName =
-        row.city || row.city_display_name || row.display_name || "";
-      if (!cityName) return;
-      setSelectedRowId(row.id);
-      store.preloadCityFromRow(row);
-      addAiPinnedCity(cityName);
-      setActiveView("analysis");
-      void store.selectCity(cityName);
-    },
-    [addAiPinnedCity, store],
-  );
-
-  const openScanPaywall = useCallback(() => {
-    setShowScanPaywall(true);
-  }, []);
-
-  const renderMainView = () => {
-    if (resolvedView === "city-list") {
-      return (
-        <MobileCityPicker
-          isEn={isEn}
-          rows={cityListRows}
-          onSelectCity={handleOpenDecisionRow}
-        />
-      );
-    }
-    // Keep MapCanvas always mounted — hiding with CSS avoids Leaflet
-    // reinitialization that causes a white background on tab switches.
-    // The analysis view overlays on top when active.
-    return (
-      <>
-        <div
-          className="scan-map-view"
-          style={{ display: resolvedView === "map" ? undefined : "none" }}
-        >
-          <div className="scan-map-shell">
-            <MapCanvas
-              onCitySelect={handleMapCitySelect}
-              selectionMode="select"
-            />
-          </div>
-        </div>
-        {resolvedView === "analysis" ? (
-          isPro ? (
-            <AiPinnedForecastView
-              items={aiPinnedCities}
-              rows={timeSortedRows}
-              detailsByName={store.cityDetailsByName}
-              locale={locale}
-              onRefreshCityDetail={refreshAiPinnedCityDetail}
-              onRemoveCity={removeAiPinnedCity}
-            />
-          ) : (
-            <div className="scan-ai-workspace empty">
-              <ProFeaturePaywall feature="scan" />
-            </div>
-          )
-        ) : null}
-      </>
-    );
-  };
-
-  if (proAccess.loading) {
+  if (!hydrated || (proAccess.loading && !canUseLocalFullAccess)) {
     return (
       <ScanTerminalLoadingScreen
         isEn={isEn}
-        rootClassName={scanTerminalRootClassName}
+        rootClassName={scanRootClass}
         themeMode={themeMode}
         userLocalTime={userLocalTime}
       />
     );
   }
 
+  if (!isAuthenticated || !isPro) {
+    return (
+      <ProductAccessRequired
+        isAuthenticated={isAuthenticated}
+        isEn={isEn}
+        userLocalTime={userLocalTime}
+      />
+    );
+  }
+
   return (
-    <div className={scanTerminalRootClassName}>
-      <div
-        className={clsx(
-          "scan-terminal",
-          resolvedView === "city-list" && "city-list-view-active",
-          resolvedView === "map" && "map-view-active",
-          resolvedView !== "map" && "focus-view-active",
-          resolvedView === "analysis" && "analysis-view-active",
-          themeMode === "light" && "light",
-        )}
-      >
-        <main className="scan-data-grid">
-          <ScanTerminalTopBar
-            accountHref={accountHref}
-            isAuthenticated={proAccess.authenticated}
-            isEn={isEn}
-            isPro={isPro}
-            locale={locale}
-            onOpenScanPaywall={openScanPaywall}
-            setThemeMode={setThemeMode}
-            themeMode={themeMode}
-            toggleLocale={toggleLocale}
-            userLocalTime={userLocalTime}
-          />
-
-
-
-          <section className="scan-list-section">
-            <div className="scan-list-header">
-              <div
-                className="scan-list-tabs"
-                role="tablist"
-                aria-label={isEn ? "Content view" : "内容视图"}
-              >
-                {isMobileViewport ? (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={resolvedView === "city-list"}
-                    className={resolvedView === "city-list" ? "active" : ""}
-                    onClick={() => {
-                      setActiveView("city-list");
-                    }}
-                  >
-                    {isEn ? "City List" : "城市列表"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={resolvedView === "map"}
-                    className={resolvedView === "map" ? "active" : ""}
-                    onClick={() => {
-                      lastMapSelectedCityRef.current = normalizeCityKey(
-                        store.selectedCity,
-                      );
-                      setActiveView("map");
-                    }}
-                  >
-                    {isEn ? "Distribution View" : "分布视图"}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={resolvedView === "analysis"}
-                  className={resolvedView === "analysis" ? "active" : ""}
-                  onClick={() => {
-                    setActiveView("analysis");
-                  }}
-                >
-                  {isEn ? "Decision Cards" : "城市决策卡"}
-                  {!isPro && (
-                    <span className="scan-lock-icon" style={{ marginLeft: "4.5px", fontSize: "13.5px" }}>
-                      🔒
-                    </span>
-                  )}
-                </button>
-              </div>
-              <div className="scan-list-status">
-                {terminalData?.generated_at ? (
-                  <span
-                    className={clsx(
-                      "scan-status-chip",
-                      terminalData?.stale ? "stale" : "live",
-                    )}
-                  >
-                    {isEn ? "Updated" : "已更新"} {serverAgeText || ""}
-                  </span>
-                ) : null}
-                {terminalData?.stale && localAgeText ? (
-                  <span className="scan-status-chip stale">
-                    {isEn ? "Local fetch " : "本地下发 "}
-                    {localAgeText}
-                  </span>
-                ) : null}
-                {isPro ? (
-                  <button
-                    type="button"
-                    className="scan-status-chip refresh"
-                    onClick={refreshScanTerminalManually}
-                    disabled={scanLoading}
-                    title={
-                      isEn ? "Force refresh decision cards" : "强制刷新决策卡"
-                    }
-                  >
-                    <RefreshCw
-                      size={14}
-                      className={scanLoading ? "spin" : undefined}
-                    />
-                    {isEn ? "Refresh" : "刷新"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {scanStatus === "failed" && !terminalData ? (
-              <div className="scan-empty-state">
-                <div className="scan-empty-title">
-                  {isEn ? "Scan failed" : "扫描失败"}
-                </div>
-                <div className="scan-empty-copy">{staleReason}</div>
-                <button
-                  type="button"
-                  className="scan-retry-button"
-                  onClick={() => refreshScanTerminalManually()}
-                >
-                  <RefreshCw size={13} />
-                  {isEn ? "Retry" : "重试"}
-                </button>
-              </div>
-            ) : (
-              renderMainView()
-            )}
-          </section>
-        </main>
-
-        <CityDetailPanel variant="rail" />
-      </div>
-      <WelcomeOverlay locale={locale} onDismiss={() => {}} />
-      <FutureForecastModal />
-      {showScanPaywall ? (
-        <ScanPaywallModal
-          isEn={isEn}
-          onClose={() => setShowScanPaywall(false)}
-        />
-      ) : null}
-    </div>
+    <PolyWeatherTerminal
+      generatedText={generatedText || ""}
+      isEn={isEn}
+      locale={locale}
+      onRefresh={refreshScanTerminalManually}
+      refreshing={scanLoading}
+      rows={filteredRows}
+      selectedRow={selectedRow}
+      setSelectedRow={(row) => setSelectedId(row.id)}
+      toggleLocale={toggleLocale}
+      userLocalTime={userLocalTime}
+      searchQuery={searchQuery}
+      setSearchQuery={setSearchQuery}
+      searchInputRef={searchInputRef}
+    />
   );
 }
 
 export function ScanTerminalDashboard() {
-  return (
-    <I18nProvider>
-      <DashboardStoreProvider>
-        <ScanTerminalScreen />
-      </DashboardStoreProvider>
-    </I18nProvider>
-  );
+  return <ScanTerminalScreen />;
 }

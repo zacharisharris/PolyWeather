@@ -43,10 +43,9 @@ export function runTests() {
     "scan terminal content views must not include market monitor or runway tabs",
   );
   assert(
-    shellPartsSource.includes('"city-list"') &&
-      dashboardSource.includes("MobileCityPicker") &&
-      dashboardSource.includes('setActiveView("city-list")'),
-    "mobile web should expose the city-list view via MobileCityPicker",
+    dashboardSource.includes("MarketTable") &&
+      dashboardSource.includes("decisionLabel"),
+    "scan terminal must expose new terminal layout components (MarketTable, decisionLabel)",
   );
   assert(
     !dashboardSource.includes('setActiveView("monitor")') &&

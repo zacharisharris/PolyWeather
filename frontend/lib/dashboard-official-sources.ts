@@ -76,19 +76,19 @@ const CITY_SPECIFIC_SOURCES: Record<string, OfficialSourceLink[]> = {
       kind: "metar",
     },
     {
-      label: "流浮山站（HKO）",
+      label: "深圳流浮山站（HKO）",
       href: "https://www.hko.gov.hk/sc/wxinfo/ts/index.htm",
       kind: "agency",
     },
   ],
-  "lau fau shan": [
+  "shenzhen": [
     {
       label: "香港天文台",
       href: "https://www.hko.gov.hk/en/index.html",
       kind: "agency",
     },
     {
-      label: "流浮山站（HKO）",
+      label: "深圳流浮山站（HKO）",
       href: "https://www.hko.gov.hk/sc/wxinfo/ts/index.htm",
       kind: "airport",
     },
@@ -590,23 +590,6 @@ const CITY_SPECIFIC_SOURCES: Record<string, OfficialSourceLink[]> = {
     {
       label: "ZUCK METAR",
       href: "https://aviationweather.gov/data/metar/?id=ZUCK&decoded=1&taf=1",
-      kind: "metar",
-    },
-  ],
-  shenzhen: [
-    {
-      label: "NMC 深圳天气",
-      href: "https://m.nmc.cn/publish/forecast/AGD/shenzuo.html",
-      kind: "agency",
-    },
-    {
-      label: "深圳宝安国际机场",
-      href: "https://www.szairport.com/",
-      kind: "airport",
-    },
-    {
-      label: "ZGSZ METAR",
-      href: "https://aviationweather.gov/data/metar/?id=ZGSZ&decoded=1&taf=1",
       kind: "metar",
     },
   ],

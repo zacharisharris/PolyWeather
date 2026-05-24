@@ -4,14 +4,11 @@
 
 import clsx from "clsx";
 
-import dashboardHomeStyles from "./DashboardHomeIntelligence.module.css";
-import dashboardMapStyles from "./DashboardMap.module.css";
 import dashboardModalGuideStyles from "./DashboardModalGuide.module.css";
 import dashboardShellStyles from "./DashboardShell.module.css";
 import detailChromeStyles from "./DetailPanelChrome.module.css";
 import detailContentStyles from "./DetailPanelContent.module.css";
 import detailSectionsStyles from "./DetailPanelSections.module.css";
-import futureForecastModalStyles from "./FutureForecastModal.module.css";
 import modalChromeStyles from "./ModalChrome.module.css";
 import scanTerminalStyles from "./ScanTerminal.module.css";
 import scanTerminalBoardStyles from "./ScanTerminalBoard.module.css";
@@ -22,11 +19,10 @@ import scanTerminalListStyles from "./ScanTerminalList.module.css";
 import scanTerminalMobileStyles from "./ScanTerminalMobile.module.css";
 import scanTerminalOpportunityStyles from "./ScanTerminalOpportunity.module.css";
 import scanTerminalShellStyles from "./ScanTerminalShell.module.css";
+import scanTerminalContinentStyles from "./ScanTerminalContinent.module.css";
 import scanTerminalStateStyles from "./ScanTerminalState.module.css";
 
 export const scanRootClass = clsx(
-  dashboardHomeStyles.root,
-  dashboardMapStyles.root,
   dashboardShellStyles.root,
   dashboardModalGuideStyles.root,
   scanTerminalStyles.root,
@@ -38,10 +34,10 @@ export const scanRootClass = clsx(
   scanTerminalStateStyles.root,
   scanTerminalOpportunityStyles.root,
   scanTerminalCardStyles.root,
+  scanTerminalContinentStyles.root,
   scanTerminalMobileStyles.root,
   detailChromeStyles.root,
   detailContentStyles.root,
   detailSectionsStyles.root,
   modalChromeStyles.root,
-  futureForecastModalStyles.root,
 );

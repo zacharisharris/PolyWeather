@@ -5,8 +5,6 @@ import {
 } from "@/lib/supabase/server";
 import { isLocalFullAccessHost } from "@/lib/local-dev-access";
 
-const SESSION_COOKIE = "polyweather_entitlement";
-
 function readEnvBool(name: string, fallback: boolean) {
   const raw = process.env[name];
   if (raw == null) return fallback;
@@ -25,7 +23,6 @@ function isPublicPage(pathname: string) {
     pathname === "/" ||
     pathname.startsWith("/docs") ||
     pathname.startsWith("/subscription-help") ||
-    pathname === "/entitlement-required" ||
     pathname.startsWith("/auth/login") ||
     pathname.startsWith("/auth/callback")
   );
@@ -55,50 +52,42 @@ function shouldRefreshOptionalSupabaseSession(pathname: string) {
   );
 }
 
-function handleLegacyTokenGate(request: NextRequest) {
-  const requiredToken = process.env.POLYWEATHER_DASHBOARD_ACCESS_TOKEN?.trim();
-  if (!requiredToken) {
+// ─── Layer 1: Unauthenticated redirect for /terminal ─────────────────────────
+// Runs for every /terminal request when Supabase is configured.
+// Does NOT check subscription — that's handled client-side (Layer 2).
+// This mirrors Koyfin: unauthenticated visitors are sent to /auth/login first.
+async function handleTerminalGate(request: NextRequest): Promise<NextResponse> {
+  const { pathname } = request.nextUrl;
+
+  // Only gate /terminal routes
+  if (!pathname.startsWith("/terminal")) {
     return NextResponse.next();
   }
 
-  const { pathname, searchParams } = request.nextUrl;
-  if (isPublicPage(pathname) || isPublicApi(pathname)) {
+  // No Supabase env → fall through to legacy token gate
+  if (!hasSupabaseServerEnv()) {
     return NextResponse.next();
   }
 
-  const cookieToken = request.cookies.get(SESSION_COOKIE)?.value;
-  if (cookieToken && cookieToken === requiredToken) {
-    return NextResponse.next();
-  }
+  const response = NextResponse.next({
+    request: { headers: request.headers },
+  });
+  const supabase = createSupabaseMiddlewareClient(request, response);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const queryToken = searchParams.get("access_token");
-  if (queryToken && queryToken === requiredToken) {
-    const cleanUrl = request.nextUrl.clone();
-    cleanUrl.searchParams.delete("access_token");
-
-    const response = NextResponse.redirect(cleanUrl);
-    response.cookies.set(SESSION_COOKIE, requiredToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cleanUrl.protocol === "https:",
-      path: "/",
-      maxAge: 60 * 60 * 12,
-    });
+  if (user) {
+    // Authenticated — pass through. Terminal client handles subscription gate.
     return response;
   }
 
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json(
-      { error: "Unauthorized", detail: "Entitlement token required" },
-      { status: 401 },
-    );
-  }
-
-  const deniedUrl = request.nextUrl.clone();
-  deniedUrl.pathname = "/entitlement-required";
-  deniedUrl.search = "";
-  deniedUrl.searchParams.set("next", pathname);
-  return NextResponse.redirect(deniedUrl);
+  // Layer 1: Not logged in → redirect to /auth/login?next=/terminal
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = "/auth/login";
+  loginUrl.search = "";
+  loginUrl.searchParams.set("next", pathname);
+  return NextResponse.redirect(loginUrl);
 }
 
 async function handleSupabaseAuthGate(request: NextRequest) {
@@ -160,6 +149,8 @@ export async function middleware(request: NextRequest) {
     request.headers.get("x-forwarded-host") ||
     request.headers.get("host") ||
     request.nextUrl.host;
+
+  // Local development: bypass all gates
   if (
     isLocalFullAccessHost(requestHost) ||
     isLocalFullAccessHost(request.nextUrl.hostname)
@@ -167,18 +158,31 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  const { pathname } = request.nextUrl;
+
+  // ── Terminal gate runs first, independently of global auth mode ──────────
+  // This is the Koyfin-style Layer 1: send unauthenticated users to /auth/login
+  // before they ever reach the terminal, eliminating the jarring "enter product
+  // then see a paywall" experience.
+  if (pathname.startsWith("/terminal") && hasSupabaseServerEnv()) {
+    return handleTerminalGate(request);
+  }
+
+  // ── Global auth modes ─────────────────────────────────────────────────────
   if (SUPABASE_AUTH_ENABLED && hasSupabaseServerEnv()) {
     if (SUPABASE_AUTH_REQUIRED) {
       return handleSupabaseAuthGate(request);
     }
     return handleSupabaseOptionalSession(request);
   }
-  return handleLegacyTokenGate(request);
+  return NextResponse.next();
 }
 
 export const config = {
   matcher: [
     "/account/:path*",
+    "/terminal/:path*",
+    "/terminal",
     "/ops/:path*",
     "/api/auth/:path*",
     "/api/ops/:path*",

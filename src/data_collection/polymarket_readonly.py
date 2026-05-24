@@ -4,6 +4,7 @@ Polymarket read-only market layer.
 P0 scope:
 - Market discovery from Gamma REST
 - Price / midpoint / spread / orderbook read from CLOB REST
+- Optional WebSocket quote acceleration via PolymarketWsQuoteCache
 - No signing, no order placement
 """
 
@@ -16,13 +17,14 @@ import re
 import threading
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from loguru import logger
 
 from src.data_collection.city_registry import ALIASES, CITY_REGISTRY
+from src.data_collection.polymarket_ws_cache import PolymarketWsQuoteCache
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -82,9 +84,6 @@ def _normalize_city_key(city: Any) -> str:
 
 
 MARKET_CITY_ALIASES: Dict[str, str] = {
-    # Lau Fau Shan has its own HKO observation / settlement layer, but
-    # Polymarket lists this temperature market under nearby Shenzhen.
-    "lau fau shan": "shenzhen",
 }
 
 MARKET_CITY_SLUG_ALIASES: Dict[str, str] = {
@@ -95,6 +94,14 @@ MARKET_CITY_SLUG_ALIASES: Dict[str, str] = {
     # under the user-facing Denver city name.
     "aurora": "denver",
 }
+
+
+def _city_local_date(city_key: str) -> str:
+    """Return ISO date string (YYYY-MM-DD) for the city's local timezone."""
+    city = CITY_REGISTRY.get(city_key, {})
+    tz_offset = city.get("tz_offset", 0)
+    local_dt = datetime.now(timezone.utc) + timedelta(seconds=tz_offset)
+    return local_dt.strftime("%Y-%m-%d")
 
 
 def _resolve_market_city_key(city_key: str) -> str:
@@ -406,6 +413,11 @@ class PolymarketReadOnlyLayer:
             .strip()
             .rstrip("/")
         )
+        self.data_url = (
+            str(os.getenv("POLYMARKET_DATA_URL", "https://data-api.polymarket.com"))
+            .strip()
+            .rstrip("/")
+        )
         self.http_timeout = _safe_float(os.getenv("POLYMARKET_HTTP_TIMEOUT_SEC")) or 20.0
         self.market_cache_ttl = _safe_int(
             os.getenv("POLYMARKET_MARKET_CACHE_TTL_SEC", "60"),
@@ -424,7 +436,7 @@ class PolymarketReadOnlyLayer:
             200,
         )
         self.min_liquidity_for_signal = (
-            _safe_float(os.getenv("POLYMARKET_SIGNAL_MIN_LIQUIDITY")) or 500.0
+            _safe_float(os.getenv("POLYMARKET_SIGNAL_MIN_LIQUIDITY")) or 50.0
         )
         self.edge_threshold = _safe_float(os.getenv("POLYMARKET_SIGNAL_EDGE_PCT")) or 2.0
         fast_price_only = _safe_bool(os.getenv("POLYMARKET_FAST_PRICE_ONLY", "false"))
@@ -439,6 +451,9 @@ class PolymarketReadOnlyLayer:
         self._broad_markets_cache: Dict[str, Any] = {"data": [], "t": 0.0}
         self._price_cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+
+        self._ws_cache = PolymarketWsQuoteCache.from_env()
+        self._ws_cache.start()
 
     def _market_scan_debug_enabled(self) -> bool:
         return (
@@ -1615,9 +1630,60 @@ class PolymarketReadOnlyLayer:
             probability = max(0.0, min(1.0, probability))
             total += probability
             matched += 1
-        if matched <= 0:
+        if matched > 0:
+            return max(0.0, min(1.0, total))
+
+        # Fallback: use Gaussian CDF when no distribution bucket matches the
+        # market bucket exactly.  Compute mu/sigma from the distribution, then
+        # integrate the Gaussian tail or band that corresponds to the market.
+        values = []
+        weights = []
+        for row in probability_distribution:
+            v = _safe_float(row.get("value"))
+            p = _safe_float(row.get("probability"))
+            if v is not None and p is not None:
+                prob = p / 100.0 if p > 1.0 else p
+                values.append(v)
+                weights.append(max(0.0, prob))
+        if len(values) < 2:
             return None
-        return max(0.0, min(1.0, total))
+
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            return None
+        mu = sum(v * w for v, w in zip(values, weights)) / total_weight
+        variance = sum(w * (v - mu) ** 2 for v, w in zip(values, weights)) / total_weight
+        sigma = math.sqrt(max(variance, 0.01))
+
+        unit = str(temp_symbol or "C").upper()
+        bucket_range = self._extract_market_bucket_range(market)
+        lower = bucket_range[0] if bucket_range else None
+        upper = bucket_range[1] if bucket_range else None
+        direction = self._extract_market_bucket_direction(market)
+        if lower is not None:
+            lower = self._convert_temp_to_market_unit(
+                lower, source_symbol=None, market_unit=(bucket_range[2] if bucket_range else unit),
+            ) or lower
+        if upper is not None:
+            upper = self._convert_temp_to_market_unit(
+                upper, source_symbol=None, market_unit=(bucket_range[2] if bucket_range else unit),
+            ) or upper
+
+        def _norm_cdf(x: float) -> float:
+            return 0.5 * (1.0 + math.erf((x - mu) / (sigma * math.sqrt(2.0))))
+
+        if lower is not None and upper is not None:
+            prob = _norm_cdf(upper + 0.5) - _norm_cdf(lower - 0.5)
+        elif lower is not None and direction == "above":
+            prob = 1.0 - _norm_cdf(lower - 0.5)
+        elif lower is not None and direction == "below":
+            prob = _norm_cdf(lower + 0.5)
+        elif lower is not None:
+            prob = _norm_cdf(lower + 1.5) - _norm_cdf(lower - 0.5)
+        else:
+            return None
+
+        return max(0.0, min(1.0, prob))
 
     def _load_markets(self, active_only: bool = True) -> List[Dict[str, Any]]:
         now = time.time()
@@ -1760,6 +1826,14 @@ class PolymarketReadOnlyLayer:
             cached = self._price_cache.get(token_id)
             if cached and now - cached.get("t", 0) < self.price_cache_ttl:
                 return cached.get("data", {})
+
+        ws_data = self._ws_cache.get_market_data(token_id)
+        if ws_data:
+            with self._lock:
+                self._price_cache[token_id] = {"data": ws_data, "t": now}
+            return ws_data
+
+        self._ws_cache.subscribe([token_id])
 
         data = self._fetch_token_market_data(token_id)
 
@@ -2316,6 +2390,108 @@ class PolymarketReadOnlyLayer:
                 out.append(market)
         return out
 
+    def get_market_holders(
+        self, condition_id: str, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Fetch top token holders for a market from the Polymarket Data API.
+
+        Endpoint: GET /holders?market={conditionId}&limit={limit}
+        Returns a list of holder objects with proxyWallet, amount, outcomeIndex,
+        pseudonym, name, profileImage, etc.
+        """
+        cid = str(condition_id or "").strip()
+        if not cid:
+            return []
+        try:
+            resp = self._session.get(
+                f"{self.data_url}/holders",
+                params={"market": cid, "limit": limit},
+                timeout=self.http_timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            logger.warning(f"Polymarket holders fetch failed (condition={cid[:20]}): {exc}")
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            return payload.get("holders") or payload.get("data") or []
+        return []
+
+    def resolve_city_clob_tokens(self, city_key: str) -> List[Dict[str, Any]]:
+        """Resolve CLOB token IDs for a city using its local date."""
+        local_date = _city_local_date(city_key)
+        market_slug = self._build_weather_event_slug(city_key, local_date)
+        if not market_slug:
+            return []
+        markets = self._load_event_markets(market_slug)
+        tokens: List[Dict[str, Any]] = []
+        for m in markets:
+            clob_ids = _json_or_list(m.get("clobTokenIds"))
+            question = str(m.get("question") or "").strip()
+            prices = _json_or_list(m.get("outcomePrices"))
+            if len(clob_ids) < 2:
+                continue
+            tokens.append({
+                "city": city_key,
+                "local_date": local_date,
+                "question": question,
+                "slug": str(m.get("slug") or "").strip(),
+                "yes_token": clob_ids[0],
+                "no_token": clob_ids[1],
+                "yes_price": _safe_float(prices[0]) if len(prices) > 0 else None,
+                "no_price": _safe_float(prices[1]) if len(prices) > 1 else None,
+            })
+        return tokens
+
+    def resolve_all_cities_clob_tokens(
+        self,
+        cities: Optional[List[str]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Resolve CLOB tokens for all configured cities using local dates.
+
+        Returns dict keyed by city_key, each value is a list of bucket token dicts.
+        """
+        if cities is None:
+            cities = list(CITY_REGISTRY.keys())
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for city_key in cities:
+            try:
+                buckets = self.resolve_city_clob_tokens(city_key)
+                if buckets:
+                    result[city_key] = buckets
+                    logger.info(
+                        "polymarket market discovery city={} buckets={} date={}",
+                        city_key,
+                        len(buckets),
+                        buckets[0]["local_date"] if buckets else "N/A",
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "polymarket market discovery failed city={} error={}",
+                    city_key,
+                    exc,
+                )
+        return result
+
+    def collect_all_clob_token_ids(
+        self,
+        cities: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Collect all unique YES/NO CLOB token IDs for the given cities."""
+        all_tokens = self.resolve_all_cities_clob_tokens(cities)
+        seen: set = set()
+        token_ids: List[str] = []
+        for city_buckets in all_tokens.values():
+            for bucket in city_buckets:
+                for key in ("yes_token", "no_token"):
+                    tid = str(bucket.get(key) or "").strip()
+                    if tid and tid not in seen:
+                        seen.add(tid)
+                        token_ids.append(tid)
+        return token_ids
+
     def _extract_market_bucket_label(
         self,
         market: Dict[str, Any],
@@ -2659,9 +2835,9 @@ class PolymarketReadOnlyLayer:
         min_price = _clamp_float(_safe_float(raw.get("min_price")), 0.0, 1.0)
         max_price = _clamp_float(_safe_float(raw.get("max_price")), 0.0, 1.0)
         if min_price is None:
-            min_price = 0.05
+            min_price = 0.001
         if max_price is None:
-            max_price = 0.95
+            max_price = 0.999
         if min_price > max_price:
             min_price, max_price = max_price, min_price
 
@@ -2682,7 +2858,7 @@ class PolymarketReadOnlyLayer:
             "market_type": str(raw.get("market_type") or "maxtemp").strip().lower() or "maxtemp",
             "time_range": str(raw.get("time_range") or "today").strip().lower() or "today",
             "limit": max(1, _safe_int(raw.get("limit"), 60)),
-            "max_spread": max(0.0, _safe_float(raw.get("max_spread")) or 0.03),
+            "max_spread": max(0.0, _safe_float(raw.get("max_spread")) or 0.2),
         }
 
     def _build_window_meta(
@@ -3532,8 +3708,13 @@ class PolymarketReadOnlyLayer:
                 return False
             if ask < filters["min_price"] or ask > filters["max_price"]:
                 return False
-            if edge_percent < filters["min_edge_pct"]:
+            if abs(edge_percent) < filters["min_edge_pct"]:
                 return False
+            if spread is not None and spread > filters["max_spread"]:
+                return False
+            if liquidity < filters["min_liquidity"]:
+                return False
+
             side = str(row.get("side") or "").lower()
             market_direction = str(row.get("market_direction") or "").lower()
             if (
@@ -3544,7 +3725,7 @@ class PolymarketReadOnlyLayer:
                 and not (row.get("cluster_adjusted") and row.get("is_directional_candidate"))
             ):
                 return False
-            if spread is None or spread > filters["max_spread"]:
+            if spread is not None and spread > filters["max_spread"]:
                 return False
             if liquidity < filters["min_liquidity"]:
                 return False
