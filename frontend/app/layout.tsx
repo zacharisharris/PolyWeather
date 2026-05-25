@@ -41,6 +41,7 @@ export default function RootLayout({
   return (
     <html
       lang="zh-CN"
+      suppressHydrationWarning
       className={`${inter.variable} ${jetbrainsMono.variable} light`}
     >
       <head>
