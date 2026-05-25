@@ -86,7 +86,7 @@ class PolymarketWsQuoteCache:
     @classmethod
     def from_env(cls) -> "PolymarketWsQuoteCache":
         return cls(
-            enabled=_env_bool("POLYMARKET_WS_PRICE_ENABLED", False),
+            enabled=_env_bool("POLYMARKET_WS_PRICE_ENABLED", True),
             endpoint=os.getenv("POLYMARKET_WS_MARKET_URL"),
             quote_ttl_sec=int(os.getenv("POLYMARKET_WS_QUOTE_TTL_SEC", "8")),
             max_assets=int(os.getenv("POLYMARKET_WS_MAX_ASSETS", "256")),
@@ -262,14 +262,11 @@ class PolymarketWsQuoteCache:
         batch = [asset_id for asset_id in asset_ids if asset_id]
         if not batch:
             return
-        payload = {
+        payload: Dict[str, Any] = {
+            "type": "subscribe",
+            "channel": "market",
             "assets_ids": batch,
-            "custom_feature_enabled": True,
         }
-        if initial:
-            payload["type"] = "market"
-        else:
-            payload["operation"] = "subscribe"
         await ws.send(json.dumps(payload))
 
     def _handle_message(self, raw: Any) -> None:
@@ -294,13 +291,30 @@ class PolymarketWsQuoteCache:
         else:
             event_type = str(event.get("type") or "").strip().lower()
 
+        # Polymarket market-channel messages may arrive without a type
+        # envelope — the payload contains price_changes / book / etc.
+        # directly at the top level.
+        has_price_data = any(
+            key in event
+            for key in (
+                "price_changes",
+                "changes",
+                "assets",
+                "best_bid",
+                "best_ask",
+                "bid",
+                "ask",
+                "price",
+            )
+        )
+
         if event_type in {
             "best_bid_ask",
             "best_bid_ask_price_change",
             "price_change",
             "book",
             "last_trade_price",
-        }:
+        } or has_price_data:
             self._handle_quote_event(event_type, event)
 
     def _handle_quote_event(self, event_type: str, event: Dict[str, Any]) -> None:

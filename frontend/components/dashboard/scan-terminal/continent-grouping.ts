@@ -12,6 +12,18 @@ export const TRADING_REGIONS = [
 
 export type TradingRegionKey = (typeof TRADING_REGIONS)[number]["key"];
 
+/** Map browser timezone offset (hours) to the closest trading region. */
+export function detectLocalRegion(): TradingRegionKey {
+  const offset = -new Date().getTimezoneOffset() / 60; // UTC offset in hours
+  if (offset >= 8) return "east_asia";
+  if (offset >= 7) return "southeast_asia";
+  if (offset >= 4.5) return "central_asia";
+  if (offset >= 2) return "west_asia";
+  if (offset >= -2) return "europe_africa";
+  if (offset >= -4) return "south_america";
+  return "north_america";
+}
+
 const TRADING_REGION_KEYS = new Set<string>(TRADING_REGIONS.map((region) => region.key));
 
 const CITY_REGION_FALLBACK: Record<string, TradingRegionKey> = {
@@ -60,10 +72,11 @@ const CITY_REGION_FALLBACK: Record<string, TradingRegionKey> = {
   "los angeles": "north_america",
   miami: "north_america",
   "new york": "north_america",
-  "panama city": "north_america",
+  "panama city": "south_america",
   "san francisco": "north_america",
   seattle: "north_america",
   toronto: "north_america",
+  wellington: "east_asia",
 };
 
 function normalizeRegionValue(value?: string | null) {
@@ -99,10 +112,10 @@ export function resolveTradingRegionKey(row: ScanOpportunityRow): TradingRegionK
     const hours = offset / 3600;
     if (hours >= 8) return "east_asia";
     if (hours >= 7) return "southeast_asia";
-    if (hours >= 5) return "central_asia";
-    if (hours >= 3) return "west_asia";
-    if (hours >= 0) return "europe_africa";
-    if (hours >= -5) return "south_america";
+    if (hours >= 4.5) return "central_asia";
+    if (hours >= 2) return "west_asia";
+    if (hours >= -2) return "europe_africa";
+    if (hours >= -4) return "south_america";
     return "north_america";
   }
 
