@@ -46,6 +46,8 @@ import { TrainingDashboard } from "@/components/dashboard/scan-terminal/Training
 import { LiveTemperatureThresholdChart } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
 import { KoyfinRowsTable } from "@/components/dashboard/scan-terminal/KoyfinRowsTable";
 import { rowName, pct, money, temp, edgeClass } from "@/components/dashboard/scan-terminal/utils";
+import { CitySelectorDropdown } from "@/components/dashboard/scan-terminal/CitySelectorDropdown";
+import { GridLayoutSelector } from "@/components/dashboard/scan-terminal/GridLayoutSelector";
 
 function createEmptyAccess(loading = true): ProAccessState {
   return {
@@ -80,18 +82,18 @@ function createLocalAccess(): ProAccessState {
 
 
 const TERM = {
-  cityContract: { en: "City / Contract", zh: "城市 / 合约" },
+  cityThreshold: { en: "City / Threshold", zh: "城市 / 阈值" },
   live: { en: "Live", zh: "实测" },
   deb: { en: "DEB", zh: "DEB" },
-  mkt: { en: "Mkt", zh: "市场" },
+  mkt: { en: "Mkt", zh: "信号" },
   edge: { en: "Edge", zh: "优势" },
   liq: { en: "Liq", zh: "流动性" },
   signal: { en: "Signal", zh: "信号" },
-  searchPlaceholder: { en: "Search city, contract, station, or signal", zh: "搜索城市、合约、站点或信号" },
-  weatherContracts: { en: "Weather Contracts", zh: "天气合约" },
-  selectedContractMonitor: { en: "Selected Contract Monitor", zh: "选中合约监控" },
+  searchPlaceholder: { en: "Search city, threshold, station, or signal", zh: "搜索城市、阈值、站点或信号" },
+  weatherThresholds: { en: "Weather Thresholds", zh: "天气阈值" },
+  selectedThresholdMonitor: { en: "Selected Threshold Monitor", zh: "选中阈值监控" },
   probabilityDistribution: { en: "Probability Distribution", zh: "概率分布" },
-  marketList: { en: "Market List", zh: "市场列表" },
+  signalList: { en: "Signal List", zh: "信号列表" },
   watchlist: { en: "Watchlist", zh: "观察列表" },
   rows: { en: "Rows", zh: "行数" },
   avgEdge: { en: "Avg Edge", zh: "平均优势" },
@@ -101,9 +103,9 @@ const TERM = {
   model: { en: "Model", zh: "模型" },
   noData: { en: "No data", zh: "无数据" },
   noDistributionData: { en: "No distribution data", zh: "无分布数据" },
-  selectContract: {
-    en: "Select a weather contract to inspect model edge, market price, and live evidence.",
-    zh: "选择天气合约以查看模型优势、市场价格和实况证据。",
+  selectThreshold: {
+    en: "Select a weather threshold to inspect model edge, signal price, and live evidence.",
+    zh: "选择天气阈值以查看模型优势、信号价格和实况证据。",
   },
   signInToContinue: { en: "Sign in to continue", zh: "请先登录" },
   signInHint: {
@@ -115,8 +117,8 @@ const TERM = {
   learnAbout: { en: "Learn about PolyWeather", zh: "了解 PolyWeather" },
   proAccessRequired: { en: "Pro Access Required", zh: "需要付费订阅" },
   proDesc: {
-    en: "The PolyWeather terminal is a paid product. Subscribe to unlock real-time weather-market intelligence.",
-    zh: "PolyWeather 决策台为付费产品。订阅以解锁实时天气市场情报。",
+    en: "The PolyWeather terminal is a paid product. Subscribe to unlock real-time weather-signal intelligence.",
+    zh: "PolyWeather 决策台为付费产品。订阅以解锁实时天气信号情报。",
   },
   subscriptionTerms: {
     en: "Billed monthly. Cancel anytime. Payment via USDC on Polygon.",
@@ -129,7 +131,7 @@ const TERM = {
     zh: "你需要开通有效订阅才能访问决策台。",
   },
   backToProduct: { en: "Back to product overview", zh: "返回产品介绍页" },
-  dashboard: { en: "PolyWeather Terminal", zh: "PolyWeather 交易决策台" },
+  dashboard: { en: "PolyWeather Terminal", zh: "PolyWeather 天气决策台" },
   refresh: { en: "Refresh", zh: "刷新" },
   switchLang: { en: "Switch to Chinese", zh: "切换到英文" },
   globalWeatherFactors: { en: "Global Weather Factors", zh: "全球天气因子" },
@@ -141,6 +143,36 @@ const TERM = {
   ai: { en: "AI", zh: "AI" },
   closed: { en: "Closed", zh: "已关闭" },
 } as const;
+
+const MAX_TERMINAL_GRID_SIDE = 3;
+const MAX_TERMINAL_CHARTS = 9;
+const MOBILE_TERMINAL_CHARTS = 1;
+const DEFAULT_TERMINAL_GRID_SIDE = 2;
+
+function clampGridSide(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_TERMINAL_GRID_SIDE;
+  return Math.max(1, Math.min(MAX_TERMINAL_GRID_SIDE, Math.floor(value)));
+}
+
+function getStoredGridSide(key: string) {
+  if (typeof window === "undefined") return DEFAULT_TERMINAL_GRID_SIDE;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return DEFAULT_TERMINAL_GRID_SIDE;
+    return clampGridSide(parseInt(raw, 10));
+  } catch {}
+  return DEFAULT_TERMINAL_GRID_SIDE;
+}
+
+function getSlotCount(cols: number, rows: number) {
+  return Math.min(MAX_TERMINAL_CHARTS, clampGridSide(cols) * clampGridSide(rows));
+}
+
+function normalizeSlotList(slots: Array<string | null>, totalSlots: number) {
+  if (slots.length === totalSlots) return slots;
+  if (slots.length > totalSlots) return slots.slice(0, totalSlots);
+  return [...slots, ...Array(totalSlots - slots.length).fill(null)];
+}
 
 function t(key: keyof typeof TERM, isEn: boolean) {
   return isEn ? TERM[key].en : TERM[key].zh;
@@ -248,20 +280,21 @@ function EmptySlotCard({
   slotIndex,
   isActive,
   isEn,
-  availableCities,
   onSelectSlot,
-  onSelectCity,
+  onOpenSearch,
 }: {
   slotIndex: number;
   isActive: boolean;
   isEn: boolean;
-  availableCities: { city: string; name: string }[];
   onSelectSlot: () => void;
-  onSelectCity: (city: string) => void;
+  onOpenSearch: () => void;
 }) {
   return (
     <div
-      onClick={onSelectSlot}
+      onClick={() => {
+        onSelectSlot();
+        onOpenSearch();
+      }}
       className={clsx(
         "flex flex-col items-center justify-center h-full rounded-[4px] border-2 border-dashed p-6 cursor-pointer bg-slate-50/50 transition-all",
         isActive
@@ -277,24 +310,15 @@ function EmptySlotCard({
       </div>
       <div className="text-[10px] text-slate-400 text-center mb-3 max-w-[180px]">
         {isEn
-          ? "Select this card and click a city on the left, or select below:"
-          : "激活此卡片并从左侧选择城市，或从下方直接选择："}
+          ? "Click to choose a city weather chart for this slot."
+          : "点击为该槽位选择一个城市天气图表。"}
       </div>
-      <select
-        value=""
-        onClick={(e) => e.stopPropagation()} // prevent triggering onSelectSlot
-        onChange={(e) => {
-          if (e.target.value) onSelectCity(e.target.value);
-        }}
-        className="text-[11px] font-semibold text-slate-600 px-2 py-1 rounded border border-slate-300 bg-white outline-none max-w-[160px]"
+      <button
+        type="button"
+        className="text-[11px] font-semibold text-white px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 transition-colors shadow-sm outline-none"
       >
-        <option value="">{isEn ? "Choose city..." : "选择城市..."}</option>
-        {availableCities.map((c) => (
-          <option key={c.city} value={c.city}>
-            {c.name}
-          </option>
-        ))}
-      </select>
+        {isEn ? "Choose City..." : "选择城市..."}
+      </button>
     </div>
   );
 }
@@ -362,24 +386,73 @@ function PolyWeatherTerminal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [searchInputRef, setSearchQuery]);
   const [navExpanded, setNavExpanded] = useState(false);
-  const [activeNavKey, setActiveNavKey] = useState<string>("contracts");
+  const [activeNavKey, setActiveNavKey] = useState<string>("thresholds");
+
+  const [gridCols, setGridCols] = useState<number>(() => {
+    return getStoredGridSide("polyweather_terminal_grid_cols");
+  });
+
+  const [gridRows, setGridRows] = useState<number>(() => {
+    return getStoredGridSide("polyweather_terminal_grid_rows");
+  });
+
+  const totalSlots = getSlotCount(gridCols, gridRows);
 
   const [slots, setSlots] = useState<Array<string | null>>(() => {
-    try {
-      const stored = localStorage.getItem("polyweather_terminal_slots");
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length === 4) return parsed;
-      }
-    } catch {}
-    return [null, null, null, null];
+    const storedCols = getStoredGridSide("polyweather_terminal_grid_cols");
+    const storedRows = getStoredGridSide("polyweather_terminal_grid_rows");
+    const initialSlotCount = getSlotCount(storedCols, storedRows);
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("polyweather_terminal_slots");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            return normalizeSlotList(parsed, initialSlotCount);
+          }
+        }
+      } catch {}
+    }
+    return Array(initialSlotCount).fill(null);
   });
   const [activeSlotIndex, setActiveSlotIndex] = useState<number>(0);
   const [maximizedSlotIndex, setMaximizedSlotIndex] = useState<number | null>(null);
+  const [activeSearchSlotIndex, setActiveSearchSlotIndex] = useState<number | null>(null);
+  const visibleSlots = useMemo(() => normalizeSlotList(slots, totalSlots), [slots, totalSlots]);
+
+  const handleSetGridSize = (cols: number, rows: number) => {
+    const safeCols = clampGridSide(cols);
+    const safeRows = clampGridSide(rows);
+    const nextTotalSlots = getSlotCount(safeCols, safeRows);
+    
+    setGridCols(safeCols);
+    setGridRows(safeRows);
+    
+    try {
+      localStorage.setItem("polyweather_terminal_grid_cols", String(safeCols));
+      localStorage.setItem("polyweather_terminal_grid_rows", String(safeRows));
+    } catch {}
+
+    const nextSlots = normalizeSlotList(visibleSlots, nextTotalSlots);
+    
+    setSlots(nextSlots);
+    try {
+      localStorage.setItem("polyweather_terminal_slots", JSON.stringify(nextSlots));
+    } catch {}
+
+    if (activeSlotIndex >= nextTotalSlots) {
+      setActiveSlotIndex(0);
+    }
+    if (maximizedSlotIndex !== null && maximizedSlotIndex >= nextTotalSlots) {
+      setMaximizedSlotIndex(null);
+    }
+    if (activeSearchSlotIndex !== null && activeSearchSlotIndex >= nextTotalSlots) {
+      setActiveSearchSlotIndex(null);
+    }
+  };
 
   const NAV_ITEMS = [
-    { key: "contracts", Icon: Table2, labelEn: "Contracts", labelZh: "天气合约" },
-    { key: "markets", Icon: Activity, labelEn: "Markets", labelZh: "市场概览" },
+    { key: "thresholds", Icon: Table2, labelEn: "Thresholds", labelZh: "天气阈值" },
     { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
   ];
 
@@ -388,23 +461,27 @@ function PolyWeatherTerminal({
   }, [selectedRegionKey, setSelectedCity]);
 
   const filteredRegionRows = useMemo(() => {
+    if (selectedRegionKey === "all") return rows;
     return rows.filter(
       (row) => getCityRegion(row) === selectedRegionKey,
     );
   }, [rows, selectedRegionKey]);
 
   useEffect(() => {
-    if (filteredRegionRows.length && slots.every((s) => s === null)) {
-      const next = [filteredRegionRows[0].city, null, null, null];
+    if (filteredRegionRows.length && visibleSlots.every((s) => s === null)) {
+      const next = Array(totalSlots)
+        .fill(null)
+        .map((_, idx) => filteredRegionRows[idx]?.city || null);
       setSlots(next);
       try {
         localStorage.setItem("polyweather_terminal_slots", JSON.stringify(next));
       } catch {}
     }
-  }, [filteredRegionRows, slots]);
+  }, [filteredRegionRows, visibleSlots, totalSlots]);
 
   const handleSelectCityForSlot = (index: number, city: string | null) => {
-    const next = [...slots];
+    if (index < 0 || index >= totalSlots) return;
+    const next = [...visibleSlots];
     next[index] = city;
     setSlots(next);
     try {
@@ -464,6 +541,14 @@ function PolyWeatherTerminal({
       setMobileTab(continentGroups[0].key);
     }
   }, [continentGroups, mobileTab]);
+  const mobileChartRow = useMemo(
+    () =>
+      selectedRow ||
+      mobileActiveGroup?.rows.slice(0, MOBILE_TERMINAL_CHARTS)[0] ||
+      filteredRegionRows[0] ||
+      null,
+    [filteredRegionRows, mobileActiveGroup?.rows, selectedRow],
+  );
   useEffect(() => {
     if (!filteredRegionRows.length) return;
     if (!selectedRow || !filteredRegionRows.some((row) => row.id === selectedRow.id)) {
@@ -496,7 +581,7 @@ function PolyWeatherTerminal({
     <div className="flex h-screen w-full overflow-hidden bg-[#e9edf3] text-[#202833]">
       <aside
         className={clsx(
-          "flex shrink-0 flex-col bg-[#11161d] py-3 text-slate-400 transition-all duration-200",
+          "flex shrink-0 flex-col bg-white border-r border-[#d2d9e2] py-3 text-slate-500 transition-all duration-200",
           navExpanded ? "w-[172px] items-start px-3" : "w-[52px] items-center gap-2",
         )}
       >
@@ -513,7 +598,7 @@ function PolyWeatherTerminal({
             <img src="/apple-touch-icon.png" alt="PolyWeather" className="h-full w-full object-cover" />
           </Link>
           {navExpanded && (
-            <span className="text-sm font-black text-white tracking-tight truncate">
+            <span className="text-sm font-black text-slate-800 tracking-tight truncate">
               PolyWeather
             </span>
           )}
@@ -524,7 +609,7 @@ function PolyWeatherTerminal({
           type="button"
           onClick={() => setNavExpanded((prev) => !prev)}
           className={clsx(
-            "flex items-center gap-3 transition-colors hover:text-white",
+            "flex items-center gap-3 transition-colors hover:text-slate-800",
             navExpanded
               ? "w-full h-8 px-1 mb-2"
               : "grid h-9 w-full place-items-center mb-2",
@@ -533,7 +618,7 @@ function PolyWeatherTerminal({
           {navExpanded ? (
             <>
               <ChevronLeft size={14} />
-              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
                 {isEn ? "Collapse" : "收起"}
               </span>
             </>
@@ -557,11 +642,11 @@ function PolyWeatherTerminal({
                   : "grid h-9 w-full place-items-center border-l-4",
                 isActive
                   ? navExpanded
-                    ? "bg-white/8 text-white"
-                    : "border-blue-500 bg-white/5 text-white"
+                    ? "bg-blue-50 text-blue-600 font-bold"
+                    : "border-blue-500 bg-blue-50/50 text-blue-600"
                   : navExpanded
-                    ? "hover:bg-white/5 hover:text-white"
-                    : "border-transparent hover:bg-white/5 hover:text-white",
+                    ? "hover:bg-slate-50 hover:text-slate-900"
+                    : "border-transparent hover:bg-slate-50 hover:text-slate-700",
               )}
               title={isEn ? labelEn : labelZh}
             >
@@ -579,32 +664,6 @@ function PolyWeatherTerminal({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#d2d9e2] bg-white px-4 text-slate-800">
           <div className="flex min-w-0 items-center gap-4">
-            <div className="flex h-8 min-w-[320px] items-center gap-2 rounded border border-[#cfd6df] bg-[#f8fafc] px-2.5 text-slate-600">
-              <Search size={14} className="text-slate-400" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t("searchPlaceholder", isEn)}
-                className="w-full bg-transparent text-xs font-semibold text-slate-800 placeholder-slate-400 outline-none"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery("");
-                    searchInputRef.current?.focus();
-                  }}
-                  className="text-xs text-slate-400 hover:text-slate-700"
-                >
-                  ✕
-                </button>
-              )}
-              <kbd className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-mono text-slate-400">
-                /
-              </kbd>
-            </div>
             <div className="hidden items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 lg:flex">
               <Activity size={13} />
               {t("dashboard", isEn)}
@@ -612,6 +671,14 @@ function PolyWeatherTerminal({
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <span className="hidden font-mono md:inline text-slate-500">{userLocalTime}</span>
+            <div className="hidden lg:block">
+              <GridLayoutSelector
+                isEn={isEn}
+                cols={gridCols}
+                rows={gridRows}
+                onSelectGrid={handleSetGridSize}
+              />
+            </div>
             <button
               type="button"
               onClick={toggleLocale}
@@ -643,6 +710,22 @@ function PolyWeatherTerminal({
                   isEn={isEn}
                   onSelectTab={setMobileTab}
                 />
+                <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-semibold leading-4 text-blue-700">
+                  {isEn
+                    ? "Mobile renders one chart. Rotate to landscape to inspect the full terminal grid."
+                    : "手机端仅渲染 1 个图表。建议横屏查看完整终端网格。"}
+                </div>
+                {mobileChartRow && (
+                  <div className="h-[420px] min-h-[420px] overflow-hidden rounded border border-[#d2d9e2] bg-white">
+                    <LiveTemperatureThresholdChart
+                      isEn={isEn}
+                      row={mobileChartRow}
+                      allRows={filteredRegionRows}
+                      compact={false}
+                      disableClose={true}
+                    />
+                  </div>
+                )}
                 <div className="space-y-2 px-1">
                   {mobileActiveGroup?.rows.map((row) => (
                     <MobileCityCard
@@ -677,85 +760,81 @@ function PolyWeatherTerminal({
               </div>
 
               {/* Desktop layout */}
-              <div className="hidden h-full min-h-0 lg:grid lg:grid-cols-[0.96fr_1.72fr] gap-2">
-                <div className="flex min-h-0 flex-col gap-2">
-                  <CityRegionList
-                    isEn={isEn}
-                    rows={filteredRegionRows}
-                    selectedCity={slots[activeSlotIndex]}
-                    onSelectCity={(city) => handleSelectCityForSlot(activeSlotIndex, city)}
-                    slots={slots}
-                    activeSlotIndex={activeSlotIndex}
-                  />
-                </div>
-
-                <div className="min-h-0">
+              <div className="hidden h-full min-h-0 lg:block">
+                <div className="h-full w-full min-h-0">
                   {maximizedSlotIndex !== null ? (
                     // Maximized view
                     <div
                       onClick={() => setActiveSlotIndex(maximizedSlotIndex)}
                       className={clsx(
-                        "relative h-full rounded-[4px] border overflow-hidden border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10"
+                        "relative h-full rounded-[4px] border border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10",
+                        activeSearchSlotIndex === maximizedSlotIndex ? "" : "overflow-hidden"
                       )}
                     >
-                      {/* Floating actions toolbar */}
-                      <div className="absolute right-[110px] top-[6px] z-20 flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMaximizedSlotIndex(null);
-                          }}
-                          className="grid h-6 w-6 place-items-center rounded bg-white hover:bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
-                          title={isEn ? "Restore Grid" : "还原网格"}
-                        >
-                          ❐
-                        </button>
-                        <button
-                          type="button"
-                          disabled={slots.filter(Boolean).length <= 1}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleSelectCityForSlot(maximizedSlotIndex, null);
-                            setMaximizedSlotIndex(null);
-                          }}
-                          className={clsx(
-                            "grid h-6 w-6 place-items-center rounded border transition-colors shadow-sm",
-                            slots.filter(Boolean).length <= 1
-                              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
-                              : "bg-white hover:bg-slate-50 border-slate-200 text-slate-500 hover:text-red-600"
-                          )}
-                          title={isEn ? "Clear Slot" : "清除槽位"}
-                        >
-                          ✕
-                        </button>
-                      </div>
-
                       <LiveTemperatureThresholdChart
                         isEn={isEn}
-                        row={filteredRegionRows.find((r) => String(r.city || "").toLowerCase() === slots[maximizedSlotIndex]) || null}
+                        row={filteredRegionRows.find((r) => String(r.city || "").toLowerCase() === visibleSlots[maximizedSlotIndex]) || null}
                         allRows={filteredRegionRows}
                         compact={false}
+                        onSearchClick={() => setActiveSearchSlotIndex(maximizedSlotIndex)}
+                        onMaximize={() => setMaximizedSlotIndex(null)}
+                        onClose={() => {
+                          handleSelectCityForSlot(maximizedSlotIndex, null);
+                          setMaximizedSlotIndex(null);
+                        }}
+                        isMaximized={true}
+                        disableClose={visibleSlots.filter(Boolean).length <= 1}
                       />
+
+                      {activeSearchSlotIndex === maximizedSlotIndex && (
+                        <CitySelectorDropdown
+                          isEn={isEn}
+                          rows={filteredRegionRows}
+                          onSelectCity={(city) => {
+                            handleSelectCityForSlot(maximizedSlotIndex, city);
+                            setActiveSearchSlotIndex(null);
+                          }}
+                          onClose={() => setActiveSearchSlotIndex(null)}
+                          className="absolute left-3 top-9 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                        />
+                      )}
                     </div>
                   ) : (
-                    // 2x2 grid layout
-                    <div className="grid grid-cols-2 grid-rows-2 gap-2 h-full">
-                      {[0, 1, 2, 3].map((slotIndex) => {
+                    // Custom grid layout
+                    <div
+                      className="grid gap-2 h-full"
+                      style={{
+                        gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
+                        gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {visibleSlots.map((cityInSlot, slotIndex) => {
                         const isSlotActive = activeSlotIndex === slotIndex;
-                        const cityInSlot = slots[slotIndex];
 
                         if (!cityInSlot) {
                           return (
-                            <EmptySlotCard
-                              key={slotIndex}
-                              slotIndex={slotIndex}
-                              isActive={isSlotActive}
-                              isEn={isEn}
-                              availableCities={availableCities}
-                              onSelectSlot={() => setActiveSlotIndex(slotIndex)}
-                              onSelectCity={(city) => handleSelectCityForSlot(slotIndex, city)}
-                            />
+                            <div key={slotIndex} className="relative h-full">
+                              <EmptySlotCard
+                                slotIndex={slotIndex}
+                                isActive={isSlotActive}
+                                isEn={isEn}
+                                onSelectSlot={() => setActiveSlotIndex(slotIndex)}
+                                onOpenSearch={() => setActiveSearchSlotIndex(slotIndex)}
+                              />
+                              
+                              {activeSearchSlotIndex === slotIndex && (
+                                <CitySelectorDropdown
+                                  isEn={isEn}
+                                  rows={filteredRegionRows}
+                                  onSelectCity={(city) => {
+                                    handleSelectCityForSlot(slotIndex, city);
+                                    setActiveSearchSlotIndex(null);
+                                  }}
+                                  onClose={() => setActiveSearchSlotIndex(null)}
+                                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                                />
+                              )}
+                            </div>
                           );
                         }
 
@@ -768,51 +847,42 @@ function PolyWeatherTerminal({
                             key={slotIndex}
                             onClick={() => setActiveSlotIndex(slotIndex)}
                             className={clsx(
-                              "relative h-full rounded-[4px] border overflow-hidden transition-all",
+                              "relative h-full rounded-[4px] border transition-all",
                               isSlotActive
                                 ? "border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10"
-                                : "border-[#d2d9e2] hover:border-slate-400"
+                                : "border-[#d2d9e2] hover:border-slate-400",
+                              activeSearchSlotIndex === slotIndex ? "" : "overflow-hidden"
                             )}
                           >
-                            {/* Floating actions toolbar */}
-                            <div className="absolute right-[110px] top-[6px] z-20 flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setMaximizedSlotIndex(slotIndex);
-                                  setActiveSlotIndex(slotIndex);
-                                }}
-                                className="grid h-6 w-6 place-items-center rounded bg-white hover:bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
-                                title={isEn ? "Maximize" : "最大化"}
-                              >
-                                ⛶
-                              </button>
-                              <button
-                                type="button"
-                                disabled={slots.filter(Boolean).length <= 1}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleSelectCityForSlot(slotIndex, null);
-                                }}
-                                className={clsx(
-                                  "grid h-6 w-6 place-items-center rounded border transition-colors shadow-sm",
-                                  slots.filter(Boolean).length <= 1
-                                    ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
-                                    : "bg-white hover:bg-slate-50 border-slate-200 text-slate-500 hover:text-red-600"
-                                )}
-                                title={isEn ? "Clear Slot" : "清除槽位"}
-                              >
-                                ✕
-                              </button>
-                            </div>
-
                             <LiveTemperatureThresholdChart
                               isEn={isEn}
                               row={rowForSlot}
                               allRows={filteredRegionRows}
                               compact={true}
+                              onSearchClick={() => setActiveSearchSlotIndex(slotIndex)}
+                              onMaximize={() => {
+                                setMaximizedSlotIndex(slotIndex);
+                                setActiveSlotIndex(slotIndex);
+                              }}
+                              onClose={() => {
+                                handleSelectCityForSlot(slotIndex, null);
+                              }}
+                              isMaximized={false}
+                              disableClose={visibleSlots.filter(Boolean).length <= 1}
                             />
+
+                            {activeSearchSlotIndex === slotIndex && (
+                              <CitySelectorDropdown
+                                isEn={isEn}
+                                rows={filteredRegionRows}
+                                onSelectCity={(city) => {
+                                  handleSelectCityForSlot(slotIndex, city);
+                                  setActiveSearchSlotIndex(null);
+                                }}
+                                onClose={() => setActiveSearchSlotIndex(null)}
+                                className="absolute left-3 top-9 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                              />
+                            )}
                           </div>
                         );
                       })}
@@ -845,9 +915,9 @@ function ScanTerminalScreen() {
     hydrated && (proAccess.subscriptionActive || canUseLocalFullAccess);
   const userLocalTime = useUserLocalClock();
   const { themeMode } = useScanTerminalTheme();
-  const [selectedRegionKey, setSelectedRegionKey] = useState<string>("east_asia");
+  const [selectedRegionKey, setSelectedRegionKey] = useState<string>("all");
   const [localTimezoneOffsetSeconds, setLocalTimezoneOffsetSeconds] = useState<number | null>(null);
-  const [useLocalTimezoneDefault, setUseLocalTimezoneDefault] = useState(true);
+  const [useLocalTimezoneDefault, setUseLocalTimezoneDefault] = useState(false);
   const [visibleRegions, setVisibleRegions] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem("polyweather_visible_regions");
@@ -938,7 +1008,7 @@ function ScanTerminalScreen() {
   }, []);
 
   useEffect(() => {
-    setSelectedRegionKey(getDefaultRegion());
+    setSelectedRegionKey("all");
     setLocalTimezoneOffsetSeconds(-new Date().getTimezoneOffset() * 60);
   }, []);
 

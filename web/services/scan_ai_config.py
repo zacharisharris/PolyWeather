@@ -10,6 +10,8 @@ import os
 import threading
 from typing import Any, Dict, Optional
 
+from src.utils.refresh_policy import SCAN_ROWS_REFRESH_SEC
+
 
 _SCAN_CITY_AI_CACHE_LOCK = threading.Lock()
 _SCAN_CITY_AI_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -32,9 +34,9 @@ def _env_int(
     return value
 
 
-SCAN_TERMINAL_PAYLOAD_TTL_SEC = max(
-    10,
-    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_PAYLOAD_TTL_SEC", "120")),
+SCAN_TERMINAL_PAYLOAD_TTL_SEC = min(
+    SCAN_ROWS_REFRESH_SEC,
+    max(10, int(os.getenv("POLYWEATHER_SCAN_TERMINAL_PAYLOAD_TTL_SEC", str(SCAN_ROWS_REFRESH_SEC)))),
 )
 SCAN_TERMINAL_BUILD_TIMEOUT_SEC = max(
     8,
@@ -42,9 +44,9 @@ SCAN_TERMINAL_BUILD_TIMEOUT_SEC = max(
 )
 SCAN_TERMINAL_MAX_WORKERS = _env_int(
     "POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS",
-    6,
+    8,
     min_value=1,
-    max_value=8,
+    max_value=12,
 )
 DEFAULT_SCAN_AI_MODEL = "mimo-v2.5-pro"
 DEFAULT_SCAN_AI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"

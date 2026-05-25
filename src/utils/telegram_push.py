@@ -591,11 +591,11 @@ HIGH_FREQ_AIRPORT_ICAO = {
     "chengdu": "ZUUU", "chongqing": "ZUCK", "wuhan": "ZHHH",
     "new york": "KLGA", "los angeles": "KLAX", "chicago": "KORD",
     "denver": "KBKF", "atlanta": "KATL", "miami": "KMIA",
-    "tel aviv": "LLBG",
     "san francisco": "KSFO", "houston": "KHOU", "dallas": "KDAL",
     "austin": "KAUS", "seattle": "KSEA",
+    "tel aviv": "LLBG",
 }
-# Settlement runway mapping — matches Polymarket settlement anchor stations.
+# Settlement runway mapping — matches settlement anchor stations.
 # Format: (low_number, high_number) order-independent; stored sorted for lookup.
 SETTLEMENT_RUNWAY_PAIRS: Dict[str, Set[Tuple[str, str]]] = {
     "shanghai": {("17L", "35R")},
@@ -882,6 +882,9 @@ def _fetch_arome_temp() -> Optional[float]:
         return _AROME_CACHE.get("value")
 
 
+_LAST_AEROWEB: Dict[str, Any] = {}  # {"temp": 31.0, "max_so_far": 31.0, "max_time": "14:00", "ts": epoch}
+
+
 def _build_narrative(
     current_temp: Optional[float],
     max_so_far: Optional[float],
@@ -947,6 +950,9 @@ def _build_airport_status_message(
     deb_pred: Optional[float],
     local_time: str = "",
     state: str = "",
+    source_label: str = "",
+    arome_temp: Optional[float] = None,
+    aeroweb_available: bool = False,
 ) -> str:
     _AIRPORT_EN = {"seoul": "Incheon", "singapore": "Changi", "busan": "Gimhae", "tokyo": "Haneda",
                    "ankara": "Esenboğa", "helsinki": "Vantaa", "amsterdam": "Schiphol",
@@ -1063,11 +1069,29 @@ def _build_airport_status_message(
     lines.append("")
     temp_symbol = str(city_weather.get("temp_symbol") or "°C").strip()
     cur_str = f"{display_temp:.1f}{temp_symbol}" if display_temp is not None else "--"
-    if has_runway:
-        lines.append(f"结算跑道当前：{cur_str}")
+
+    if city == "paris":
+        if aeroweb_available and display_temp is not None:
+            lines.append(f"当前实况：{cur_str}")
+        else:
+            lines.append("当前实况：暂无")
     else:
-        lines.append(f"当前：{cur_str}")
-    if max_so_far is not None:
+        if has_runway:
+            lines.append(f"结算跑道当前：{cur_str}")
+        else:
+            lines.append(f"当前：{cur_str}")
+
+    if city == "paris":
+        if aeroweb_available and max_so_far is not None:
+            time_str = f"（{max_temp_time}）" if max_temp_time else ""
+            lines.append(f"日高实况：{max_so_far:.1f}{temp_symbol}{time_str}")
+        elif not aeroweb_available:
+            last_temp = _LAST_AEROWEB.get("temp")
+            if last_temp is not None:
+                last_time = _LAST_AEROWEB.get("max_time", "")
+                time_str = f"（{last_time}）" if last_time else ""
+                lines.append(f"最近实况：{last_temp:.1f}{temp_symbol}{time_str}")
+    elif max_so_far is not None:
         time_str = f"（{max_temp_time}）" if max_temp_time else ""
         if has_runway:
             lines.append(f"今日跑道高点：{max_so_far:.1f}{temp_symbol}{time_str}")
@@ -1113,10 +1137,47 @@ def _build_airport_status_message(
                     bits.append(metar_time)
                 lines.append(f"报文: {'  '.join(bits)}")
     if deb_pred is not None:
-        if display_temp is not None and display_temp > deb_pred:
+        if city == "paris":
+            if aeroweb_available and display_temp is not None:
+                diff = display_temp - deb_pred
+                sign = "+" if diff >= 0 else ""
+                lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}（距实况 {sign}{diff:.1f}°）")
+            elif not aeroweb_available:
+                last_temp = _LAST_AEROWEB.get("temp")
+                if last_temp is not None:
+                    diff = last_temp - deb_pred
+                    sign = "+" if diff >= 0 else ""
+                    lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}（距最近实况 {sign}{diff:.1f}°）")
+                else:
+                    lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}")
+            else:
+                lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}")
+        elif display_temp is not None and display_temp > deb_pred:
             lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}（已突破 +{display_temp - deb_pred:.1f}°）")
         else:
             lines.append(f"DEB：{deb_pred:.1f}{temp_symbol}")
+
+    if city == "paris":
+        lines.append("")
+        if aeroweb_available and display_temp is not None:
+            lines.append(f"📡 AEROWEB 机场实况：{display_temp:.1f}{temp_symbol} · Météo-France")
+        else:
+            lines.append("📡 AEROWEB 机场实况：暂不可用")
+        if arome_temp is not None:
+            if aeroweb_available and display_temp is not None:
+                d = arome_temp - display_temp
+                sign = "+" if d >= 0 else ""
+                lines.append(f"🕐 AROME HD 15分钟临近预报：{arome_temp:.1f}{temp_symbol}（较实况 {sign}{d:.1f}°）")
+            else:
+                lines.append(f"🕐 AROME HD 15分钟临近预报：{arome_temp:.1f}{temp_symbol}")
+        else:
+            lines.append("🕐 AROME HD 15分钟临近预报：--")
+        if not aeroweb_available:
+            lines.append("")
+            lines.append("提示：当前仅显示模型参考，不更新实况日高。")
+    elif source_label:
+        lines.append("")
+        lines.append(f"📡 {source_label}")
 
     # Model summary (compact)
     models = city_weather.get("multi_model") or {}
@@ -1299,17 +1360,29 @@ def _process_airport_city(
         current_temp = airport_primary.get("temp") or (city_weather.get("current") or {}).get("temp")
         if not current_obs_time:
             current_obs_time = str(airport_primary.get("obs_time") or "")
+    source_label = ""  # human-readable data source for Paris messages
+    arome_temp_val = None  # AROME HD temperature for display (always fetched for comparison)
+    aeroweb_available = False
     if city == "paris":
-        # AEROWEB provides real observations; prefer over AROME model nowcast
+        arome_temp_val = _fetch_arome_temp()
         airport_primary = city_weather.get("airport_primary") or {}
-        if airport_primary.get("source_code") != "aeroweb":
-            arome_temp = _fetch_arome_temp()
-            if arome_temp is not None:
-                current_temp = arome_temp
-                city_weather.setdefault("current", {})["temp"] = arome_temp
-                if not current_obs_time:
-                    current_obs_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    if current_temp is None or deb_pred is None:
+        # Detect AEROWEB availability
+        if airport_primary.get("source_code") == "aeroweb" and airport_primary.get("temp") is not None:
+            aeroweb_available = True
+            source_label = "AEROWEB 机场实况 · Météo-France"
+            # Update last known AEROWEB cache
+            _LAST_AEROWEB["temp"] = float(airport_primary["temp"])
+            _LAST_AEROWEB["ts"] = time.time()
+            # Get daily high from airport data
+            aero_max = (city_weather.get("airport_current") or {}).get("max_so_far")
+            aero_max_time = (city_weather.get("airport_current") or {}).get("max_temp_time")
+            if aero_max is not None:
+                _LAST_AEROWEB["max_so_far"] = float(aero_max)
+                _LAST_AEROWEB["max_time"] = str(aero_max_time or "")[11:16] if aero_max_time else ""
+    # Allow Paris pushes even when AEROWEB is down (show cached/last-known data)
+    if city == "paris" and not aeroweb_available and deb_pred is not None:
+        pass
+    elif current_temp is None or deb_pred is None:
         return None
 
     # Dedup: same observation → skip (with delayed retry for HK / LFS)
@@ -1352,7 +1425,7 @@ def _process_airport_city(
         or city_weather.get("local_time")
         or ""
     )
-    message = _build_airport_status_message(city, city_weather, deb_pred, obs_local, state="")
+    message = _build_airport_status_message(city, city_weather, deb_pred, obs_local, state="", source_label=source_label, arome_temp=arome_temp_val, aeroweb_available=aeroweb_available)
 
     # Send to all target chats
     sent = False

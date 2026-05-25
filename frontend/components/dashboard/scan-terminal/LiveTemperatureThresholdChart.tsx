@@ -22,6 +22,7 @@ import type {
   DailyModelForecast,
 } from "@/lib/dashboard-types";
 import { buildDebBaselinePath } from "@/lib/temperature-chart-paths";
+import { DASHBOARD_REFRESH_POLICY_MS } from "@/lib/refresh-policy";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { rowName, temp } from "@/components/dashboard/scan-terminal/utils";
 
@@ -49,6 +50,21 @@ function normalizeCityKey(value?: string | null) {
 
 function pairKey(pair: [string, string]) {
   return pair.map(normalizeRunwayLabel).sort().join("/");
+}
+
+function runwaySeriesKey(rwy: string) {
+  return `runway_${String(rwy || "unknown")
+    .split("/")
+    .map(normalizeRunwayLabel)
+    .filter(Boolean)
+    .join("_")}`;
+}
+
+function isTemperatureSeriesVisibleByDefault(city: string, seriesKey: string) {
+  if (seriesKey.startsWith("model_curve_")) {
+    return normalizeCityKey(city) === "paris" && seriesKey === "model_curve_AROME HD";
+  }
+  return true;
 }
 
 function buildRunwayPlates(
@@ -161,7 +177,7 @@ type RunwayHistorySeries = {
 };
 
 const MAX_OBS_POINTS = 1440;
-const HOURLY_CACHE_TTL_MS = 30 * 60 * 1000;
+const HOURLY_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.model;
 const FULL_DAY_SLOT_MINUTES = 30;
 const FULL_DAY_SLOTS = 48;
 const SLOT_INTERVAL_MS = FULL_DAY_SLOT_MINUTES * 60 * 1000;
@@ -289,6 +305,8 @@ type HourlyForecast = {
   airportPrimary?: AirportCurrentConditions | null;
   forecastDaily?: ForecastDay[];
   multiModelDaily?: Record<string, DailyModelForecast>;
+  settlementTodayObs?: ObsPoint[];
+  metarTodayObs?: ObsPoint[];
 } | null;
 
 function parseRunwayHistoryValue(point: Record<string, unknown>) {
@@ -335,7 +353,7 @@ function buildRunwayHistorySeries(
           .slice(-MAX_OBS_POINTS);
         const isSettlement = isSettlementRunway(row, normalizedRwy);
         return {
-          key: `runway_${index}`,
+          key: runwaySeriesKey(normalizedRwy),
           label: `${normalizedRwy}${isSettlement ? (row ? " 结算跑道" : " Settlement") : ""}`,
           rwy: normalizedRwy,
           isSettlement,
@@ -374,7 +392,7 @@ function buildRunwayHistorySeries(
         .filter((point): point is { ts: number; value: number } => point !== null);
       if (values.length <= 1) return null;
       return {
-        key: `runway_${index}`,
+        key: runwaySeriesKey(rwy),
         label: `${rwy}${isSettlement ? " 结算跑道" : ""}`,
         rwy,
         isSettlement,
@@ -605,8 +623,8 @@ function buildFullDayChartData(
   const tzOffset = row?.tz_offset_seconds ?? 0;
   const localDateStr = row?.local_date || new Date().toISOString().slice(0, 10);
 
-  const settlementObs = normObs(row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
-  const metarObs = normObs(row?.metar_today_obs || row?.metar_context?.today_obs || row?.metar_recent_obs || row?.metar_context?.recent_obs, tzOffset);
+  const settlementObs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
+  const metarObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs || row?.metar_recent_obs || row?.metar_context?.recent_obs, tzOffset);
   const runwayHistorySeries = buildRunwayHistorySeries(row, hourly, tzOffset, localDateStr);
 
   const slots = generateFullDaySlots(localDateStr);
@@ -633,7 +651,7 @@ function buildFullDayChartData(
   });
 
   // ── Settlement observations ──
-  if (!runwayHistorySeries.length && settlementObs.length) {
+  if (settlementObs.length) {
     const svals = binObservationsToSlots(slots, settlementObs);
     if (svals.some((v) => v !== null)) {
       series.push({
@@ -653,7 +671,7 @@ function buildFullDayChartData(
     if (mvals.some((v) => v !== null)) {
       series.push({
         key: "metar",
-        label: "METAR",
+        label: row?.metar_context?.station_label || "METAR",
         source: row?.airport || "METAR",
         color: "#0ea5e9",
         dashed: true,
@@ -832,20 +850,30 @@ export function LiveTemperatureThresholdChart({
   row,
   allRows = [],
   compact = false,
+  onSearchClick,
+  onMaximize,
+  onClose,
+  isMaximized = false,
+  disableClose = false,
 }: {
   isEn: boolean;
   row: ScanOpportunityRow | null;
   allRows?: ScanOpportunityRow[];
   compact?: boolean;
+  onSearchClick?: () => void;
+  onMaximize?: () => void;
+  onClose?: () => void;
+  isMaximized?: boolean;
+  disableClose?: boolean;
 }) {
   const [hourly, setHourly] = useState<HourlyForecast>(null);
   const city = String(row?.city || "").toLowerCase().trim();
-  const [timeframe, setTimeframe] = useState<"1D" | "3D" | "5D" | "7D">("1D");
-  const [hiddenSeriesKeys, setHiddenSeriesKeys] = useState<Set<string>>(new Set());
+  const [timeframe, setTimeframe] = useState<"1D" | "3D">("1D");
+  const [userToggledKeys, setUserToggledKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    setHiddenSeriesKeys(new Set());
-  }, [timeframe]);
+    setUserToggledKeys({});
+  }, [city, timeframe]);
 
   useEffect(() => {
     if (!city) return;
@@ -878,6 +906,8 @@ export function LiveTemperatureThresholdChart({
           airportPrimary: json.airport_primary || null,
           forecastDaily: json.forecast?.daily || [],
           multiModelDaily: json.multi_model_daily || {},
+          settlementTodayObs: (json as any).timeseries?.settlement_today_obs || (json as any)?.settlement_today_obs || undefined,
+          metarTodayObs: (json as any).timeseries?.metar_today_obs || (json as any)?.metar_today_obs || undefined,
         };
         _hourlyCache.set(city, { ts: Date.now(), data });
         setHourly(data);
@@ -890,34 +920,39 @@ export function LiveTemperatureThresholdChart({
     if (timeframe === "3D") {
       return build3DayChartData(row, hourly);
     }
-    if (timeframe === "5D") {
-      return buildDailyChartData(row, hourly, 5);
-    }
-    if (timeframe === "7D") {
-      return buildDailyChartData(row, hourly, 7);
-    }
     return buildFullDayChartData(row, hourly);
   }, [row, hourly, timeframe]);
 
   const tzOffset = row?.tz_offset_seconds ?? 0;
   const settlementObs = useMemo(() => {
-    return normObs(row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
-  }, [row, tzOffset]);
+    let obs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
+    if (!obs.length && !hourly?.runwayPlateHistory) {
+      const mObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs, tzOffset);
+      if (mObs.length > 0) {
+        obs = mObs;
+      }
+    }
+    return obs;
+  }, [row, hourly, tzOffset]);
 
   const runwayPlates = useMemo(() => buildRunwayPlates(hourly?.amos, row, settlementObs), [hourly?.amos, row, settlementObs]);
   const hasRunwayData = runwayPlates.length > 0;
   const settlementPlate = useMemo(() => runwayPlates.find((p) => p.isSettlement), [runwayPlates]);
 
   const chartSeries = useMemo(() => {
-    if (timeframe !== "1D") {
-      return series;
+    return series;
+  }, [series]);
+
+  const isSeriesVisible = (sKey: string) => {
+    if (userToggledKeys[sKey] !== undefined) {
+      return userToggledKeys[sKey];
     }
-    return series.filter((item) => !hasRunwayData || !item.key.startsWith("model_curve_"));
-  }, [series, hasRunwayData, timeframe]);
+    return isTemperatureSeriesVisibleByDefault(city, sKey);
+  };
 
   const activeSeries = useMemo(() => {
-    return chartSeries.filter((s) => !hiddenSeriesKeys.has(s.key));
-  }, [chartSeries, hiddenSeriesKeys]);
+    return chartSeries.filter((s) => isSeriesVisible(s.key));
+  }, [chartSeries, userToggledKeys, city]);
 
   const cityKey = String(row?.city || "").toLowerCase().trim();
   const runwaySensorCities = new Set([
@@ -928,12 +963,14 @@ export function LiveTemperatureThresholdChart({
   const isHKO = cityKey === 'hong kong' || cityKey === 'lau fau shan' || cityKey.includes('hongkong') || cityKey.includes('laufau');
   const isTokyo = cityKey === 'tokyo';
   const isSingapore = cityKey === 'singapore';
+  const isParis = cityKey === 'paris';
   const isWeatherStation = !runwaySensorCities.has(cityKey)
-    && !isHKO && !isTokyo && !isSingapore;
+    && !isHKO && !isTokyo && !isSingapore && !isParis;
 
   const runwayHeaderLabel = isHKO ? '参考站点 (1分钟)'
     : isTokyo ? '机场气象站 (10分钟)'
     : isSingapore ? '航站楼温度'
+    : isParis ? '官方机场观测 (15分钟)'
     : isWeatherStation ? '气象站实测'
     : '跑道实测 (1分钟)';
 
@@ -943,6 +980,7 @@ export function LiveTemperatureThresholdChart({
   const runwayHighLabel = isHKO ? '参考站点'
     : isTokyo ? '机场气象站'
     : isSingapore ? '航站楼'
+    : isParis ? '官方机场观测'
     : isWeatherStation ? '气象站'
     : '跑道实测';
 
@@ -1009,37 +1047,94 @@ export function LiveTemperatureThresholdChart({
     [series, data],
   );
 
-  const panelTitle = row
-    ? `${rowName(row)} · ${
-        isEn
-          ? timeframe === "1D"
-            ? "Live & Forecast"
-            : `${timeframe} Forecast`
-          : timeframe === "1D"
-          ? "实测与预测"
-          : `${timeframe}预报`
-      }`
-    : isEn
-    ? "Temperature Chart"
-    : "气温图表";
+  const subtitle = row
+    ? isEn
+      ? timeframe === "1D"
+        ? "Live & Forecast"
+        : `${timeframe} Forecast`
+      : timeframe === "1D"
+      ? "实测与预测"
+      : `${timeframe}预报`
+    : "";
+
+  const panelTitle = row ? (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onSearchClick}
+        className={clsx(
+          "flex items-center gap-1.5 px-1.5 py-0.5 rounded text-left transition-colors font-bold text-slate-800 outline-none select-none",
+          onSearchClick ? "hover:bg-slate-200/80 cursor-pointer" : ""
+        )}
+      >
+        <span>{rowName(row)}</span>
+        {onSearchClick && <span className="text-[8px] text-slate-400">▼</span>}
+      </button>
+      <span className="text-slate-400 font-normal">·</span>
+      <span className="text-slate-500 font-normal">{subtitle}</span>
+    </div>
+  ) : isEn ? (
+    "Temperature Chart"
+  ) : (
+    "气温图表"
+  );
 
   const timeframeActions = (
-    <div className="flex items-center gap-1 rounded bg-[#eef2f6] p-0.5 border border-slate-200">
-      {(["1D", "3D", "5D", "7D"] as const).map((tf) => (
-        <button
-          key={tf}
-          type="button"
-          onClick={() => setTimeframe(tf)}
-          className={clsx(
-            "px-2 py-0.5 text-[9px] font-bold rounded transition-all",
-            timeframe === tf
-              ? "bg-white text-blue-600 shadow-sm border border-slate-200/50"
-              : "text-slate-500 hover:text-slate-800"
+    <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1 rounded bg-[#eef2f6] p-0.5 border border-slate-200">
+        {(["1D", "3D"] as const).map((tf) => (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => setTimeframe(tf)}
+            className={clsx(
+              "px-2 py-0.5 text-[9px] font-bold rounded transition-all",
+              timeframe === tf
+                ? "bg-white text-blue-600 shadow-sm border border-slate-200/50"
+                : "text-slate-500 hover:text-slate-800"
+            )}
+          >
+            {tf}
+          </button>
+        ))}
+      </div>
+
+      {(onMaximize || onClose) && (
+        <div className="flex items-center gap-1">
+          {onMaximize && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMaximize();
+              }}
+              className="grid h-6 w-6 place-items-center rounded bg-white hover:bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
+              title={isMaximized ? (isEn ? "Restore Grid" : "还原网格") : (isEn ? "Maximize" : "最大化")}
+            >
+              {isMaximized ? "❐" : "⛶"}
+            </button>
           )}
-        >
-          {tf}
-        </button>
-      ))}
+          {onClose && (
+            <button
+              type="button"
+              disabled={disableClose}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              className={clsx(
+                "grid h-6 w-6 place-items-center rounded border transition-colors shadow-sm",
+                disableClose
+                  ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+                  : "bg-white hover:bg-slate-50 border-slate-200 text-slate-500 hover:text-red-600"
+              )}
+              title={isEn ? "Clear Slot" : "清除槽位"}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -1264,16 +1359,14 @@ export function LiveTemperatureThresholdChart({
                 key={s.key}
                 type="button"
                 onClick={() => {
-                  setHiddenSeriesKeys((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(s.key)) next.delete(s.key);
-                    else next.add(s.key);
-                    return next;
-                  });
+                  setUserToggledKeys((prev) => ({
+                    ...prev,
+                    [s.key]: !isSeriesVisible(s.key),
+                  }));
                 }}
                 className={clsx(
                   "inline-flex items-center gap-1.5 font-mono cursor-pointer transition-opacity hover:opacity-80",
-                  hiddenSeriesKeys.has(s.key) && "opacity-40 line-through"
+                  !isSeriesVisible(s.key) && "opacity-40 line-through"
                 )}
               >
                 <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
@@ -1338,10 +1431,10 @@ export function LiveTemperatureThresholdChart({
                   dataKey={item.key}
                   name={item.label}
                   stroke={item.color}
-                  strokeWidth={item.featured ? 2 : 1.2}
+                  strokeWidth={item.featured ? 2.8 : 1.2}
                   strokeDasharray={item.dashed ? "4 3" : undefined}
-                  dot={timeframe === "5D" || timeframe === "7D"}
-                  activeDot={{ r: item.featured ? 5 : 4 }}
+                  dot={false}
+                  activeDot={{ r: item.featured ? 6 : 4 }}
                   connectNulls={true}
                   isAnimationActive={false}
                 />
@@ -1364,3 +1457,13 @@ export function LiveTemperatureThresholdChart({
     </Panel>
   );
 }
+
+export function __buildTemperatureChartDataForTest(
+  row: ScanOpportunityRow | null,
+  hourly: HourlyForecast,
+  timeframe: "1D" | "3D" = "1D",
+) {
+  return timeframe === "3D" ? build3DayChartData(row, hourly) : buildFullDayChartData(row, hourly);
+}
+
+export const __isTemperatureSeriesVisibleByDefaultForTest = isTemperatureSeriesVisibleByDefault;

@@ -7,6 +7,11 @@ from typing import Any, Optional, Dict, List
 from datetime import datetime, timedelta
 from loguru import logger
 from src.data_collection.open_meteo_cache import OpenMeteoCacheMixin
+from src.utils.refresh_policy import (
+    METAR_POLL_TTL_SEC,
+    MODEL_CACHE_TTL_SEC,
+    OBSERVATION_REFRESH_SEC,
+)
 from src.data_collection.settlement_sources import SettlementSourceMixin
 from src.data_collection.metar_sources import MetarSourceMixin
 from src.data_collection.mgm_sources import MgmSourceMixin
@@ -37,7 +42,7 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
     - NWS (US National Weather Service)
     - MGM (Turkish Meteorological Service)
     - JMA / HKO / CWA (country official networks)
-    - Polymarket (weather derivative markets)
+    - Weather derivative markets
     """
 
     from src.data_collection.city_registry import CITY_REGISTRY
@@ -163,14 +168,17 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
         )
         self.open_meteo_cache_ttl_sec = int(
-            os.getenv("OPEN_METEO_CACHE_TTL_SEC", "900")
+            os.getenv("OPEN_METEO_CACHE_TTL_SEC", str(MODEL_CACHE_TTL_SEC))
         )
+        self.open_meteo_cache_ttl_sec = min(self.open_meteo_cache_ttl_sec, MODEL_CACHE_TTL_SEC)
         self.open_meteo_ensemble_cache_ttl_sec = int(
-            os.getenv("OPEN_METEO_ENSEMBLE_CACHE_TTL_SEC", "900")
+            os.getenv("OPEN_METEO_ENSEMBLE_CACHE_TTL_SEC", str(MODEL_CACHE_TTL_SEC))
         )
+        self.open_meteo_ensemble_cache_ttl_sec = min(self.open_meteo_ensemble_cache_ttl_sec, MODEL_CACHE_TTL_SEC)
         self.open_meteo_multi_model_cache_ttl_sec = int(
-            os.getenv("OPEN_METEO_MULTI_MODEL_CACHE_TTL_SEC", "900")
+            os.getenv("OPEN_METEO_MULTI_MODEL_CACHE_TTL_SEC", str(MODEL_CACHE_TTL_SEC))
         )
+        self.open_meteo_multi_model_cache_ttl_sec = min(self.open_meteo_multi_model_cache_ttl_sec, MODEL_CACHE_TTL_SEC)
         self.multi_model_cache_version = str(
             os.getenv("OPEN_METEO_MULTI_MODEL_CACHE_VERSION", "v3")
         ).strip() or "v3"
@@ -193,11 +201,13 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         self._open_meteo_last_call_ts: float = 0.0
         self._open_meteo_call_lock = threading.Lock()
         self.metar_cache_ttl_sec = int(
-            os.getenv("METAR_CACHE_TTL_SEC", "600")  # 默认 10 分钟
+            os.getenv("METAR_CACHE_TTL_SEC", str(METAR_POLL_TTL_SEC))
         )
+        self.metar_cache_ttl_sec = min(self.metar_cache_ttl_sec, METAR_POLL_TTL_SEC)
         self.metar_fast_cache_ttl_sec = int(
-            os.getenv("METAR_FAST_CACHE_TTL_SEC", "60")
+            os.getenv("METAR_FAST_CACHE_TTL_SEC", str(OBSERVATION_REFRESH_SEC))
         )
+        self.metar_fast_cache_ttl_sec = min(self.metar_fast_cache_ttl_sec, OBSERVATION_REFRESH_SEC)
         self._metar_cache: Dict[str, Dict] = {}
         self._metar_cache_lock = threading.Lock()
         self.taf_cache_ttl_sec = int(
@@ -211,8 +221,9 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         self._jma_cache: Dict[str, Dict] = {}
         self._jma_cache_lock = threading.Lock()
         self.settlement_cache_ttl_sec = int(
-            os.getenv("SETTLEMENT_SOURCE_CACHE_TTL_SEC", "120")
+            os.getenv("SETTLEMENT_SOURCE_CACHE_TTL_SEC", str(OBSERVATION_REFRESH_SEC))
         )
+        self.settlement_cache_ttl_sec = min(self.settlement_cache_ttl_sec, OBSERVATION_REFRESH_SEC)
         self._settlement_cache: Dict[str, Dict] = {}
         self._settlement_cache_lock = threading.Lock()
         self.fmi_cache_ttl_sec = int(
@@ -226,8 +237,9 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         self._knmi_cache: Dict[str, Dict] = {}
         self._knmi_cache_lock = threading.Lock()
         self.hko_obs_cache_ttl_sec = int(
-            os.getenv("HKO_OBS_CACHE_TTL_SEC", "60")
+            os.getenv("HKO_OBS_CACHE_TTL_SEC", str(OBSERVATION_REFRESH_SEC))
         )
+        self.hko_obs_cache_ttl_sec = min(self.hko_obs_cache_ttl_sec, OBSERVATION_REFRESH_SEC)
         self._hko_obs_cache: Dict[str, Dict] = {}
         self.madis_cache_ttl_sec = int(
             os.getenv("MADIS_CACHE_TTL_SEC", "300")  # 5 min match update rate
@@ -612,7 +624,7 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
 
     def extract_city_from_question(self, question: str) -> Optional[str]:
         """
-        从 Polymarket 问题描述或 Slug 中提取城市名称
+        从市场问题描述或 Slug 中提取城市名称
         """
         q = question.lower()
 
