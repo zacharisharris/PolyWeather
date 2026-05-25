@@ -63,7 +63,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
     passwordSignupPlaceholder: isEn
       ? "Set at least 6 characters"
       : "设置至少 6 位密码",
-    loginSubmit: isEn ? "Start your weather journey" : "开启天气交易之旅",
+    loginSubmit: isEn ? "Start your weather decision journey" : "开启气象决策之旅",
     signupSubmit: isEn ? "Create account now" : "立即创建账号",
     loginHint: isEn
       ? "After signing in, your homepage will be personalized."
@@ -105,9 +105,9 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
       ? "By proceeding, you agree to the Privacy Policy and Terms & Conditions."
       : "继续操作即代表您同意隐私政策与服务条款。",
     desc: isEn
-      ? "Access robust METAR observations, advanced DEB forecast blends, and real-time AI decision cards that bring clarity to your weather-signal portfolios."
-      : "提供精准的机场 METAR 实况、先进的 DEB 智能融合预测和实时 AI 决策卡片，助您看清天气信号脉络。",
-    trusted: isEn ? "Trusted by institutional traders" : "深受机构交易员信赖",
+      ? "Access robust METAR observations, advanced DEB forecast blends, and real-time AI decision cards that bring clarity to your weather risk analyses."
+      : "提供精准的机场 METAR 实况、先进的 DEB 智能融合预测和实时 AI 决策卡片，助您理清气象风险脉络。",
+    trusted: isEn ? "Trusted by industry professionals" : "深受行业决策人员信赖",
   } as const;
 
   const onResetPassword = async () => {
@@ -253,45 +253,45 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
           </Link>
 
           <div className="space-y-6">
-            <h2 className="text-3xl font-black leading-[1.25] tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-300 bg-clip-text text-transparent">
+            <h2 className="text-3xl font-black leading-[1.25] tracking-tight text-white animate-fade-up [animation-delay:150ms] opacity-0">
               {isEn ? (
                 <>
                   Weather intelligence and risk management{" "}
-                  <span className="inline-block px-2.5 py-0.5 rounded bg-blue-600 text-white font-bold text-[0.9em] shadow-lg shadow-blue-600/25">
+                  <span className="inline-block px-2.5 py-0.5 mt-1 rounded bg-gradient-to-r from-blue-600 to-indigo-500 text-white font-bold text-[0.9em] shadow-lg shadow-blue-600/25 animate-gradient bg-[length:200%_auto]">
                     simplified.
                   </span>
                 </>
               ) : (
                 <>
                   天气信息与风险管理{" "}
-                  <span className="inline-block px-2.5 py-0.5 rounded bg-blue-600 text-white font-bold text-[0.9em] shadow-lg shadow-blue-600/25">
+                  <span className="inline-block px-2.5 py-0.5 mt-1 rounded bg-gradient-to-r from-blue-600 to-indigo-500 text-white font-bold text-[0.9em] shadow-lg shadow-blue-600/25 animate-gradient bg-[length:200%_auto]">
                     化繁为简。
                   </span>
                 </>
               )}
             </h2>
-            <p className="text-sm leading-7 text-slate-400 max-w-md">
+            <p className="text-sm leading-7 text-slate-400 max-w-md animate-fade-up [animation-delay:300ms] opacity-0">
               {copy.desc}
             </p>
           </div>
         </div>
 
         {/* High-Fidelity Mock Terminal Preview Widget */}
-        <div className="relative z-10 my-auto p-[1px] bg-gradient-to-b from-white/15 to-transparent rounded-2xl shadow-2xl overflow-hidden hover:scale-[1.01] hover:shadow-blue-500/10 transition-all duration-500 max-w-[420px] w-full">
+        <div className="relative z-10 my-auto p-[1px] bg-gradient-to-b from-white/15 to-transparent rounded-2xl shadow-2xl overflow-hidden hover:scale-[1.01] hover:shadow-blue-500/10 transition-all duration-500 max-w-[420px] w-full animate-fade-up [animation-delay:450ms] opacity-0">
           <div className="bg-[#0b0f19]/80 backdrop-blur-xl rounded-2xl p-6">
             {/* Terminal Top Window Controls */}
             <div className="flex items-center gap-1.5 mb-5">
               <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f56]" />
               <span className="h-2.5 w-2.5 rounded-full bg-[#ffbd2e]" />
               <span className="h-2.5 w-2.5 rounded-full bg-[#27c93f]" />
-              <span className="ml-2 font-mono text-[9px] text-slate-500 tracking-wider">POLYWEATHER_TERMINAL_v1.7</span>
+              <span className="ml-2 font-mono text-[9px] text-slate-500 tracking-wider">POLYWEATHER_CONSOLE_v1.7</span>
             </div>
 
             <div className="flex items-center justify-between border-b border-white/5 pb-3.5 mb-4">
               <div className="flex items-center gap-2.5">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="font-mono text-[10px] uppercase tracking-wider text-slate-300">
-                  {isEn ? "Runway 02L Settlement" : "跑道 02L 官方结算"}
+                  {isEn ? "Runway 02L Consensus" : "跑道 02L 实测校验"}
                 </span>
               </div>
               <span className="font-mono text-[9px] font-black text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 tracking-wider">LIVE</span>
@@ -304,7 +304,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
                 <span className="font-mono text-base font-bold text-white tracking-tight">28.8°C</span>
               </div>
               <div className="p-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                <span className="block text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">{isEn ? "UMA Threshold" : "结算阈值"}</span>
+                <span className="block text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">{isEn ? "Target Threshold" : "监控阈值"}</span>
                 <span className="font-mono text-base font-bold text-rose-400 tracking-tight">30.0°C</span>
               </div>
               <div className="p-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
@@ -312,8 +312,8 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
                 <span className="font-mono text-base font-bold text-blue-400 tracking-tight">88.5%</span>
               </div>
               <div className="p-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                <span className="block text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">{isEn ? "Index Price" : "结算指数"}</span>
-                <span className="font-mono text-base font-bold text-emerald-400 tracking-tight">$9.20</span>
+                <span className="block text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">{isEn ? "Observed Peak" : "今日最高"}</span>
+                <span className="font-mono text-base font-bold text-emerald-400 tracking-tight">29.2°C</span>
               </div>
             </div>
 
@@ -335,7 +335,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
 
                   {/* Threshold Line (30.0°C) */}
                   <line x1="0" y1="40" x2="340" y2="40" stroke="#f43f5e" strokeWidth="1" strokeDasharray="3 3" opacity="0.8" />
-                  <text x="5" y="36" fill="#f43f5e" className="text-[8px] font-mono font-semibold">30.0°C UMA</text>
+                  <text x="5" y="36" fill="#f43f5e" className="text-[8px] font-mono font-semibold">30.0°C Target</text>
 
                   {/* Gradient Area under Forecast */}
                   <path
@@ -386,7 +386,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
       {/* Right Column (Forms) */}
       <div className="flex flex-1 flex-col justify-between p-6 sm:p-10 bg-gradient-to-br from-[#f8fafc] via-[#ffffff] to-[#eff4f9] min-h-screen relative overflow-hidden">
         {/* Subtle mesh background */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(15,23,42,0.01)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,0.01)_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(15,23,42,0.01)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,0.01)_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none animate-pulse" style={{ animationDuration: '4s' }} />
         
         {/* Top Header Switch */}
         <div className="relative z-10 flex justify-between lg:justify-end items-center gap-3">
@@ -415,7 +415,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
 
         {/* Center Form Card */}
         <div className="relative z-10 flex flex-1 items-center justify-center my-10">
-          <div className="w-full max-w-[440px] bg-white/90 backdrop-blur-xl border border-slate-200/50 rounded-2xl p-6 sm:p-10 shadow-[0_24px_60px_rgba(8,16,36,0.06)]">
+          <div className="w-full max-w-[440px] bg-white/90 backdrop-blur-xl border border-slate-200/50 rounded-2xl p-6 sm:p-10 shadow-[0_24px_60px_rgba(8,16,36,0.06)] animate-fade-up [animation-delay:200ms] opacity-0 transition-transform hover:-translate-y-1 hover:shadow-[0_32px_80px_rgba(8,16,36,0.08)] duration-500">
             <div className="mb-6">
               <h1 className="text-2xl font-black tracking-tight text-slate-900 mb-2">
                 {isLogin ? copy.welcomeBack : copy.signUpTitle}
@@ -426,7 +426,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
             </div>
 
             <form onSubmit={(event) => void onEmailSubmit(event)} className="space-y-5">
-              <div className="space-y-2">
+              <div className="space-y-2 animate-fade-up [animation-delay:350ms] opacity-0">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                   {copy.workEmail}
                 </label>
@@ -443,7 +443,7 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-2 animate-fade-up [animation-delay:450ms] opacity-0">
                 <div className="flex justify-between items-center">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                     {copy.password}
@@ -489,10 +489,10 @@ export function LoginClient({ nextPath, initialMode }: LoginClientProps) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-slate-950 hover:to-slate-900 text-sm font-bold text-white shadow-lg shadow-slate-950/10 hover:shadow-slate-950/20 active:scale-[0.98] transition-all duration-200 disabled:opacity-50 mt-8 flex items-center justify-center gap-2"
+                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-blue-600 hover:to-indigo-600 text-sm font-bold text-white shadow-lg shadow-slate-950/10 hover:shadow-blue-600/25 active:scale-[0.98] transition-all duration-300 disabled:opacity-50 mt-8 flex items-center justify-center gap-2 group animate-fade-up [animation-delay:550ms] opacity-0"
               >
                 <span>{isLogin ? copy.loginSubmit : copy.signupSubmit}</span>
-                <ArrowRight size={16} />
+                <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
               </button>
             </form>
 
