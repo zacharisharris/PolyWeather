@@ -22,16 +22,14 @@ import { ProductAccessRequired } from "@/components/dashboard/scan-terminal/Prod
 import {
   type ContinentGroup,
   buildContinentGroups,
-  formatPrice,
-  formatSpreadLiquidity,
   GAP_COLOR_MAP,
   getDefaultExpanded,
   getGapColor,
   getSignalLabel,
   getSignalState,
-  resolveTradingRegionKey,
-  TRADING_REGIONS,
-  detectLocalRegion,
+  getCityRegion,
+  REGIONS,
+  getDefaultRegion,
 } from "@/components/dashboard/scan-terminal/continent-grouping";
 import { MobileCityCard } from "@/components/dashboard/scan-terminal/MobileCityCard";
 import { MobileRegionTabs } from "@/components/dashboard/scan-terminal/MobileRegionTabs";
@@ -46,7 +44,6 @@ import { useRelativeTime } from "@/hooks/useRelativeTime";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { TrainingDashboard } from "@/components/dashboard/scan-terminal/TrainingDashboard";
 import { LiveTemperatureThresholdChart } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
-import { MarketOverviewView } from "@/components/dashboard/scan-terminal/MarketOverviewView";
 import { KoyfinRowsTable } from "@/components/dashboard/scan-terminal/KoyfinRowsTable";
 import { rowName, pct, money, temp, edgeClass } from "@/components/dashboard/scan-terminal/utils";
 
@@ -165,138 +162,140 @@ function decisionLabel(row?: ScanOpportunityRow | null) {
   return "Monitor";
 }
 
-function tablePrice(row: ScanOpportunityRow) {
-  return formatPrice(row.midpoint, row.ask, row.bid);
-}
-
 function CityRegionList({
   isEn,
   rows,
   selectedCity,
   onSelectCity,
+  slots = [],
+  activeSlotIndex = 0,
 }: {
   isEn: boolean;
   rows: ScanOpportunityRow[];
   selectedCity: string | null;
   onSelectCity: (city: string) => void;
+  slots?: Array<string | null>;
+  activeSlotIndex?: number;
 }) {
   const cities = useMemo(() => {
     const seen = new Set<string>();
-    const result: { city: string; name: string; contractCount: number; bestEdge: number | null; signal: string }[] = [];
+    const result: { city: string; name: string; localTime: string | null }[] = [];
     rows.forEach((row) => {
       const key = String(row.city || "").toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
-      const cityRows = rows.filter((r) => String(r.city || "").toLowerCase() === key);
-      const bestEdge = cityRows.reduce((best, r) => {
-        const e = r.edge_percent ?? 0;
-        return Math.abs(e) > Math.abs(best) ? e : best;
-      }, 0);
       result.push({
         city: key,
         name: rowName(row),
-        contractCount: cityRows.length,
-        bestEdge,
-        signal: cityRows[0]?.signal_status || "",
+        localTime: row.local_time || null,
       });
     });
     return result;
   }, [rows]);
 
   return (
-    <Panel title={isEn ? "Cities" : "城市"} className="shrink-0">
-      <div className="divide-y divide-slate-100 overflow-auto max-h-[320px]">
-        {cities.map(({ city, name, contractCount, bestEdge }) => (
-          <button
-            key={city}
-            type="button"
-            onClick={() => onSelectCity(city)}
-            className={clsx(
-              "flex w-full items-center justify-between px-3 py-2 text-left hover:bg-blue-50/70 transition-colors",
-              selectedCity === city && "bg-blue-50",
-            )}
-          >
-            <div className="min-w-0">
-              <div className="text-[12px] font-bold text-slate-800 truncate">{name}</div>
-              <div className="text-[11px] text-slate-400">{contractCount} {isEn ? "contracts" : "个合约"}</div>
-            </div>
-            <span className={clsx("shrink-0 font-mono text-[12px] font-black", edgeClass(bestEdge))}>
-              {pct(bestEdge)}
-            </span>
-          </button>
-        ))}
+    <Panel title={isEn ? "Cities" : "城市"}>
+      <div className="divide-y divide-slate-100 max-h-[calc(100vh-140px)] overflow-y-auto">
+        {cities.map(({ city, name, localTime }) => {
+          const isActive = selectedCity === city;
+          const displaySlotIndices = slots
+            .map((s, idx) => (s === city ? idx : -1))
+            .filter((idx) => idx !== -1);
+          
+          return (
+            <button
+              key={city}
+              type="button"
+              onClick={() => onSelectCity(city)}
+              className={clsx(
+                "flex w-full items-center justify-between px-3 py-2 text-left hover:bg-blue-50/70 transition-colors",
+                isActive && "bg-blue-50 border-l-2 border-blue-500 pl-2.5",
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-bold text-slate-800 truncate">{name}</div>
+                <div className="text-[11px] text-slate-400">{localTime}</div>
+              </div>
+              
+              {/* Slot indicators */}
+              {displaySlotIndices.length > 0 && (
+                <div className="flex gap-0.5 ml-2">
+                  {displaySlotIndices.map((idx) => (
+                    <span
+                      key={idx}
+                      className={clsx(
+                        "grid h-4 w-4 place-items-center rounded-full text-[9px] font-bold",
+                        idx === activeSlotIndex
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-200 text-slate-600"
+                      )}
+                      title={isEn ? `Slot ${idx + 1}` : `槽位 ${idx + 1}`}
+                    >
+                      {idx + 1}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </button>
+          );
+        })}
       </div>
     </Panel>
   );
 }
 
-function CityContractDetail({
+function EmptySlotCard({
+  slotIndex,
+  isActive,
   isEn,
-  rows,
-  selectedCity,
-  selectedId,
-  onSelect,
+  availableCities,
+  onSelectSlot,
+  onSelectCity,
 }: {
+  slotIndex: number;
+  isActive: boolean;
   isEn: boolean;
-  rows: ScanOpportunityRow[];
-  selectedCity: string | null;
-  selectedId?: string | null;
-  onSelect: (row: ScanOpportunityRow) => void;
+  availableCities: { city: string; name: string }[];
+  onSelectSlot: () => void;
+  onSelectCity: (city: string) => void;
 }) {
-  const cityRows = useMemo(
-    () => (selectedCity ? rows.filter((r) => String(r.city || "").toLowerCase() === selectedCity) : []),
-    [rows, selectedCity],
-  );
-  const [priceMap, setPriceMap] = useState<Record<string, { midpoint: number; ask: number; bid: number }> | null>(null);
-
-  useEffect(() => {
-    setPriceMap(null);
-    if (!selectedCity) return;
-    let cancelled = false;
-    const cityName = cityRows[0]?.city_display_name || selectedCity;
-    fetch(`/api/city/${encodeURIComponent(cityName)}/market-scan?lite=true`, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-    })
-      .then(async (res) => { if (!res.ok) return null; return res.json(); })
-      .then((json: any) => {
-        if (cancelled || !json?.market_scan?.scan_rows) return;
-        const map: Record<string, { midpoint: number; ask: number; bid: number }> = {};
-        for (const r of json.market_scan.scan_rows) {
-          const key = r.id || r.market_slug || "";
-          if (key && (r.midpoint != null || r.ask != null || r.bid != null)) {
-            map[key] = { midpoint: r.midpoint, ask: r.ask, bid: r.bid };
-          }
-        }
-        setPriceMap(map);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [selectedCity, cityRows]);
-
-  const pricedRows = useMemo(() => {
-    if (!priceMap) return cityRows;
-    return cityRows.map((r) => {
-      const prices = priceMap[r.id || r.market_slug || ""];
-      if (!prices) return r;
-      return { ...r, ...prices };
-    });
-  }, [cityRows, priceMap]);
-
   return (
-    <Panel title={isEn ? "Contracts" : "合约"} className="flex-1 min-h-0">
-      {!selectedCity ? (
-        <div className="flex items-center justify-center p-6 text-[12px] text-slate-400">
-          {isEn ? "Select a city above" : "在上方选择城市"}
-        </div>
-      ) : !cityRows.length ? (
-        <div className="flex items-center justify-center p-6 text-[12px] text-slate-400">
-          {isEn ? "No contracts for this city" : "该城市暂无合约"}
-        </div>
-      ) : (
-        <KoyfinRowsTable compact isEn={isEn} onSelect={onSelect} rows={pricedRows} selectedId={selectedId} />
+    <div
+      onClick={onSelectSlot}
+      className={clsx(
+        "flex flex-col items-center justify-center h-full rounded-[4px] border-2 border-dashed p-6 cursor-pointer bg-slate-50/50 transition-all",
+        isActive
+          ? "border-blue-500 bg-blue-50/10 ring-2 ring-blue-500/20"
+          : "border-slate-300 hover:border-slate-400 hover:bg-slate-50/80"
       )}
-    </Panel>
+    >
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-400 mb-2">
+        <span className="text-xl font-bold">+</span>
+      </div>
+      <div className="text-[12px] font-bold text-slate-700 mb-1">
+        {isEn ? `Slot ${slotIndex + 1}: Empty` : `槽位 ${slotIndex + 1}: 空白`}
+      </div>
+      <div className="text-[10px] text-slate-400 text-center mb-3 max-w-[180px]">
+        {isEn
+          ? "Select this card and click a city on the left, or select below:"
+          : "激活此卡片并从左侧选择城市，或从下方直接选择："}
+      </div>
+      <select
+        value=""
+        onClick={(e) => e.stopPropagation()} // prevent triggering onSelectSlot
+        onChange={(e) => {
+          if (e.target.value) onSelectCity(e.target.value);
+        }}
+        className="text-[11px] font-semibold text-slate-600 px-2 py-1 rounded border border-slate-300 bg-white outline-none max-w-[160px]"
+      >
+        <option value="">{isEn ? "Choose city..." : "选择城市..."}</option>
+        {availableCities.map((c) => (
+          <option key={c.city} value={c.city}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
@@ -318,6 +317,8 @@ function PolyWeatherTerminal({
   setSelectedCity,
   selectedRegionKey,
   setSelectedRegionKey,
+  visibleRegions,
+  toggleRegion,
 }: {
   generatedText: string;
   isEn: boolean;
@@ -336,6 +337,8 @@ function PolyWeatherTerminal({
   setSelectedCity: (city: string | null) => void;
   selectedRegionKey: string;
   setSelectedRegionKey: (key: string) => void;
+  visibleRegions: Set<string>;
+  toggleRegion: (key: string) => void;
 }) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -361,6 +364,19 @@ function PolyWeatherTerminal({
   const [navExpanded, setNavExpanded] = useState(false);
   const [activeNavKey, setActiveNavKey] = useState<string>("contracts");
 
+  const [slots, setSlots] = useState<Array<string | null>>(() => {
+    try {
+      const stored = localStorage.getItem("polyweather_terminal_slots");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length === 4) return parsed;
+      }
+    } catch {}
+    return [null, null, null, null];
+  });
+  const [activeSlotIndex, setActiveSlotIndex] = useState<number>(0);
+  const [maximizedSlotIndex, setMaximizedSlotIndex] = useState<number | null>(null);
+
   const NAV_ITEMS = [
     { key: "contracts", Icon: Table2, labelEn: "Contracts", labelZh: "天气合约" },
     { key: "markets", Icon: Activity, labelEn: "Markets", labelZh: "市场概览" },
@@ -373,9 +389,43 @@ function PolyWeatherTerminal({
 
   const filteredRegionRows = useMemo(() => {
     return rows.filter(
-      (row) => resolveTradingRegionKey(row) === selectedRegionKey,
+      (row) => getCityRegion(row) === selectedRegionKey,
     );
   }, [rows, selectedRegionKey]);
+
+  useEffect(() => {
+    if (filteredRegionRows.length && slots.every((s) => s === null)) {
+      const next = [filteredRegionRows[0].city, null, null, null];
+      setSlots(next);
+      try {
+        localStorage.setItem("polyweather_terminal_slots", JSON.stringify(next));
+      } catch {}
+    }
+  }, [filteredRegionRows, slots]);
+
+  const handleSelectCityForSlot = (index: number, city: string | null) => {
+    const next = [...slots];
+    next[index] = city;
+    setSlots(next);
+    try {
+      localStorage.setItem("polyweather_terminal_slots", JSON.stringify(next));
+    } catch {}
+  };
+
+  const availableCities = useMemo(() => {
+    const seen = new Set<string>();
+    const result: { city: string; name: string }[] = [];
+    filteredRegionRows.forEach((row) => {
+      const key = String(row.city || "").toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push({
+        city: key,
+        name: rowName(row),
+      });
+    });
+    return result;
+  }, [filteredRegionRows]);
 
   const watchRows = useMemo(() => {
     return filteredRegionRows
@@ -583,41 +633,8 @@ function PolyWeatherTerminal({
         <main className="min-h-0 flex-1 overflow-hidden flex flex-col p-2 bg-[#eef2f6]">
           {activeNavKey === "training" ? (
             <TrainingDashboard isEn={isEn} />
-          ) : activeNavKey === "markets" ? (
-            <MarketOverviewView
-              isEn={isEn}
-              rows={rows}
-              onSelectRow={(row) => {
-                const regionKey = resolveTradingRegionKey(row);
-                if (regionKey) setSelectedRegionKey(regionKey);
-                setSelectedRow(row);
-                setActiveNavKey("contracts");
-              }}
-            />
           ) : (
             <>
-              {/* Region tabs */}
-              <div className="flex shrink-0 items-center gap-1 overflow-x-auto rounded-[4px] border border-[#cfd6df] bg-white p-1 mb-2 scrollbar-none">
-                {TRADING_REGIONS.map((r) => ({
-                    key: r.key,
-                    labelEn: r.labelEn.toUpperCase(),
-                    labelZh: r.labelZh,
-                  })).map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setSelectedRegionKey(tab.key)}
-                    className={clsx(
-                      "px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-[3px] transition-all whitespace-nowrap",
-                      selectedRegionKey === tab.key
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                    )}
-                  >
-                    {isEn ? tab.labelEn : tab.labelZh}
-                  </button>
-                ))}
-              </div>
               {/* Mobile layout */}
               <div className="flex flex-col gap-2 lg:hidden overflow-auto flex-1 pb-6">
                 <MobileRegionTabs
@@ -647,7 +664,7 @@ function PolyWeatherTerminal({
                         ["DEB", temp(selectedRow.deb_prediction, selectedRow.temp_symbol)],
                         ["Gap", temp(selectedRow.signed_gap ?? selectedRow.gap_to_target, selectedRow.temp_symbol)],
                         ["Edge", pct(selectedRow.edge_percent)],
-                        ["Market", formatPrice(selectedRow.midpoint, selectedRow.ask, selectedRow.bid)],
+                        ["Market", "--"],
                       ].map(([label, value]) => (
                         <div key={label} className="rounded border border-slate-200 bg-slate-50 p-2">
                           <div className="text-[10px] font-black uppercase text-slate-500">{label}</div>
@@ -665,20 +682,142 @@ function PolyWeatherTerminal({
                   <CityRegionList
                     isEn={isEn}
                     rows={filteredRegionRows}
-                    selectedCity={selectedCity}
-                    onSelectCity={setSelectedCity}
-                  />
-                  <CityContractDetail
-                    isEn={isEn}
-                    rows={filteredRegionRows}
-                    selectedCity={selectedCity}
-                    selectedId={selectedRow?.id}
-                    onSelect={setSelectedRow}
+                    selectedCity={slots[activeSlotIndex]}
+                    onSelectCity={(city) => handleSelectCityForSlot(activeSlotIndex, city)}
+                    slots={slots}
+                    activeSlotIndex={activeSlotIndex}
                   />
                 </div>
 
                 <div className="min-h-0">
-                  <LiveTemperatureThresholdChart isEn={isEn} row={selectedRow} allRows={filteredRegionRows} />
+                  {maximizedSlotIndex !== null ? (
+                    // Maximized view
+                    <div
+                      onClick={() => setActiveSlotIndex(maximizedSlotIndex)}
+                      className={clsx(
+                        "relative h-full rounded-[4px] border overflow-hidden border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10"
+                      )}
+                    >
+                      {/* Floating actions toolbar */}
+                      <div className="absolute right-[110px] top-[6px] z-20 flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMaximizedSlotIndex(null);
+                          }}
+                          className="grid h-6 w-6 place-items-center rounded bg-white hover:bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
+                          title={isEn ? "Restore Grid" : "还原网格"}
+                        >
+                          ❐
+                        </button>
+                        <button
+                          type="button"
+                          disabled={slots.filter(Boolean).length <= 1}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectCityForSlot(maximizedSlotIndex, null);
+                            setMaximizedSlotIndex(null);
+                          }}
+                          className={clsx(
+                            "grid h-6 w-6 place-items-center rounded border transition-colors shadow-sm",
+                            slots.filter(Boolean).length <= 1
+                              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+                              : "bg-white hover:bg-slate-50 border-slate-200 text-slate-500 hover:text-red-600"
+                          )}
+                          title={isEn ? "Clear Slot" : "清除槽位"}
+                        >
+                          ✕
+                        </button>
+                      </div>
+
+                      <LiveTemperatureThresholdChart
+                        isEn={isEn}
+                        row={filteredRegionRows.find((r) => String(r.city || "").toLowerCase() === slots[maximizedSlotIndex]) || null}
+                        allRows={filteredRegionRows}
+                        compact={false}
+                      />
+                    </div>
+                  ) : (
+                    // 2x2 grid layout
+                    <div className="grid grid-cols-2 grid-rows-2 gap-2 h-full">
+                      {[0, 1, 2, 3].map((slotIndex) => {
+                        const isSlotActive = activeSlotIndex === slotIndex;
+                        const cityInSlot = slots[slotIndex];
+
+                        if (!cityInSlot) {
+                          return (
+                            <EmptySlotCard
+                              key={slotIndex}
+                              slotIndex={slotIndex}
+                              isActive={isSlotActive}
+                              isEn={isEn}
+                              availableCities={availableCities}
+                              onSelectSlot={() => setActiveSlotIndex(slotIndex)}
+                              onSelectCity={(city) => handleSelectCityForSlot(slotIndex, city)}
+                            />
+                          );
+                        }
+
+                        const rowForSlot = filteredRegionRows.find(
+                          (r) => String(r.city || "").toLowerCase() === cityInSlot
+                        ) || null;
+
+                        return (
+                          <div
+                            key={slotIndex}
+                            onClick={() => setActiveSlotIndex(slotIndex)}
+                            className={clsx(
+                              "relative h-full rounded-[4px] border overflow-hidden transition-all",
+                              isSlotActive
+                                ? "border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10"
+                                : "border-[#d2d9e2] hover:border-slate-400"
+                            )}
+                          >
+                            {/* Floating actions toolbar */}
+                            <div className="absolute right-[110px] top-[6px] z-20 flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMaximizedSlotIndex(slotIndex);
+                                  setActiveSlotIndex(slotIndex);
+                                }}
+                                className="grid h-6 w-6 place-items-center rounded bg-white hover:bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
+                                title={isEn ? "Maximize" : "最大化"}
+                              >
+                                ⛶
+                              </button>
+                              <button
+                                type="button"
+                                disabled={slots.filter(Boolean).length <= 1}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectCityForSlot(slotIndex, null);
+                                }}
+                                className={clsx(
+                                  "grid h-6 w-6 place-items-center rounded border transition-colors shadow-sm",
+                                  slots.filter(Boolean).length <= 1
+                                    ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+                                    : "bg-white hover:bg-slate-50 border-slate-200 text-slate-500 hover:text-red-600"
+                                )}
+                                title={isEn ? "Clear Slot" : "清除槽位"}
+                              >
+                                ✕
+                              </button>
+                            </div>
+
+                            <LiveTemperatureThresholdChart
+                              isEn={isEn}
+                              row={rowForSlot}
+                              allRows={filteredRegionRows}
+                              compact={true}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             </>
@@ -709,6 +848,26 @@ function ScanTerminalScreen() {
   const [selectedRegionKey, setSelectedRegionKey] = useState<string>("east_asia");
   const [localTimezoneOffsetSeconds, setLocalTimezoneOffsetSeconds] = useState<number | null>(null);
   const [useLocalTimezoneDefault, setUseLocalTimezoneDefault] = useState(true);
+  const [visibleRegions, setVisibleRegions] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem("polyweather_visible_regions");
+      if (stored) return new Set(JSON.parse(stored));
+    } catch {}
+    return new Set(REGIONS.map((r) => r.key));
+  });
+  const toggleRegion = useCallback((key: string) => {
+    setVisibleRegions((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        if (next.size <= 1) return prev; // keep at least one
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      try { localStorage.setItem("polyweather_visible_regions", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -779,7 +938,7 @@ function ScanTerminalScreen() {
   }, []);
 
   useEffect(() => {
-    setSelectedRegionKey(detectLocalRegion());
+    setSelectedRegionKey(getDefaultRegion());
     setLocalTimezoneOffsetSeconds(-new Date().getTimezoneOffset() * 60);
   }, []);
 
@@ -876,6 +1035,8 @@ function ScanTerminalScreen() {
       setSelectedCity={setSelectedCity}
       selectedRegionKey={selectedRegionKey}
       setSelectedRegionKey={selectRegionManually}
+      visibleRegions={visibleRegions}
+      toggleRegion={toggleRegion}
     />
   );
 }
