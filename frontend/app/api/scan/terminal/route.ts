@@ -1,20 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  applyAuthResponseCookies,
-  buildBackendRequestHeaders,
-} from "@/lib/backend-auth";
-import {
-  buildProxyExceptionResponse,
-  buildUpstreamErrorResponse,
-} from "@/lib/api-proxy";
+import { proxyBackendJsonGet } from "@/lib/api-proxy";
+import { buildForceRefreshProxyCachePolicy } from "@/lib/proxy-cache-policy";
 
 const API_BASE = process.env.POLYWEATHER_API_BASE_URL;
 const SCAN_TERMINAL_PROXY_TIMEOUT_MS = Number(
-  process.env.POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "90000",
+  process.env.POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "28000",
 );
 
-export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
   if (!API_BASE) {
@@ -25,6 +18,7 @@ export async function GET(req: NextRequest) {
   }
 
   const params = new URLSearchParams();
+  const forceRefresh = req.nextUrl.searchParams.get("force_refresh") ?? "false";
   for (const key of [
     "scan_mode",
     "min_price",
@@ -36,47 +30,36 @@ export async function GET(req: NextRequest) {
     "time_range",
     "limit",
     "force_refresh",
+    "skip_polymarket",
+    "timezone_offset_seconds",
   ]) {
     const value = req.nextUrl.searchParams.get(key);
     if (value != null && value !== "") {
       params.set(key, value);
     }
   }
+  const tradingRegion = req.nextUrl.searchParams.get("trading_region");
+  if (tradingRegion != null && tradingRegion !== "") {
+    params.set("region", tradingRegion);
+  }
+  const cachePolicy = buildForceRefreshProxyCachePolicy(forceRefresh, 10);
 
   const url = `${API_BASE}/api/scan/terminal?${params.toString()}`;
 
-  let auth: Awaited<ReturnType<typeof buildBackendRequestHeaders>> | null = null;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), SCAN_TERMINAL_PROXY_TIMEOUT_MS);
 
   try {
-    auth = await buildBackendRequestHeaders(req);
-    const res = await fetch(url, {
-      headers: auth.headers,
-      cache: "no-store",
+    return await proxyBackendJsonGet(req, {
+      cacheControl: cachePolicy.responseCacheControl,
+      fetchCache:
+        cachePolicy.fetchMode === "no-store" ? "no-store" : undefined,
+      publicMessage: "Failed to fetch scan terminal data",
+      revalidateSeconds: cachePolicy.revalidateSeconds,
       signal: controller.signal,
+      timeoutPublicMessage: "Scan terminal request timed out",
+      url,
     });
-    if (!res.ok) {
-      const raw = await res.text();
-      const response = buildUpstreamErrorResponse(res.status, raw);
-      return applyAuthResponseCookies(response, auth.response);
-    }
-    const data = await res.json();
-    const response = NextResponse.json(data, {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    });
-    return applyAuthResponseCookies(response, auth.response);
-  } catch (error) {
-    const timedOut = controller.signal.aborted;
-    const response = buildProxyExceptionResponse(error, {
-      publicMessage: timedOut
-        ? "Scan terminal request timed out"
-        : "Failed to fetch scan terminal data",
-      status: timedOut ? 504 : 500,
-    });
-    return auth ? applyAuthResponseCookies(response, auth.response) : response;
   } finally {
     clearTimeout(timeoutId);
   }

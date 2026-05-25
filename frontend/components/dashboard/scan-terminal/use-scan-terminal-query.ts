@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   scanTerminalQueryPolicy,
   scanTerminalClient,
@@ -10,13 +10,34 @@ import {
 import { useRemoteDataQuery } from "@/components/dashboard/scan-terminal/use-remote-data-query";
 import type { ScanTerminalResponse } from "@/lib/dashboard-types";
 
+const SCAN_CACHE_KEY = "polyweather_scan_v1";
+const SCAN_CACHE_TTL_MS = 2 * 60 * 1000; // 2 min — cities list instant on revisit
+
+function readScanCache(): ScanTerminalResponse | null {
+  try {
+    const raw = localStorage.getItem(SCAN_CACHE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (cached.ts && Date.now() - cached.ts < SCAN_CACHE_TTL_MS && cached.data?.rows) {
+      return cached.data;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function writeScanCache(data: ScanTerminalResponse) {
+  try { localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { /* ignore */ }
+}
+
 export function useScanTerminalQuery({
   isPro,
   proAccessLoading,
+  timezoneOffsetSeconds,
   tradingRegion,
 }: {
   isPro: boolean;
   proAccessLoading: boolean;
+  timezoneOffsetSeconds?: number | null;
   tradingRegion?: string;
 }) {
   const {
@@ -28,7 +49,12 @@ export function useScanTerminalQuery({
     reset,
     run,
   } = useRemoteDataQuery<ScanTerminalResponse>();
+
   const lastForcedScanRefreshAtRef = useRef(0);
+  const [cachedRows, setCachedRows] = useState<ScanTerminalResponse | null>(() => {
+    if (typeof window !== "undefined") return readScanCache();
+    return null;
+  });
 
   const fetchScanTerminal = useCallback(
     async ({
@@ -50,12 +76,14 @@ export function useScanTerminalQuery({
           scanTerminalClient.getTerminal({
             forceRefresh,
             signal,
+            timezoneOffsetSeconds,
             tradingRegion,
           }),
         showLoading,
+        onSuccess: (data) => { writeScanCache(data); setCachedRows(data); },
       });
     },
-    [isPro, proAccessLoading, run, tradingRegion],
+    [isPro, proAccessLoading, run, timezoneOffsetSeconds, tradingRegion],
   );
 
   useEffect(() => {
@@ -65,7 +93,9 @@ export function useScanTerminalQuery({
       return;
     }
     void fetchScanTerminal({ forceRefresh: false, showLoading: true });
-  }, [fetchScanTerminal, isPro, proAccessLoading, reset, tradingRegion]);
+  }, [fetchScanTerminal, isPro, proAccessLoading, reset, timezoneOffsetSeconds, tradingRegion]);
+
+  const effectiveData = terminalData || cachedRows;
 
   const refreshScanTerminalManually = useCallback(() => {
     if (
@@ -107,6 +137,6 @@ export function useScanTerminalQuery({
     scanError,
     scanLoading,
     scanRemote,
-    terminalData,
+    terminalData: effectiveData,
   };
 }

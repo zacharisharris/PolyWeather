@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
@@ -16,6 +15,29 @@ from loguru import logger
 
 from web.analysis_service import _analyze
 from web.core import CITIES
+from web.services.scan_ai_config import (
+    _SCAN_CITY_AI_CACHE,
+    _SCAN_CITY_AI_CACHE_LOCK,
+    _scan_ai_api_key,
+    SCAN_AI_API_KEY_ENV_HINT,
+    SCAN_AI_BASE_URL,
+    SCAN_AI_CACHE_TTL_SEC,
+    SCAN_AI_ENABLED,
+    SCAN_AI_MAX_ROWS,
+    SCAN_AI_MAX_TOKENS,
+    SCAN_AI_MODEL,
+    SCAN_AI_PROVIDER,
+    SCAN_AI_PROVIDER_LABEL,
+    SCAN_AI_TIMEOUT_SEC,
+    SCAN_CITY_AI_MAX_TOKENS,
+    SCAN_CITY_AI_MODEL,
+    SCAN_CITY_AI_RETRY_ON_STREAM_PARSE_ERROR,
+    SCAN_CITY_AI_STREAM_MAX_TOKENS,
+    SCAN_CITY_AI_TIMEOUT_SEC,
+    SCAN_TERMINAL_BUILD_TIMEOUT_SEC,
+    SCAN_TERMINAL_MAX_WORKERS,
+    SCAN_TERMINAL_PAYLOAD_TTL_SEC,
+)
 from src.data_collection.city_registry import ALIASES
 from web.scan_city_ai_fallback import (
     _build_city_ai_fallback,
@@ -63,147 +85,6 @@ from web.scan_terminal_payloads import (
     build_stale_scan_terminal_payload,
 )
 from web.scan_terminal_ranker import build_ranked_scan_terminal_result
-
-_SCAN_CITY_AI_CACHE_LOCK = threading.Lock()
-_SCAN_CITY_AI_CACHE: Dict[str, Dict[str, Any]] = {}
-
-
-def _env_int(
-    name: str,
-    default: int,
-    *,
-    min_value: int,
-    max_value: Optional[int] = None,
-) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except Exception:
-        value = int(default)
-    value = max(int(min_value), value)
-    if max_value is not None:
-        value = min(int(max_value), value)
-    return value
-
-
-SCAN_TERMINAL_PAYLOAD_TTL_SEC = max(
-    60,
-    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_PAYLOAD_TTL_SEC", "300")),
-)
-SCAN_TERMINAL_BUILD_TIMEOUT_SEC = max(
-    8,
-    int(os.getenv("POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC", "120")),
-)
-SCAN_TERMINAL_MAX_WORKERS = _env_int(
-    "POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS",
-    2,
-    min_value=1,
-    max_value=4,
-)
-DEFAULT_SCAN_AI_MODEL = "mimo-v2.5-pro"
-DEFAULT_SCAN_AI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
-SCAN_AI_API_KEY_ENV_HINT = (
-    "POLYWEATHER_SCAN_AI_API_KEY "
-    "(or POLYWEATHER_MIMO_API_KEY / POLYWEATHER_DEEPSEEK_API_KEY)"
-)
-
-
-def _env_str(*names: str, default: str = "") -> str:
-    for name in names:
-        value = str(os.getenv(name) or "").strip()
-        if value:
-            return value
-    return str(default).strip()
-
-
-def _scan_ai_api_key() -> str:
-    return _env_str(
-        "POLYWEATHER_SCAN_AI_API_KEY",
-        "POLYWEATHER_MIMO_API_KEY",
-        "POLYWEATHER_DEEPSEEK_API_KEY",
-    )
-
-
-def _infer_scan_ai_provider(base_url: str, model: str) -> str:
-    text = f"{base_url} {model}".lower()
-    if "xiaomimimo" in text or "mimo" in text:
-        return "mimo"
-    if "deepseek" in text:
-        return "deepseek"
-    return "openai-compatible"
-
-
-def _scan_ai_provider_label(provider: str) -> str:
-    normalized = provider.strip().lower()
-    if normalized == "mimo":
-        return "MiMo"
-    if normalized == "deepseek":
-        return "DeepSeek"
-    return "AI provider"
-
-
-SCAN_AI_MODEL = _env_str("POLYWEATHER_SCAN_AI_MODEL", default=DEFAULT_SCAN_AI_MODEL)
-SCAN_CITY_AI_MODEL = _env_str(
-    "POLYWEATHER_SCAN_CITY_AI_MODEL",
-    "POLYWEATHER_SCAN_AI_MODEL",
-    default=SCAN_AI_MODEL or DEFAULT_SCAN_AI_MODEL,
-)
-SCAN_AI_BASE_URL = _env_str(
-    "POLYWEATHER_SCAN_AI_BASE_URL",
-    "POLYWEATHER_MIMO_BASE_URL",
-    "POLYWEATHER_DEEPSEEK_BASE_URL",
-    default=DEFAULT_SCAN_AI_BASE_URL,
-).rstrip("/")
-SCAN_AI_PROVIDER = _env_str(
-    "POLYWEATHER_SCAN_AI_PROVIDER",
-    default=_infer_scan_ai_provider(SCAN_AI_BASE_URL, SCAN_CITY_AI_MODEL),
-)
-SCAN_AI_PROVIDER_LABEL = _env_str(
-    "POLYWEATHER_SCAN_AI_PROVIDER_LABEL",
-    default=_scan_ai_provider_label(SCAN_AI_PROVIDER),
-)
-SCAN_AI_ENABLED = str(
-    os.getenv("POLYWEATHER_SCAN_AI_ENABLED") or "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-SCAN_AI_TIMEOUT_SEC = _env_int(
-    "POLYWEATHER_SCAN_AI_TIMEOUT_SEC",
-    40,
-    min_value=10,
-    max_value=120,
-)
-SCAN_CITY_AI_TIMEOUT_SEC = _env_int(
-    "POLYWEATHER_SCAN_CITY_AI_TIMEOUT_SEC",
-    30,
-    min_value=10,
-    max_value=120,
-)
-SCAN_CITY_AI_RETRY_ON_STREAM_PARSE_ERROR = str(
-    os.getenv("POLYWEATHER_SCAN_CITY_AI_RETRY_ON_STREAM_PARSE_ERROR") or "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-SCAN_AI_CACHE_TTL_SEC = max(
-    30,
-    int(os.getenv("POLYWEATHER_SCAN_AI_CACHE_TTL_SEC", "3600")),
-)
-SCAN_AI_MAX_ROWS = _env_int("POLYWEATHER_SCAN_AI_MAX_ROWS", 40, min_value=1)
-SCAN_AI_MAX_TOKENS = _env_int(
-    "POLYWEATHER_SCAN_AI_MAX_TOKENS",
-    3200,
-    min_value=600,
-    max_value=64000,
-)
-SCAN_CITY_AI_MAX_TOKENS = _env_int(
-    "POLYWEATHER_SCAN_CITY_AI_MAX_TOKENS",
-    800,
-    min_value=400,
-    max_value=64000,
-)
-SCAN_CITY_AI_STREAM_MAX_TOKENS = _env_int(
-    "POLYWEATHER_SCAN_CITY_AI_STREAM_MAX_TOKENS",
-    min(SCAN_CITY_AI_MAX_TOKENS, 800),
-    min_value=400,
-    max_value=64000,
-)
-
-
 def _normalize_locale(value: Any) -> str:
     text = str(value or "").strip().lower()
     return "en-US" if text.startswith("en") else "zh-CN"
@@ -247,7 +128,6 @@ def _call_deepseek_scan_ai(ai_input: Dict[str, Any]) -> Dict[str, Any]:
         "多个天气模型预测值 model_cluster.sources、METAR 实测序列、机场原始报文和候选合约。"
         "你的首要任务不是分析套利，也不是推荐 BUY YES/NO，而是预测该城市今日最终最高温是多少。"
         "必须输出城市级最高温点估计、置信区间、置信度、峰值窗口状态、机场报文解读和一句预测理由。"
-        "V4 禁止使用 EMOS、EMOS peak、EMOS probability、edge 或 Kelly 作为交易依据；"
         "最高温预测必须直接参考该城市全部 model_cluster.sources、DEB、峰值窗口和 METAR/机场报文。"
         "如果天气模型之间分歧大，必须放宽置信区间并降低 confidence；如果 METAR 与模型路径冲突，必须解释修正方向。"
         "必须先判断 peak_window_label、minutes_until_peak_start/end 和 window_phase：峰值窗口尚未到来时，"
@@ -267,7 +147,6 @@ def _call_deepseek_scan_ai(ai_input: Dict[str, Any]) -> Dict[str, Any]:
             "contract_notes items are optional and require row_id, forecast_match, reason_zh, reason_en; "
             "forecast_match must be one of core, edge, outside, watch. "
             "Focus on final max temperature prediction; do not output recommendations/vetoed/downgraded unless needed for backward compatibility. "
-            "Do not mention EMOS, edge, Kelly, arbitrage, position size, or trading recommendation. "
             "Keep every city forecast concise: one sentence for METAR read and one sentence for reasoning."
         ),
         "snapshot": model_snapshot,
@@ -377,6 +256,8 @@ def _build_city_ai_prompt(data: Dict[str, Any]) -> Dict[str, Any]:
             "wind_speed_kt": current.get("wind_speed_kt"),
             "wind_dir": current.get("wind_dir"),
             "humidity": current.get("humidity"),
+            "pressure_hpa": current.get("pressure_hpa"),
+            "observation_source": current.get("settlement_source"),
         },
         "airport": {
             "name": risk.get("airport")
@@ -734,6 +615,11 @@ def stream_scan_city_ai_forecast_payload(
             "final_judgment_en": preview_raw.get("final_judgment_en"),
             "model_cluster_note_zh": preview_raw.get("model_cluster_note_zh"),
             "model_cluster_note_en": preview_raw.get("model_cluster_note_en"),
+            "predicted_max": preview_raw.get("predicted_max"),
+            "range_low": preview_raw.get("range_low"),
+            "range_high": preview_raw.get("range_high"),
+            "confidence": preview_raw.get("confidence"),
+            "unit": preview_raw.get("unit"),
         },
     )
     yield _sse_event(
@@ -1225,6 +1111,14 @@ def _build_scan_terminal_payload_uncached(
 
     try:
         city_names = list(CITIES.keys())
+        timezone_offset = filters.get("timezone_offset_seconds")
+        if timezone_offset is not None:
+            target_tz = int(timezone_offset)
+            city_names = [
+                city_name
+                for city_name in city_names
+                if int((CITIES.get(city_name) or {}).get("tz", 0)) == target_tz
+            ]
         region_filter = str(filters.get("trading_region") or "").strip().lower()
         if region_filter and region_filter not in ("all", ""):
             from web.scan_terminal_filters import market_region_from_tz_offset as _tz_region
@@ -1549,3 +1443,68 @@ def build_scan_terminal_ai_payload(
             reason=str(exc),
             duration_ms=duration_ms,
         )
+
+
+_SCAN_PREWARM_STARTED = False
+_SCAN_PREWARM_LOCK = threading.Lock()
+
+
+def start_scan_terminal_prewarm() -> None:
+    """Warm analysis caches for all cities at startup so the first terminal
+    scan returns quickly instead of forcing every city through a cold
+    _analyze() path.
+
+    Runs once per process.  Safe to call from any thread and at any point
+    during the server lifecycle.
+    """
+    global _SCAN_PREWARM_STARTED
+    with _SCAN_PREWARM_LOCK:
+        if _SCAN_PREWARM_STARTED:
+            return
+        _SCAN_PREWARM_STARTED = True
+
+    city_names = list(CITIES.keys())
+    logger.info(
+        "scan terminal pre-warm starting cities={} workers={}",
+        len(city_names),
+        SCAN_TERMINAL_MAX_WORKERS,
+    )
+
+    def _warm_one(city: str) -> str:
+        try:
+            _analyze(city, force_refresh=False, detail_mode="panel")
+        except Exception:
+            pass
+        return city
+
+    def _run():
+        started = time.time()
+        ok = 0
+        try:
+            workers = max(1, min(SCAN_TERMINAL_MAX_WORKERS, len(city_names)))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = {ex.submit(_warm_one, c): c for c in city_names}
+                for f in as_completed(futures):
+                    try:
+                        f.result()
+                        ok += 1
+                    except Exception:
+                        pass
+            elapsed = int(time.time() - started)
+            logger.info(
+                "scan terminal pre-warm finished ok={}/{} elapsed={}s",
+                ok,
+                len(city_names),
+                elapsed,
+            )
+        except (ValueError, OSError, IOError):
+            # Process is shutting down — file handles / threads may be closed
+            logger.info(
+                "scan terminal pre-warm interrupted (shutdown) ok={}/{}",
+                ok,
+                len(city_names),
+            )
+        except Exception:
+            logger.exception("scan terminal pre-warm failed")
+
+    threading.Thread(target=_run, name="scan-prewarm", daemon=True).start()

@@ -1,5 +1,7 @@
 """Market scan and scan AI API routes."""
 
+from __future__ import annotations
+
 from fastapi import APIRouter, Request
 
 from web.services.scan_api import (
@@ -27,6 +29,9 @@ async def scan_terminal(
     limit: int = 25,
     force_refresh: bool = False,
     region: str = "",
+    trading_region: str = "",
+    skip_polymarket: bool = False,
+    timezone_offset_seconds: int | None = None,
 ):
     return await get_scan_terminal_payload(
         request,
@@ -40,7 +45,9 @@ async def scan_terminal(
         time_range=time_range,
         limit=limit,
         force_refresh=force_refresh,
-        region=region if region else None,
+        region=region or trading_region or None,
+        skip_polymarket=skip_polymarket,
+        timezone_offset_seconds=timezone_offset_seconds,
     )
 
 
