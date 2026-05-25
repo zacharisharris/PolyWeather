@@ -53,6 +53,7 @@ type AiCityStreamEvent = {
 type TerminalQueryOptions = {
   forceRefresh?: boolean;
   signal?: AbortSignal;
+  timezoneOffsetSeconds?: number | null;
   tradingRegion?: string;
 };
 
@@ -254,6 +255,7 @@ async function readAiCityForecastStream(
 async function getTerminal({
   forceRefresh = false,
   signal,
+  timezoneOffsetSeconds,
   tradingRegion,
 }: TerminalQueryOptions = {}) {
   const params = new URLSearchParams({
@@ -264,12 +266,15 @@ async function getTerminal({
     min_liquidity: "500",
     market_type: "maxtemp",
     time_range: "today",
-    limit: "36",
+    limit: "180",
     force_refresh: String(forceRefresh),
     skip_polymarket: "true",
   });
   if (tradingRegion && tradingRegion !== "all") {
     params.set("trading_region", tradingRegion);
+  }
+  if (Number.isFinite(timezoneOffsetSeconds)) {
+    params.set("timezone_offset_seconds", String(Math.trunc(Number(timezoneOffsetSeconds))));
   }
   if (forceRefresh) {
     params.set("_ts", String(Date.now()));

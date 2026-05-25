@@ -17,13 +17,15 @@ def test_normalize_scan_terminal_filters_clamps_and_swaps_bounds():
             "limit": 999,
             "high_liquidity_only": True,
             "min_liquidity": 100,
+            "timezone_offset_seconds": "28800",
         }
     )
 
     assert filters["min_price"] == 0.0
     assert filters["max_price"] == 1.0
-    assert filters["limit"] == 100
+    assert filters["limit"] == 200
     assert filters["min_liquidity"] == 5000.0
+    assert filters["timezone_offset_seconds"] == 28800
 
 
 def test_ranked_scan_terminal_result_sorts_and_summarizes_unique_markets():

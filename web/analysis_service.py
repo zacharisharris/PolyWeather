@@ -35,6 +35,18 @@ from web.services.city_payloads import (
     build_city_market_scan_payload as _city_payload_market_scan,
     build_city_summary_payload as _city_payload_summary,
 )
+from web.services.observation_freshness import (
+    build_observation_freshness as _build_observation_freshness,
+    observation_age_min as _observation_age_min,
+)
+from web.services.analysis_utils import (
+    add_signal as _add_signal,
+    bucket_label as _bucket_label,
+    bucket_label_from_value as _bucket_label_from_value,
+    format_clock_minutes as _format_clock_minutes,
+    next_observation_clock as _next_observation_clock,
+    top_probability_bucket as _top_probability_bucket,
+)
 from web.services.analysis_signals import (
     _build_deviation_monitor,
     _build_taf_signal,
@@ -189,183 +201,6 @@ def _metar_is_current_local_day(
     return local_dt.strftime("%Y-%m-%d") == local_date
 
 
-_OBSERVATION_SOURCE_PROFILES: Dict[str, Dict[str, Any]] = {
-    "amos": {
-        "label": "AMOS",
-        "native_update_interval_sec": 60,
-        "fresh_window_sec": 180,
-        "expected_grace_sec": 180,
-        "stale_after_sec": 900,
-    },
-    "amsc_awos": {
-        "label": "AMSC AWOS",
-        "native_update_interval_sec": 60,
-        "fresh_window_sec": 180,
-        "expected_grace_sec": 180,
-        "stale_after_sec": 900,
-    },
-    "jma": {
-        "label": "JMA",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "fmi": {
-        "label": "FMI",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "knmi": {
-        "label": "KNMI",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "hko": {
-        "label": "HKO",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "cwa": {
-        "label": "CWA",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "mgm": {
-        "label": "MGM",
-        "native_update_interval_sec": 900,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 900,
-        "stale_after_sec": 3600,
-    },
-    "metar": {
-        "label": "METAR",
-        "native_update_interval_sec": 900,
-        "fresh_window_sec": 600,
-        "expected_grace_sec": 900,
-        "stale_after_sec": 3600,
-    },
-    "noaa": {
-        "label": "NOAA",
-        "native_update_interval_sec": 900,
-        "fresh_window_sec": 600,
-        "expected_grace_sec": 900,
-        "stale_after_sec": 3600,
-    },
-    "wunderground": {
-        "label": "METAR",
-        "native_update_interval_sec": 900,
-        "fresh_window_sec": 600,
-        "expected_grace_sec": 900,
-        "stale_after_sec": 3600,
-    },
-}
-
-
-def _canonical_observation_source_code(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return "metar"
-    if "amos" in raw:
-        return "amos"
-    if "jma" in raw:
-        return "jma"
-    if "fmi" in raw:
-        return "fmi"
-    if "knmi" in raw:
-        return "knmi"
-    if "hko" in raw:
-        return "hko"
-    if "cwa" in raw:
-        return "cwa"
-    if "mgm" in raw:
-        return "mgm"
-    if "noaa" in raw:
-        return "noaa"
-    if "wunderground" in raw or raw == "wu":
-        return "wunderground"
-    return raw
-
-
-def _observation_age_min(value: Any, now_utc: Optional[datetime] = None) -> Optional[int]:
-    obs_dt = _parse_utc_datetime(value)
-    if obs_dt is None:
-        return None
-    now = now_utc or datetime.now(timezone.utc)
-    return max(0, int((now - obs_dt).total_seconds() / 60))
-
-
-def _optional_str(value: Any) -> Optional[str]:
-    raw = str(value or "").strip()
-    return raw or None
-
-
-def _build_observation_freshness(
-    *,
-    source_code: Any,
-    source_label: Any = None,
-    observed_at: Any = None,
-    observed_at_local: Any = None,
-    ingested_at: Any = None,
-    age_min: Optional[int] = None,
-    now_utc: Optional[datetime] = None,
-) -> Dict[str, Any]:
-    code = _canonical_observation_source_code(source_code or source_label)
-    profile = _OBSERVATION_SOURCE_PROFILES.get(code) or _OBSERVATION_SOURCE_PROFILES["metar"]
-    now = now_utc or datetime.now(timezone.utc)
-    obs_dt = _parse_utc_datetime(observed_at)
-    age_sec = None
-    if age_min is not None:
-        try:
-            age_sec = max(0, int(age_min) * 60)
-        except Exception:
-            age_sec = None
-    if age_sec is None and obs_dt is not None:
-        age_sec = max(0, int((now - obs_dt).total_seconds()))
-
-    if age_sec is None:
-        status = "unknown"
-        reason = "observation_time_missing"
-    elif age_sec <= int(profile["fresh_window_sec"]):
-        status = "fresh"
-        reason = "within_native_fresh_window"
-    elif age_sec <= int(profile["native_update_interval_sec"]) + int(profile["expected_grace_sec"]):
-        status = "expected_wait"
-        reason = "within_source_expected_cadence"
-    elif age_sec <= int(profile["stale_after_sec"]):
-        status = "delayed"
-        reason = "past_expected_cadence"
-    else:
-        status = "stale"
-        reason = "past_stale_threshold"
-
-    expected_next = (
-        obs_dt + timedelta(seconds=int(profile["native_update_interval_sec"]))
-        if obs_dt is not None
-        else None
-    )
-    return {
-        "source_code": code,
-        "source_label": str(source_label or profile["label"]),
-        "observed_at": obs_dt.isoformat() if obs_dt is not None else _optional_str(observed_at),
-        "observed_at_local": _optional_str(observed_at_local),
-        "ingested_at": _optional_str(ingested_at),
-        "native_update_interval_sec": int(profile["native_update_interval_sec"]),
-        "expected_next_update_at": expected_next.isoformat() if expected_next is not None else None,
-        "freshness_status": status,
-        "freshness_reason": reason,
-        "age_sec": age_sec,
-    }
-
-
 def _record_analysis_cache_event(*, city: str, hit: bool, force_refresh: bool) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with _ANALYSIS_CACHE_STATS_LOCK:
@@ -476,84 +311,6 @@ def _maybe_enrich_dynamic_commentary_with_groq(
 
 
 
-
-
-
-def _clock_minutes(value: Any) -> Optional[int]:
-    text = str(value or "").strip()
-    match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        return None
-    return hour * 60 + minute
-
-
-def _format_clock_minutes(value: int) -> str:
-    value = max(0, min(23 * 60 + 59, int(value)))
-    return f"{value // 60:02d}:{value % 60:02d}"
-
-
-def _next_observation_clock(local_time: Any) -> str:
-    minutes = _clock_minutes(local_time)
-    if minutes is None:
-        return "--"
-    next_slot = ((minutes // 30) + 1) * 30
-    if next_slot > 23 * 60 + 59:
-        return "23:59"
-    return _format_clock_minutes(next_slot)
-
-
-def _bucket_label_from_value(value: Optional[float], unit: str) -> Optional[str]:
-    if value is None:
-        return None
-    try:
-        return f"{int(round(float(value)))}{unit or '°C'}"
-    except Exception:
-        return None
-
-
-def _top_probability_bucket(distribution: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(distribution, list):
-        return None
-    candidates = [row for row in distribution if isinstance(row, dict)]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda row: _sf(row.get("probability")) or -1.0)
-
-
-def _bucket_label(row: Optional[Dict[str, Any]], unit: str) -> Optional[str]:
-    if not isinstance(row, dict):
-        return None
-    for key in ("label", "bucket", "range"):
-        raw = str(row.get(key) or "").strip()
-        if raw:
-            return raw
-    return _bucket_label_from_value(_sf(row.get("value")), unit)
-
-
-def _add_signal(
-    signals: list,
-    *,
-    label: str,
-    direction: str,
-    strength: str,
-    summary: str,
-    label_en: Optional[str] = None,
-    summary_en: Optional[str] = None,
-) -> None:
-    signals.append(
-        {
-            "label": label,
-            "label_en": label_en or label,
-            "direction": direction,
-            "strength": strength,
-            "summary": summary,
-            "summary_en": summary_en or summary,
-        }
-    )
 
 
 def _build_intraday_meteorology(data: Dict[str, Any]) -> Dict[str, Any]:
