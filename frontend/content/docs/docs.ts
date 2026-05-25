@@ -202,11 +202,11 @@ export const DOCS_PAGES: DocsPage[] = [
           },
           {
             id: "market-layer",
-            title: "市场价格层怎么读",
+            title: "信号价格层怎么读",
             blocks: [
-              { type: "paragraph", text: "温度桶标签来自完整市场桶列表，并会按 label / slug / question 识别 exact、or higher、or lower、range 等方向，避免把 30.5°C 错配到不合理的 16°C 或反向尾部桶。" },
-              { type: "callout", tone: "info", title: "模型-市场差", text: "模型-市场差 = 模型概率 − 市场隐含概率。正数表示天气概率高于市场报价；负数表示市场已经把该 YES 计价得更充分。它不是温度变化，也不是收益率。" },
-              { type: "paragraph", text: "YES 买入价以可执行报价为主；没有可靠模型概率或 YES 价格时，决策卡会显示报价已匹配但暂不计算模型-市场差。" },
+              { type: "paragraph", text: "温度桶标签来自完整信号桶列表，并会按 label / slug / question 识别 exact、or higher、or lower、range 等方向，避免把 30.5°C 错配到不合理的 16°C 或反向尾部桶。" },
+              { type: "callout", tone: "info", title: "模型-信号差", text: "模型-信号差 = 模型概率 − 信号隐含概率。正数表示天气概率高于信号报价；负数表示信号已经把该 YES 计价得更充分。它不是温度变化，也不是收益率。" },
+              { type: "paragraph", text: "YES 买入价以可执行报价为主；没有可靠模型概率或 YES 价格时，决策卡会显示报价已匹配但暂不计算模型-信号差。" },
             ],
           },
           {
@@ -240,11 +240,11 @@ export const DOCS_PAGES: DocsPage[] = [
           },
           {
             id: "market-layer",
-            title: "How to read the market layer",
+            title: "How to read the signal layer",
             blocks: [
-              { type: "paragraph", text: "Bucket labels come from the full market bucket list. The card reads label / slug / question text to distinguish exact, or-higher, or-lower, and range buckets, so a 30.5°C weather center is not matched to an unreasonable 16°C or reverse-tail bucket." },
-              { type: "callout", tone: "info", title: "Model-market difference", text: "Model-market difference = model probability minus market-implied probability. A positive value means the weather probability is above market pricing; a negative value means the YES is already priced more fully by the market. It is not a temperature delta or return." },
-              { type: "paragraph", text: "YES buy uses executable quote data when available. If either model probability or YES price is incomplete, the card shows the quote match but withholds the model-market difference." },
+              { type: "paragraph", text: "Bucket labels come from the full signal bucket list. The card reads label / slug / question text to distinguish exact, or-higher, or-lower, and range buckets, so a 30.5°C weather center is not matched to an unreasonable 16°C or reverse-tail bucket." },
+              { type: "callout", tone: "info", title: "Model-signal difference", text: "Model-signal difference = model probability minus signal-implied probability. A positive value means the weather probability is above signal pricing; a negative value means the YES is already priced more fully by the signal. It is not a temperature delta or return." },
+              { type: "paragraph", text: "YES buy uses executable quote data when available. If either model probability or YES price is incomplete, the card shows the quote match but withholds the model-signal difference." },
             ],
           },
           {
@@ -492,7 +492,7 @@ export const DOCS_PAGES: DocsPage[] = [
               {
                 type: "bullets",
                 items: [
-                  "自动识别当前 Polymarket 页面中的城市，也支持手动切换。",
+                  "自动识别当前页面中的城市，也支持手动切换。",
                   "展示城市档案：结算站点、站点距离、观测更新时间、周边站点数量。",
                   "展示今日日内走势（简版）：DEB 走势与机场主站实况 / 官方增强站网对照，可悬停查看时间与温度。",
                   "展示多日最高温预报（简版），并提供一键刷新与跳转主站入口。",
@@ -566,7 +566,7 @@ export const DOCS_PAGES: DocsPage[] = [
               {
                 type: "bullets",
                 items: [
-                  "Auto-detects the current Polymarket page city, with manual switching also available.",
+                  "Auto-detects the current page city, with manual switching also available.",
                   "Shows a city profile with settlement station, station distance, observation timestamp, and nearby station count.",
                   "Shows a compact intraday chart with DEB versus airport-primary observations and official nearby-network observations, including hoverable time and temperature.",
                   "Shows a compact multi-day daily-high forecast, plus refresh and jump-to-site actions.",

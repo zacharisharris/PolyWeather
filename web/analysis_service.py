@@ -297,18 +297,6 @@ def _set_cached_summary(city: str, payload: Dict[str, Any]) -> None:
         _SUMMARY_CACHE[city] = {"t": _time.time(), "d": dict(payload)}
 
 
-def _maybe_enrich_dynamic_commentary_with_groq(
-    _city: str,
-    result: Dict[str, Any],
-) -> Dict[str, Any]:
-    return result.get("dynamic_commentary") or {"summary": "", "notes": []}
-
-
-
-
-
-
-
 
 
 
@@ -667,7 +655,6 @@ def _analyze(
     city: str,
     force_refresh: bool = False,
     force_refresh_observations_only: bool = False,
-    include_llm_commentary: bool = False,
     detail_mode: str = "full",
 ) -> Dict[str, Any]:
     """Fetch, analyse, and return structured weather data for one city.
@@ -693,14 +680,6 @@ def _analyze(
     if not force_refresh and not force_refresh_observations_only:
         cached = _cache.get(cache_key)
         if cached and _time.time() - cached["t"] < ttl:
-            if include_llm_commentary:
-                cached_payload = cached["d"]
-                dynamic = cached_payload.get("dynamic_commentary") or {}
-                if not dynamic.get("headline_zh"):
-                    cached_payload["dynamic_commentary"] = _maybe_enrich_dynamic_commentary_with_groq(
-                        city,
-                        cached_payload,
-                    )
             _record_analysis_cache_event(city=city, hit=True, force_refresh=False)
             return cached["d"]
     _record_analysis_cache_event(city=city, hit=False, force_refresh=force_refresh)
@@ -825,6 +804,14 @@ def _analyze(
         cur_temp = _sf(live_mc.get("temp"))
         if cur_temp is not None and not _is_plausible_city_temp(city, cur_temp, sym):
             cur_temp = None
+    # Official settlement station: e.g. CWA for Taipei, HKO for Hong Kong
+    if cur_temp is None:
+        cur_temp = _sf((settlement_current.get("current") or {}).get("temp"))
+        if cur_temp is not None:
+            current_source = settlement_source or "settlement"
+            current_source_label = settlement_source_label or "Settlement Station"
+            current_station_code = settlement_current.get("station_code") or current_station_code
+            current_station_name = settlement_current.get("station_name") or current_station_name
     if cur_temp is None:
         cur_temp = _sf(mg_cur.get("temp"))
         if cur_temp is not None and not _is_plausible_city_temp(city, cur_temp, sym):
@@ -1706,12 +1693,6 @@ def _analyze(
     if normalized_detail_mode == "full":
         _archive_intraday_path_snapshot(city, result)
 
-    if include_llm_commentary:
-        result["dynamic_commentary"] = _maybe_enrich_dynamic_commentary_with_groq(
-            city,
-            result,
-        )
-
     with _CACHE_LOCK:
         _cache[cache_key] = {"t": _time.time(), "d": result}
     return result
@@ -1837,6 +1818,11 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
         cur_temp = _sf(live_mc.get("temp"))
         if cur_temp is not None and not _is_plausible_city_temp(city, cur_temp, sym):
             cur_temp = None
+    if cur_temp is None:
+        cur_temp = _sf((settlement_current.get("current") or {}).get("temp"))
+        if cur_temp is not None:
+            current_source = settlement_source or "settlement"
+            current_source_label = settlement_source_label or "Settlement Station"
     if cur_temp is None:
         cur_temp = _sf(mg_cur.get("temp"))
         if cur_temp is not None and not _is_plausible_city_temp(city, cur_temp, sym):
