@@ -14,7 +14,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ProAccessState, ScanOpportunityRow } from "@/lib/dashboard-types";
+import type { CityListItem, ProAccessState, ScanOpportunityRow } from "@/lib/dashboard-types";
 import { getInitialLocaleFromNavigator } from "@/lib/i18n";
 import { isBrowserLocalFullAccess } from "@/lib/local-dev-access";
 import { sortRowsByUserTime } from "@/components/dashboard/scan-terminal/decision-utils";
@@ -43,11 +43,12 @@ import { scanRootClass } from "@/components/dashboard/scan-root-styles";
 import { useRelativeTime } from "@/hooks/useRelativeTime";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { TrainingDashboard } from "@/components/dashboard/scan-terminal/TrainingDashboard";
-import { LiveTemperatureThresholdChart } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
+import { LiveTemperatureThresholdChart, clearCityDetailCache } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
 import { KoyfinRowsTable } from "@/components/dashboard/scan-terminal/KoyfinRowsTable";
 import { rowName, pct, money, temp, edgeClass } from "@/components/dashboard/scan-terminal/utils";
 import { CitySelectorDropdown } from "@/components/dashboard/scan-terminal/CitySelectorDropdown";
 import { GridLayoutSelector } from "@/components/dashboard/scan-terminal/GridLayoutSelector";
+import { cityListItemsToScanRows } from "@/components/dashboard/scan-terminal/city-fallback-rows";
 
 function createEmptyAccess(loading = true): ProAccessState {
   return {
@@ -399,26 +400,23 @@ function PolyWeatherTerminal({
   const totalSlots = getSlotCount(gridCols, gridRows);
 
   const [slots, setSlots] = useState<Array<string | null>>(() => {
-    const storedCols = getStoredGridSide("polyweather_terminal_grid_cols");
-    const storedRows = getStoredGridSide("polyweather_terminal_grid_rows");
-    const initialSlotCount = getSlotCount(storedCols, storedRows);
     if (typeof window !== "undefined") {
       try {
         const stored = localStorage.getItem("polyweather_terminal_slots");
         if (stored) {
           const parsed = JSON.parse(stored);
           if (Array.isArray(parsed)) {
-            return normalizeSlotList(parsed, initialSlotCount);
+            return normalizeSlotList(parsed, MAX_TERMINAL_CHARTS);
           }
         }
       } catch {}
     }
-    return Array(initialSlotCount).fill(null);
+    return Array(MAX_TERMINAL_CHARTS).fill(null);
   });
   const [activeSlotIndex, setActiveSlotIndex] = useState<number>(0);
   const [maximizedSlotIndex, setMaximizedSlotIndex] = useState<number | null>(null);
   const [activeSearchSlotIndex, setActiveSearchSlotIndex] = useState<number | null>(null);
-  const visibleSlots = useMemo(() => normalizeSlotList(slots, totalSlots), [slots, totalSlots]);
+  const visibleSlots = useMemo(() => slots.slice(0, totalSlots), [slots, totalSlots]);
 
   const handleSetGridSize = (cols: number, rows: number) => {
     const safeCols = clampGridSide(cols);
@@ -431,13 +429,6 @@ function PolyWeatherTerminal({
     try {
       localStorage.setItem("polyweather_terminal_grid_cols", String(safeCols));
       localStorage.setItem("polyweather_terminal_grid_rows", String(safeRows));
-    } catch {}
-
-    const nextSlots = normalizeSlotList(visibleSlots, nextTotalSlots);
-    
-    setSlots(nextSlots);
-    try {
-      localStorage.setItem("polyweather_terminal_slots", JSON.stringify(nextSlots));
     } catch {}
 
     if (activeSlotIndex >= nextTotalSlots) {
@@ -468,8 +459,8 @@ function PolyWeatherTerminal({
   }, [rows, selectedRegionKey]);
 
   useEffect(() => {
-    if (filteredRegionRows.length && visibleSlots.every((s) => s === null)) {
-      const next = Array(totalSlots)
+    if (filteredRegionRows.length && slots.every((s) => s === null)) {
+      const next = Array(MAX_TERMINAL_CHARTS)
         .fill(null)
         .map((_, idx) => filteredRegionRows[idx]?.city || null);
       setSlots(next);
@@ -477,11 +468,11 @@ function PolyWeatherTerminal({
         localStorage.setItem("polyweather_terminal_slots", JSON.stringify(next));
       } catch {}
     }
-  }, [filteredRegionRows, visibleSlots, totalSlots]);
+  }, [filteredRegionRows, slots]);
 
   const handleSelectCityForSlot = (index: number, city: string | null) => {
-    if (index < 0 || index >= totalSlots) return;
-    const next = [...visibleSlots];
+    if (index < 0 || index >= MAX_TERMINAL_CHARTS) return;
+    const next = [...slots];
     next[index] = city;
     setSlots(next);
     try {
@@ -795,7 +786,7 @@ function PolyWeatherTerminal({
                             setActiveSearchSlotIndex(null);
                           }}
                           onClose={() => setActiveSearchSlotIndex(null)}
-                          className="absolute left-3 top-9 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                          className="absolute left-3 top-9 z-50 w-[380px] bg-white border border-slate-200 rounded shadow-lg p-2"
                         />
                       )}
                     </div>
@@ -831,7 +822,7 @@ function PolyWeatherTerminal({
                                     setActiveSearchSlotIndex(null);
                                   }}
                                   onClose={() => setActiveSearchSlotIndex(null)}
-                                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[380px] bg-white border border-slate-200 rounded shadow-lg p-2"
                                 />
                               )}
                             </div>
@@ -859,6 +850,8 @@ function PolyWeatherTerminal({
                               row={rowForSlot}
                               allRows={filteredRegionRows}
                               compact={true}
+                              isActive={isSlotActive}
+                              slotIndex={slotIndex}
                               onSearchClick={() => setActiveSearchSlotIndex(slotIndex)}
                               onMaximize={() => {
                                 setMaximizedSlotIndex(slotIndex);
@@ -880,7 +873,7 @@ function PolyWeatherTerminal({
                                   setActiveSearchSlotIndex(null);
                                 }}
                                 onClose={() => setActiveSearchSlotIndex(null)}
-                                className="absolute left-3 top-9 z-50 w-[280px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                                className="absolute left-3 top-9 z-50 w-[380px] bg-white border border-slate-200 rounded shadow-lg p-2"
                               />
                             )}
                           </div>
@@ -1024,10 +1017,42 @@ function ScanTerminalScreen() {
       timezoneOffsetSeconds: useLocalTimezoneDefault ? localTimezoneOffsetSeconds : null,
       tradingRegion: selectedRegionKey,
     });
+  const handleRefresh = useCallback(() => {
+    clearCityDetailCache();
+    refreshScanTerminalManually();
+  }, [refreshScanTerminalManually]);
+
+  const [cityFallbackRows, setCityFallbackRows] = useState<ScanOpportunityRow[]>([]);
   const rows = useMemo(
-    () => sortRowsByUserTime(terminalData?.rows || []),
-    [terminalData?.rows],
+    () => {
+      const scanRows = terminalData?.rows || [];
+      return sortRowsByUserTime(scanRows.length ? scanRows : cityFallbackRows);
+    },
+    [cityFallbackRows, terminalData?.rows],
   );
+
+  const fallbackFetchedRef = useRef(false);
+  useEffect(() => {
+    if (!isPro || typeof fetch !== "function") return;
+    if (fallbackFetchedRef.current) return;
+    const controller = new AbortController();
+    fetch("/api/cities", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return response.json() as Promise<{ cities?: CityListItem[] }>;
+      })
+      .then((payload) => {
+        if (!payload || !Array.isArray(payload.cities)) return;
+        fallbackFetchedRef.current = true;
+        setCityFallbackRows(cityListItemsToScanRows(payload.cities));
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [isPro]);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1091,7 +1116,7 @@ function ScanTerminalScreen() {
       generatedText={generatedText || ""}
       isEn={isEn}
       locale={locale}
-      onRefresh={refreshScanTerminalManually}
+      onRefresh={handleRefresh}
       refreshing={scanLoading}
       rows={filteredRows}
       selectedRow={selectedRow}

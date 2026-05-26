@@ -33,9 +33,18 @@ export function runTests() {
     "scan list local cache should use the shared 5-minute row cadence",
   );
   assert(
-    chartSource.includes("DASHBOARD_REFRESH_POLICY_MS.model") &&
-      !chartSource.includes("setInterval(") &&
+    chartSource.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
       !chartSource.includes("window.setInterval"),
-    "selected city detail chart should be on-demand and use model-layer cache instead of 60-second polling",
+    "selected city detail chart cache should align with 5-minute scan/metar cadence",
+  );
+  assert(
+    chartSource.includes("setInterval(fetchLiveTemp, 60_000)"),
+    "selected city chart should poll live temperature every 60 seconds via lightweight summary endpoint",
+  );
+  assert(
+    chartSource.includes("_hourlyRequestCache") &&
+      chartSource.includes("seedHourlyForecastFromRow") &&
+      chartSource.includes("setHourly(seedHourlyForecastFromRow(row))"),
+    "terminal charts should render from row data immediately and dedupe concurrent city detail requests",
   );
 }
