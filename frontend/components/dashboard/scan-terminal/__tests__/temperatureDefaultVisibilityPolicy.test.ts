@@ -1,8 +1,12 @@
 import {
   __buildTemperatureChartDataForTest,
+  __getActiveTemperatureSeriesForTest,
+  __getDebPeakWindowRangeForTest,
+  __getLiveObservationLabelsForTest,
   __getObservationDisplayMetricsForTest,
   __getVisibleTemperatureSeriesForTest,
   __isTemperatureSeriesVisibleByDefaultForTest,
+  __mergePatchIntoHourlyForTest,
 } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
 
 function assert(condition: unknown, message: string) {
@@ -57,6 +61,7 @@ export function runTests() {
 
   const { series } = __buildTemperatureChartDataForTest(guangzhou, hourly, "1D");
   const defaultVisibleSeries = __getVisibleTemperatureSeriesForTest("guangzhou", series, {});
+  const activeDefaultSeries = __getActiveTemperatureSeriesForTest("guangzhou", series, {}, true);
 
   const settlementRunway = seriesByKey(series, "runway_02L_20R") as any;
   assert(settlementRunway, "settlement runway should use a stable runway-pair key");
@@ -76,6 +81,14 @@ export function runTests() {
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "runway_02L_20R"),
     "runway series should be visible by default",
+  );
+  assert(
+    activeDefaultSeries.some((item) => item.key === "runway_02L_20R"),
+    "settlement runway should remain in the active chart series by default",
+  );
+  assert(
+    activeDefaultSeries.some((item) => item.key === "runway_01L_19R"),
+    "auxiliary runway should remain in the active chart series by default",
   );
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "settlement"),
@@ -103,6 +116,51 @@ export function runTests() {
     defaultVisibleSeries.some((item) => item.key === "hourly_forecast"),
     "DEB fusion forecast should be visible by default",
   );
+
+  const debPeakWindowChart = __buildTemperatureChartDataForTest(
+    {
+      city: "beijing",
+      local_date: "2026-05-26",
+      local_time: "12:00",
+      tz_offset_seconds: 8 * 60 * 60,
+      deb_prediction: 35,
+    } as any,
+    {
+      localTime: "12:00",
+      times: [
+        "00:00", "01:00", "02:00", "03:00", "04:00", "05:00",
+        "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+        "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+        "18:00", "19:00", "20:00", "21:00", "22:00", "23:00",
+      ],
+      temps: [
+        20, 20.5, 21, 21.5, 22, 23,
+        24, 25, 26, 27, 29, 31,
+        32, 33, 34.2, 35, 34.4, 33.3,
+        31.8, 30.2, 28.5, 27, 25.5, 24,
+      ],
+      debPrediction: 35,
+    } as any,
+    "1D",
+  );
+  const debPeakWindowRange = __getDebPeakWindowRangeForTest(
+    debPeakWindowChart.data,
+    debPeakWindowChart.series as any,
+  );
+  assert(debPeakWindowRange, "default chart view should derive an auto high-temperature window from the DEB curve");
+  const debPeakWindowRows = debPeakWindowChart.data.slice(debPeakWindowRange![0], debPeakWindowRange![1] + 1);
+  const debPeakWindowStart = debPeakWindowRows[0].ts;
+  const debPeakWindowEnd = debPeakWindowRows[debPeakWindowRows.length - 1].ts;
+  assert(
+    debPeakWindowStart <= Date.UTC(2026, 4, 26, 11, 0, 0) &&
+      debPeakWindowEnd >= Date.UTC(2026, 4, 26, 19, 0, 0),
+    "DEB peak auto window should cover roughly peak -4h through peak +4h by default",
+  );
+  assert(
+    debPeakWindowEnd - debPeakWindowStart <= 12 * 60 * 60 * 1000,
+    "DEB peak auto window should not expand beyond 12 hours",
+  );
+
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("paris", "model_curve_AROME HD"),
     "Paris AROME HD should be the only default-visible model curve exception",
@@ -253,6 +311,26 @@ export function runTests() {
   assert(newYorkMetrics.currentRunwayTemp === 73.9, "weather-station header should use detail METAR/current temp before stale row zero");
   assert(newYorkMetrics.observedHighMetar === 73.9, "METAR high header should use detail METAR high before stale row zero");
 
+  const istanbulLabels = __getLiveObservationLabelsForTest(
+    {
+      city: "istanbul",
+      airport: "LTFM",
+      metar_context: {
+        source: "mgm",
+        station_label: "MGM Istanbul Airport",
+      },
+    } as any,
+    null,
+  );
+  assert(
+    istanbulLabels.runwayHeaderLabel === "气象站实测",
+    "Istanbul/MGM should be labeled as weather-station observations, not runway observations",
+  );
+  assert(
+    istanbulLabels.runwayHighLabel === "气象站",
+    "Istanbul/MGM high label should be weather station",
+  );
+
   const newYorkWithMadis = __buildTemperatureChartDataForTest(
     {
       city: "new york",
@@ -284,6 +362,122 @@ export function runTests() {
   assert(madisSeries.label.includes("MADIS"), "US MADIS series should be labeled as NOAA MADIS instead of plain METAR");
   assert(madisSeries.values.filter((value: number | null) => value !== null).length >= 2, "MADIS series should keep sub-hourly observations");
 
+  const newYorkMinuteStream = __buildTemperatureChartDataForTest(
+    {
+      city: "new york",
+      local_date: "2026-05-25",
+      local_time: "10:04",
+      tz_offset_seconds: -4 * 60 * 60,
+      airport: "KLGA",
+    } as any,
+    {
+      localTime: "10:04",
+      times: ["00:00", "06:00", "12:00", "18:00"],
+      temps: [55, 57, 65, 72],
+      airportPrimary: {
+        source_code: "madis_hfmetar",
+        source_label: "NOAA MADIS",
+      },
+      airportPrimaryTodayObs: [
+        ["2026-05-25T14:01:00Z", 73.1],
+        ["2026-05-25T14:02:00Z", 73.4],
+        ["2026-05-25T14:03:00Z", 73.8],
+      ],
+    } as any,
+    "1D",
+  );
+  assert(
+    newYorkMinuteStream.data.length < 120,
+    "1D live chart should use real timestamp rows instead of preallocating 1440 empty full-day minute slots",
+  );
+  const minuteLabels = newYorkMinuteStream.data
+    .filter((point) => point.madis !== null)
+    .map((point) => point.label);
+  assert(
+    minuteLabels.includes("10:01:00") &&
+      minuteLabels.includes("10:02:00") &&
+      minuteLabels.includes("10:03:00"),
+    "live observation chart should preserve real observation timestamps on the x-axis",
+  );
+
+  const longLivedSingleObservation = __buildTemperatureChartDataForTest(
+    {
+      city: "ankara",
+      local_date: "2026-05-26",
+      local_time: "14:28",
+      tz_offset_seconds: 3 * 60 * 60,
+      current_temp: 21.9,
+      current_max_so_far: 21.9,
+      airport: "LTAC",
+    } as any,
+    {
+      localTime: "14:28",
+      times: [],
+      temps: [],
+      airportPrimary: {
+        source_code: "mgm",
+        source_label: "MGM",
+        temp: 21.9,
+        max_so_far: 21.9,
+      },
+      airportPrimaryTodayObs: [["2026-05-26T11:28:00Z", 21.9]],
+    } as any,
+    "1D",
+  );
+  assert(
+    longLivedSingleObservation.series.some(
+      (item) => item.key === "current" && item.values.filter((value: number | null) => value !== null).length >= 2,
+    ),
+    "long-lived chart with only one fresh observation should keep a renderable current reference line instead of an invisible single-point series",
+  );
+
+  const chengduMergedHourly = __mergePatchIntoHourlyForTest(
+    {
+      localTime: "05:25",
+      times: ["00:00", "06:00", "12:00", "18:00"],
+      temps: [24, 28, 31, 27],
+      runwayPlateHistory: {
+        "02L/20R": [{ time: "05:20", temp: 24.2 }],
+      },
+    } as any,
+    {
+      type: "city_observation_patch.v1",
+      city: "chengdu",
+      revision: 12,
+      changes: {
+        temp: 24.8,
+        obs_time: "2026-05-26 05:26:00",
+        source: "amsc_awos",
+        runway_points: [
+          {
+            runway: "02L/20R",
+            temp: 25.1,
+            tdz_temp: 24.7,
+            mid_temp: 24.9,
+            end_temp: 25.1,
+            target_runway_max: 25.1,
+          },
+        ],
+      },
+    } as any,
+  );
+  const chengduMergedChart = __buildTemperatureChartDataForTest(
+    {
+      city: "chengdu",
+      local_date: "2026-05-26",
+      local_time: "05:26",
+      tz_offset_seconds: 8 * 60 * 60,
+    } as any,
+    chengduMergedHourly as any,
+    "1D",
+  );
+  const chengduMergedRunway = seriesByKey(chengduMergedChart.series, "runway_02L_20R") as any;
+  assert(chengduMergedRunway, "v1 runway_points patch should update the runway series");
+  assert(
+    chengduMergedRunway.values.some((value: number | null) => value === 25.1),
+    "v1 runway_points patch should append the latest runway max point to the chart",
+  );
+
   const shanghaiDebFromDetail = __buildTemperatureChartDataForTest(
     {
       city: "shanghai",
@@ -310,4 +504,35 @@ export function runTests() {
     Math.min(...shanghaiDebValues) > 20,
     "DEB curve should not be pulled into an impossible negative range by stale row deb_prediction=0",
   );
+
+  // ── Runway range band and runway_max test ──
+  const shanghaiWithBand = __buildTemperatureChartDataForTest(
+    {
+      city: "shanghai",
+      local_date: "2026-05-26",
+      local_time: "14:00",
+      tz_offset_seconds: 8 * 60 * 60,
+    } as any,
+    {
+      localTime: "14:00",
+      times: ["00:00", "12:00", "18:00"],
+      temps: [24.2, 31.5, 26.5],
+      runwayBandHistory: [
+        { time: "2026-05-26T00:00:00+08:00", high_temp: 26.0, low_temp: 24.0, avg_temp: 25.0 },
+        { time: "2026-05-26T12:00:00+08:00", high_temp: 32.0, low_temp: 29.0, avg_temp: 30.5 },
+      ]
+    } as any,
+    "1D",
+  );
+
+  const runwayMaxSeries = seriesByKey(shanghaiWithBand.series, "runway_max") as any;
+  assert(runwayMaxSeries, "runway_max series should be present when runwayBandHistory is provided");
+  assert(runwayMaxSeries.color === "#009688", "runway_max series should use the primary teal color");
+  assert(runwayMaxSeries.featured === true, "runway_max series should be featured");
+
+  // Verify that runway_band exists on some data rows
+  const bandPoints = shanghaiWithBand.data.filter((d) => d.runway_band !== null);
+  assert(bandPoints.length >= 2, "runway_band tuples should be binned into data slots");
+  const firstBand = bandPoints[0].runway_band;
+  assert(Array.isArray(firstBand) && firstBand[0] === 24.0 && firstBand[1] === 26.0, "runway_band tuple values should match input limits");
 }
