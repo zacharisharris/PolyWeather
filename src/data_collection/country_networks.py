@@ -191,8 +191,6 @@ def _provider_code_for_city(city: str) -> str:
         return "saudi_ncm"
     if normalized == "paris":
         return "fr_aeroweb"
-    if normalized == "moscow":
-        return "russia_metar_cluster"
     if settlement_source == "hko":
         return "hongkong_hko"
     if settlement_source == "cwa":
@@ -984,24 +982,6 @@ class KoreaKmaNetworkProvider(CountryNetworkProvider):
         }
 
 
-class RussiaStationWebNetworkProvider(CountryNetworkProvider):
-    def __init__(self) -> None:
-        super().__init__("russia_metar_cluster", "Moscow METAR network")
-
-    def official_nearby_current(self, city: str, raw: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return _metar_cluster_rows(raw)
-
-    def official_network_status(self, city: str, raw: Dict[str, Any]) -> Dict[str, Any]:
-        rows = self.official_nearby_current(city, raw)
-        return {
-            "provider_code": self.provider_code,
-            "provider_label": self.provider_label,
-            "available": bool(rows),
-            "mode": "realtime_metar_cluster" if rows else "reference_only",
-            "row_count": len(rows),
-        }
-
-
 class IsraelImsNetworkProvider(CountryNetworkProvider):
     def __init__(self) -> None:
         super().__init__("israel_ims", "IMS Lod Airport")
@@ -1161,8 +1141,6 @@ def get_country_network_provider(city: str) -> CountryNetworkProvider:
         return TurkeyMgmNetworkProvider()
     if provider_code == "korea_kma":
         return KoreaKmaNetworkProvider()
-    if provider_code == "russia_metar_cluster":
-        return RussiaStationWebNetworkProvider()
     if provider_code == "japan_jma":
         return JapanJmaNetworkProvider()
     if provider_code == "china_cma":
@@ -1201,12 +1179,29 @@ def build_country_network_snapshot(city: str, raw: Dict[str, Any]) -> Dict[str, 
         "stale_row_count": stale_count,
         "unknown_timing_count": unknown_count,
     }
+    airport_primary_today_obs = ((raw.get("metar") or {}).get("today_obs") or [])
+    if airport_primary.get("source_code") == "cowin_obs":
+        try:
+            from src.database.runtime_state import OfficialIntradayObservationRepository
+            repo = OfficialIntradayObservationRepository()
+            local_now = datetime.now(timezone.utc) + timedelta(seconds=city_offset or 0)
+            local_date_str = local_now.strftime("%Y-%m-%d")
+            points = repo.load_points(
+                source_code="cowin_obs",
+                station_code=airport_primary.get("station_code") or "6087",
+                target_date=local_date_str,
+            )
+            if points:
+                airport_primary_today_obs = [{"time": p["time"], "temp": p["temp"]} for p in points]
+        except Exception:
+            pass
+
     return {
         "provider_code": provider.provider_code,
         "provider_label": provider.provider_label,
         "settlement_station": metadata,
         "airport_primary_current": airport_primary,
-        "airport_primary_today_obs": ((raw.get("metar") or {}).get("today_obs") or []),
+        "airport_primary_today_obs": airport_primary_today_obs,
         "official_nearby": official_nearby,
         "official_network_source": status.get("provider_code"),
         "official_network_status": status,
