@@ -161,6 +161,56 @@ export function runTests() {
     "DEB peak auto window should not expand beyond 12 hours",
   );
 
+  const postPeakWindowChart = __buildTemperatureChartDataForTest(
+    {
+      city: "beijing",
+      local_date: "2026-05-26",
+      local_time: "21:10",
+      tz_offset_seconds: 8 * 60 * 60,
+      deb_prediction: 35,
+      runway_plate_history: {
+        "19/01": [
+          { time: "2026-05-26T10:00:00+08:00", temp: 29.8 },
+          { time: "2026-05-26T15:00:00+08:00", temp: 34.9 },
+          { time: "2026-05-26T21:00:00+08:00", temp: 28.6 },
+        ],
+      },
+    } as any,
+    {
+      localTime: "21:10",
+      times: [
+        "00:00", "01:00", "02:00", "03:00", "04:00", "05:00",
+        "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+        "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+        "18:00", "19:00", "20:00", "21:00", "22:00", "23:00",
+      ],
+      temps: [
+        20, 20.5, 21, 21.5, 22, 23,
+        24, 25, 26, 27, 29, 31,
+        32, 33, 34.2, 35, 34.4, 33.3,
+        31.8, 30.2, 28.5, 27, 25.5, 24,
+      ],
+      debPrediction: 35,
+    } as any,
+    "1D",
+  );
+  const postPeakWindowRange = __getDebPeakWindowRangeForTest(
+    postPeakWindowChart.data,
+    postPeakWindowChart.series as any,
+  );
+  assert(postPeakWindowRange, "post-peak default chart view should still derive from the DEB peak window");
+  const postPeakWindowRows = postPeakWindowChart.data.slice(postPeakWindowRange![0], postPeakWindowRange![1] + 1);
+  const postPeakWindowStart = postPeakWindowRows[0].ts;
+  const postPeakWindowEnd = postPeakWindowRows[postPeakWindowRows.length - 1].ts;
+  assert(
+    postPeakWindowEnd >= Date.UTC(2026, 4, 26, 21, 0, 0),
+    "After the peak window, default high-temperature view should extend to the latest live observation",
+  );
+  assert(
+    postPeakWindowEnd - postPeakWindowStart <= 12 * 60 * 60 * 1000,
+    "Post-peak high-temperature view should keep a bounded 12-hour window",
+  );
+
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("paris", "model_curve_AROME HD"),
     "Paris AROME HD should be the only default-visible model curve exception",
@@ -329,6 +379,27 @@ export function runTests() {
   assert(
     istanbulLabels.runwayHighLabel === "气象站",
     "Istanbul/MGM high label should be weather station",
+  );
+
+  const panamaLabels = __getLiveObservationLabelsForTest(
+    {
+      city: "panama city",
+      airport: "MPMG",
+      metar_context: {
+        source: "metar",
+        station: "MPMG",
+        station_label: "MPMG METAR",
+      },
+    } as any,
+    null,
+  );
+  assert(
+    panamaLabels.runwayHeaderLabel === "机场报文",
+    "Panama City/MPMG should be labeled as an airport METAR report when no station or runway sensor feed exists",
+  );
+  assert(
+    panamaLabels.runwayHighLabel === "机场报文",
+    "Panama City high label should use airport METAR report wording, not weather-station or runway wording",
   );
 
   const newYorkWithMadis = __buildTemperatureChartDataForTest(
@@ -503,6 +574,70 @@ export function runTests() {
   assert(
     Math.min(...shanghaiDebValues) > 20,
     "DEB curve should not be pulled into an impossible negative range by stale row deb_prediction=0",
+  );
+
+  const qingdaoFullDay = __buildTemperatureChartDataForTest(
+    {
+      city: "qingdao",
+      local_date: "2026-05-26",
+      local_time: "23:30",
+      tz_offset_seconds: 8 * 60 * 60,
+      deb_prediction: 22,
+      runway_plate_history: {
+        "16/34": [
+          { time: "2026-05-25T23:30:00+08:00", temp: 23.8 },
+          { time: "2026-05-26T00:05:00+08:00", temp: 23.5 },
+          { time: "2026-05-26T12:00:00+08:00", temp: 21.6 },
+        ],
+      },
+    } as any,
+    {
+      localTime: "23:30",
+      times: ["00:00", "06:00", "12:00", "18:00", "23:00"],
+      temps: [24, 19, 21.5, 21.5, 20],
+      debPrediction: 22,
+    } as any,
+    "1D",
+  );
+  const qingdaoDayStart = Date.UTC(2026, 4, 26, 0, 0, 0);
+  const qingdaoDayEnd = Date.UTC(2026, 4, 27, 0, 0, 0);
+  assert(
+    qingdaoFullDay.data.every((point) => point.ts >= qingdaoDayStart && point.ts < qingdaoDayEnd),
+    "Full-day chart should clamp observation history to the selected local_date so DEB does not appear broken after cross-day runway history",
+  );
+  assert(
+    qingdaoFullDay.data[0]?.ts === qingdaoDayStart,
+    "Full-day chart should start at local 00:00 when the DEB hourly path has a midnight point",
+  );
+
+  const chongqingRolledToNextDay = __buildTemperatureChartDataForTest(
+    {
+      city: "chongqing",
+      local_date: "2026-05-26",
+      local_time: "23:50",
+      tz_offset_seconds: 8 * 60 * 60,
+      deb_prediction: 22,
+    } as any,
+    {
+      localDate: "2026-05-27",
+      localTime: "00:34",
+      times: ["00:00", "06:00", "12:00", "18:00", "23:00"],
+      temps: [25.2, 25.6, 28.4, 27.6, 26.1],
+      debPrediction: 30.1,
+    } as any,
+    "1D",
+  );
+  const chongqingNextDayStart = Date.UTC(2026, 4, 27, 0, 0, 0);
+  const chongqingNextDayEnd = Date.UTC(2026, 4, 28, 0, 0, 0);
+  assert(
+    chongqingRolledToNextDay.data.every((point) => point.ts >= chongqingNextDayStart && point.ts < chongqingNextDayEnd),
+    "Full-day chart should switch to the city-detail localDate after local midnight instead of keeping stale terminal row.local_date",
+  );
+  const chongqingNextDayDeb = seriesByKey(chongqingRolledToNextDay.series, "hourly_forecast") as any;
+  const chongqingNextDayDebValues = chongqingNextDayDeb.values.filter((value: number | null): value is number => value !== null);
+  assert(
+    Math.max(...chongqingNextDayDebValues) === 30.1,
+    "DEB curve should use the next local day's detail debPrediction after local midnight",
   );
 
   // ── Runway range band and runway_max test ──

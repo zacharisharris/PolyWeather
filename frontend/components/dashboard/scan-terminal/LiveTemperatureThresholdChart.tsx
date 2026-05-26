@@ -2,22 +2,14 @@
 
 import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  CartesianGrid,
-  Line,
-  Area,
-  ComposedChart as ReComposedChart,
-  ReferenceLine,
-  ReferenceArea,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import type { ScanOpportunityRow } from "@/lib/dashboard-types";
 import { useLatestPatch, useSseResyncVersion } from "@/hooks/use-sse-patches";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
-import { rowName, temp } from "@/components/dashboard/scan-terminal/utils";
+import { ModelCurvesSummary } from "@/components/dashboard/scan-terminal/ModelCurvesSummary";
+import { TemperatureChartCanvas } from "@/components/dashboard/scan-terminal/TemperatureChartCanvas";
+import { TemperatureRunwayDetails } from "@/components/dashboard/scan-terminal/TemperatureRunwayDetails";
+import { TemperatureStatsBars } from "@/components/dashboard/scan-terminal/TemperatureStatsBars";
+import { rowName } from "@/components/dashboard/scan-terminal/utils";
 
 import {
   HOURLY_CACHE_TTL_MS,
@@ -25,7 +17,6 @@ import {
   buildChartDomain,
   buildFullDayChartData,
   buildIntDegreeTicks,
-  buildModelSummaryCards,
   buildRunwayPlates,
   fetchHourlyForecastForCity,
   getActiveTemperatureSeries,
@@ -36,85 +27,23 @@ import {
   isTemperatureSeriesVisibleByDefault,
   mergePatchIntoHourly,
   normObs,
-  normalizeCityKey,
   readSessionCache,
   seedHourlyForecastFromRow,
-  seriesStats,
   shouldPollLiveChart,
   validNumber,
   type HourlyForecast,
 } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 export { clearCityDetailCache } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
-type TooltipSeries = {
-  key: string;
-  label: string;
-  color: string;
-};
-
-function nearestSeriesValue(
-  data: Array<Record<string, any>>,
-  seriesKey: string,
-  activeIndex: number,
-) {
-  if (!data.length || activeIndex < 0) return null;
-  for (let offset = 0; offset < data.length; offset += 1) {
-    const left = activeIndex - offset;
-    if (left >= 0) {
-      const value = validNumber(data[left]?.[seriesKey]);
-      if (value !== null) return value;
-    }
-    const right = activeIndex + offset;
-    if (right < data.length) {
-      const value = validNumber(data[right]?.[seriesKey]);
-      if (value !== null) return value;
-    }
-  }
-  return null;
+function formatCityLocalDate(tzOffsetSeconds: number | null | undefined) {
+  const cityOffsetMs = (tzOffsetSeconds ?? 0) * 1000;
+  const cityNow = new Date(Date.now() + cityOffsetMs + new Date().getTimezoneOffset() * 60_000);
+  const y = cityNow.getFullYear();
+  const m = String(cityNow.getMonth() + 1).padStart(2, "0");
+  const d = String(cityNow.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
-function TemperatureTooltipContent({
-  active,
-  label,
-  payload,
-  data,
-  series,
-}: {
-  active?: boolean;
-  label?: string | number;
-  payload?: ReadonlyArray<{ payload?: Record<string, any> }>;
-  data: Array<Record<string, any>>;
-  series: TooltipSeries[];
-}) {
-  if (!active || !payload?.length || !series.length) return null;
-  const activePoint = payload[0]?.payload || {};
-  const activeIndex = data.findIndex((point) => point.ts === activePoint.ts);
-  const rows = series
-    .map((item) => {
-      const directValue = validNumber(activePoint[item.key]);
-      const value = directValue ?? nearestSeriesValue(data, item.key, activeIndex);
-      return value === null ? null : { ...item, value };
-    })
-    .filter((item): item is TooltipSeries & { value: number } => item !== null);
-  if (!rows.length) return null;
-
-  return (
-    <div className="rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px] shadow-lg">
-      <div className="mb-1 font-mono text-slate-500">{label}</div>
-      <div className="grid gap-1">
-        {rows.slice(0, 8).map((item) => (
-          <div key={item.key} className="flex min-w-[140px] items-center justify-between gap-4">
-            <span className="inline-flex items-center gap-1.5 text-slate-700">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-              <span className="font-semibold">{item.label}</span>
-            </span>
-            <strong className="font-mono text-slate-900">{item.value.toFixed(2)}°</strong>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 // ── Main component ─────────────────────────────────────────────────────
 
 export function LiveTemperatureThresholdChart({
@@ -151,23 +80,41 @@ export function LiveTemperatureThresholdChart({
   const [userToggledKeys, setUserToggledKeys] = useState<Record<string, boolean>>({});
   const [liveTemp, setLiveTemp] = useState<number | null>(null);
   const [isHourlyLoading, setIsHourlyLoading] = useState(false);
+  const hasLoadedHourlyDetailRef = useRef(false);
   const lastPatchAtRef = useRef<number>(Date.now());
   const lastAppliedPatchRevisionRef = useRef<number>(0);
+  const localDayRolloverFetchDateRef = useRef<string>("");
 
   const [showRunwayDetails, setShowRunwayDetails] = useState<boolean>(true);
   const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
   const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [zoomRange, setZoomRange] = useState<[number, number] | null>(null);
   const [targetResolution, setTargetResolution] = useState<string>("10m");
+  const [currentCityLocalDate, setCurrentCityLocalDate] = useState(() =>
+    formatCityLocalDate(row?.tz_offset_seconds),
+  );
 
   useEffect(() => {
     setUserToggledKeys({});
     setZoomRange(null);
     setViewMode("auto");
     setShowRunwayDetails(true);
+    setHourly(seedHourlyForecastFromRow(row));
+    setIsHourlyLoading(Boolean(city));
+    hasLoadedHourlyDetailRef.current = false;
     lastPatchAtRef.current = Date.now();
     lastAppliedPatchRevisionRef.current = 0;
+    localDayRolloverFetchDateRef.current = "";
+    setCurrentCityLocalDate(formatCityLocalDate(row?.tz_offset_seconds));
   }, [city]);
+
+  useEffect(() => {
+    setCurrentCityLocalDate(formatCityLocalDate(row?.tz_offset_seconds));
+    const id = setInterval(() => {
+      setCurrentCityLocalDate(formatCityLocalDate(row?.tz_offset_seconds));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [row?.tz_offset_seconds]);
 
   useEffect(() => {
     if (!city) {
@@ -188,13 +135,16 @@ export function LiveTemperatureThresholdChart({
     }
 
     if (cached && Date.now() - cached.ts < HOURLY_CACHE_TTL_MS) {
+      hasLoadedHourlyDetailRef.current = true;
       setHourly(cached.data);
       setIsHourlyLoading(false);
       return;
     }
 
-    setHourly(seedHourlyForecastFromRow(row));
-    setIsHourlyLoading(true);
+    if (!hasLoadedHourlyDetailRef.current) {
+      setHourly(seedHourlyForecastFromRow(row));
+    }
+    setIsHourlyLoading(!hasLoadedHourlyDetailRef.current);
     let cancelled = false;
 
     // Prioritize active slots, stagger/delay background slots to optimize load performance
@@ -204,6 +154,7 @@ export function LiveTemperatureThresholdChart({
       fetchHourlyForecastForCity(city, { resolution: targetResolution })
         .then((data) => {
           if (cancelled || !data) return;
+          hasLoadedHourlyDetailRef.current = true;
           setHourly(data);
         })
         .catch(() => {})
@@ -230,10 +181,10 @@ export function LiveTemperatureThresholdChart({
   useEffect(() => {
     if (!resyncVersion || !city) return;
     let cancelled = false;
-    setIsHourlyLoading(true);
     fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
       .then((data) => {
         if (cancelled || !data) return;
+        hasLoadedHourlyDetailRef.current = true;
         setHourly(data);
       })
       .catch(() => {})
@@ -252,11 +203,11 @@ export function LiveTemperatureThresholdChart({
 
     const refreshFullDetail = () => {
       lastPatchAtRef.current = Date.now();
-      setIsHourlyLoading(true);
 
       fetchHourlyForecastForCity(city, { ignoreCache: true })
         .then((data) => {
           if (cancelled || !data) return;
+          hasLoadedHourlyDetailRef.current = true;
           setHourly(data);
         })
         .catch(() => {})
@@ -288,52 +239,87 @@ export function LiveTemperatureThresholdChart({
     };
   }, [city, compact, isActive, isMaximized]);
 
-  const { data, series } = useMemo(() => buildFullDayChartData(row, hourly, isEn), [row, hourly, isEn]);
+  useEffect(() => {
+    if (!city || !currentCityLocalDate) return;
+    const loadedLocalDate = hourly?.localDate || row?.local_date || "";
+    if (currentCityLocalDate === loadedLocalDate) return;
+    if (localDayRolloverFetchDateRef.current === currentCityLocalDate) return;
+
+    localDayRolloverFetchDateRef.current = currentCityLocalDate;
+    let cancelled = false;
+    fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
+      .then((data) => {
+        if (cancelled || !data) return;
+        hasLoadedHourlyDetailRef.current = true;
+        setHourly(data);
+      })
+      .catch(() => {
+        if (!cancelled) localDayRolloverFetchDateRef.current = "";
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [city, currentCityLocalDate, hourly?.localDate, row?.local_date, targetResolution]);
+
+  const chartHourly = useMemo<HourlyForecast>(() => {
+    if (!hourly) return hourly;
+    const loadedLocalDate = hourly.localDate || row?.local_date || "";
+    if (currentCityLocalDate && currentCityLocalDate !== loadedLocalDate) {
+      return { ...hourly, localDate: currentCityLocalDate };
+    }
+    return hourly;
+  }, [hourly, currentCityLocalDate, row?.local_date]);
+  const chartLocalDate = chartHourly?.localDate || row?.local_date || currentCityLocalDate;
+
+  const { data, series } = useMemo(() => buildFullDayChartData(row, chartHourly, isEn), [row, chartHourly, isEn]);
 
   const autoWindowRange = useMemo(
     () => (viewMode === "auto" ? getDebPeakWindowRange(data, series) : null),
     [data, series, viewMode],
   );
   const visibleRange = zoomRange ?? autoWindowRange;
+  const visibleRangeKey = visibleRange ? `${visibleRange[0]}:${visibleRange[1]}` : "full";
 
   const zoomedData = useMemo(() => {
     if (!visibleRange || data.length === 0) return data;
     const [start, end] = visibleRange;
     return data.slice(start, end + 1);
-  }, [data, visibleRange]);
+  }, [data, visibleRangeKey]);
 
-  useEffect(() => {
+  const nextTargetResolution = useMemo(() => {
     if (visibleRange && data.length > 0) {
       const zoomedData = data.slice(visibleRange[0], visibleRange[1] + 1);
       if (zoomedData.length > 0) {
         const startTs = zoomedData[0].ts;
         const endTs = zoomedData[zoomedData.length - 1].ts;
         if (endTs - startTs <= 2 * 60 * 60 * 1000) {
-          setTargetResolution("1m");
-        } else {
-          setTargetResolution("10m");
+          return "1m";
         }
-      } else {
-        setTargetResolution("10m");
       }
-    } else {
-      setTargetResolution("10m");
     }
-  }, [visibleRange, data]);
+    return "10m";
+  }, [data, visibleRangeKey]);
+
+  useEffect(() => {
+    if (targetResolution !== nextTargetResolution) {
+      setTargetResolution(nextTargetResolution);
+    }
+  }, [targetResolution, nextTargetResolution]);
 
   const tzOffset = row?.tz_offset_seconds ?? 0;
   const settlementObs = useMemo(() => {
-    let obs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
-    if (!obs.length && !hourly?.runwayPlateHistory) {
-      const mObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs, tzOffset);
+    let obs = normObs(chartHourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset, undefined, chartLocalDate || null);
+    if (!obs.length && !chartHourly?.runwayPlateHistory) {
+      const mObs = normObs(chartHourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs, tzOffset, undefined, chartLocalDate || null);
       if (mObs.length > 0) {
         obs = mObs;
       }
     }
     return obs;
-  }, [row, hourly, tzOffset]);
+  }, [row, chartHourly, tzOffset, chartLocalDate]);
 
-  const runwayPlates = useMemo(() => buildRunwayPlates(hourly?.amos, row, settlementObs), [hourly?.amos, row, settlementObs]);
+  const runwayPlates = useMemo(() => buildRunwayPlates(chartHourly?.amos, row, settlementObs), [chartHourly?.amos, row, settlementObs]);
   const hasRunwayData = runwayPlates.length > 0;
   const settlementPlate = useMemo(() => runwayPlates.find((p) => p.isSettlement), [runwayPlates]);
 
@@ -358,33 +344,31 @@ export function LiveTemperatureThresholdChart({
   }, [chartSeries, userToggledKeys, city, showRunwayDetails]);
 
   const {
-    isHKO,
-    isParis,
     isShenzhen,
     metarHeaderLabel,
     metarHighLabel,
     runwayHeaderLabel,
     runwayHighLabel,
-  } = useMemo(() => getLiveObservationLabels(row, hourly), [row, hourly]);
+  } = useMemo(() => getLiveObservationLabels(row, chartHourly), [row, chartHourly]);
 
   const { currentRunwayTemp, observedHighMetar, observedHighRunway } = useMemo(
-    () => getObservationDisplayMetrics(row, hourly, settlementPlate),
-    [row, hourly, settlementPlate],
+    () => getObservationDisplayMetrics(row, chartHourly, settlementPlate),
+    [row, chartHourly, settlementPlate],
   );
   const displayRunwayTemp = liveTemp ?? currentRunwayTemp;
-  const wundergroundDailyHigh = validNumber(hourly?.airportCurrent?.max_so_far ?? hourly?.airportPrimary?.max_so_far) ?? null;
+  const wundergroundDailyHigh = validNumber(chartHourly?.airportCurrent?.max_so_far ?? chartHourly?.airportPrimary?.max_so_far) ?? null;
 
-  const localDateStr = row?.local_date || new Date().toISOString().slice(0, 10);
+  const localDateStr = chartLocalDate || new Date().toISOString().slice(0, 10);
   const modelSources = (row?.model_cluster_sources && Object.keys(row.model_cluster_sources).length > 0)
     ? row.model_cluster_sources
-    : (hourly?.multiModelDaily?.[localDateStr]?.models || null);
+    : (chartHourly?.multiModelDaily?.[localDateStr]?.models || null);
 
   const modelValues = Object.values(modelSources || {})
     .map(validNumber)
     .filter((v): v is number => v !== null);
   const modelMin = modelValues.length ? Math.min(...modelValues) : (row?.cluster_core_low ?? null);
   const modelMax = modelValues.length ? Math.max(...modelValues) : (row?.cluster_core_high ?? null);
-  const debVal = validNumber(hourly?.debPrediction) ?? validNumber(row?.deb_prediction) ?? null;
+  const debVal = validNumber(chartHourly?.debPrediction) ?? validNumber(row?.deb_prediction) ?? null;
 
   const spread = (modelMax !== null && modelMin !== null) ? modelMax - modelMin : null;
   const spreadLabel = spread === null ? "" : (spread <= 2.0 ? "低分歧" : (spread <= 4.0 ? "中等分歧" : "高分歧"));
@@ -406,6 +390,7 @@ export function LiveTemperatureThresholdChart({
 
   const cityThresholds = useMemo(() => {
     if (!row || !allRows || !allRows.length) return [];
+    const tempSymbol = row.temp_symbol || "°C";
     const cityKey = String(row.city || "").toLowerCase().trim();
     const sameCityRows = allRows.filter(
       (r) => String(r.city || "").toLowerCase().trim() === cityKey
@@ -425,7 +410,7 @@ export function LiveTemperatureThresholdChart({
 
       list.push({
         threshold: t,
-        label: r.target_label || `${t}°C`,
+        label: r.target_label || `${t}${tempSymbol}`,
         isBreached,
         kind,
       });
@@ -491,7 +476,7 @@ export function LiveTemperatureThresholdChart({
                 : "text-slate-500 hover:text-slate-800"
             )}
           >
-            {mode === "auto" ? (isEn ? "Auto" : "高温") : (isEn ? "Full" : "全天")}
+            {mode === "auto" ? (isEn ? "Peak" : "高温") : (isEn ? "All Day" : "全天")}
           </button>
         ))}
       </div>
@@ -576,387 +561,66 @@ export function LiveTemperatureThresholdChart({
   return (
     <Panel title={panelTitle} actions={timeframeActions}>
       <div className="flex h-full min-h-[300px] flex-col">
-        {/* Compact stats bar */}
-        {compact ? (
-          <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-1.5 flex items-center justify-between">
-            {timeframe === "1D" ? (
-              <div className="flex items-center gap-4 text-[11px]">
-                <span className="font-semibold text-slate-500">
-                  {isEn ? "Runway" : runwayHeaderLabel}:{" "}
-                  <strong className="text-[#009688] font-mono">{temp(displayRunwayTemp)}</strong>
-                </span>
-                <span className="text-slate-300">|</span>
-                <span className="font-semibold text-slate-500">
-                  {isEn ? "METAR" : (isShenzhen ? "当日最高" : metarHeaderLabel)}:{" "}
-                  <strong className="text-blue-600 font-mono">{temp(observedHighMetar)}</strong>
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-4 text-[11px]">
-                <span className="font-semibold text-slate-500">
-                  DEB: <strong className="text-orange-600 font-mono">{temp(debVal)}</strong>
-                </span>
-                {modelMin !== null && modelMax !== null && (
-                  <>
-                    <span className="text-slate-300">|</span>
-                    <span className="font-semibold text-slate-500">
-                      {isEn ? "Models" : "多模型"}:{" "}
-                      <strong className="text-slate-700 font-mono">
-                        {temp(modelMin)} - {temp(modelMax)}
-                      </strong>
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
-            <div className="text-[10px] text-slate-400 font-mono">
-              {timeframe === "1D" && formattedUpdateTime.includes(" ") ? formattedUpdateTime.split(" ")[1].slice(0, 5) : ""}
-            </div>
-          </div>
-        ) : (
-          /* Normal detailed stats bar */
-          <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
-            {/* Top Row: Large temperatures */}
-            <div className="flex justify-between items-center gap-6 mb-3">
-              {timeframe === "1D" ? (
-                <div className="flex items-center gap-12">
-                  <div className="flex flex-col">
-                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      {isEn ? "Runway Live (1m)" : `${runwayHeaderLabel}`}
-                    </span>
-                    <span className="text-2xl font-bold font-mono text-[#009688] mt-1">
-                      {temp(displayRunwayTemp)}
-                    </span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      {isEn ? "METAR Settlement · Daily High" : `${metarHeaderLabel} · 当日最高`}
-                    </span>
-                    <span className="text-2xl font-bold font-mono text-blue-600 mt-1">
-                      {temp(observedHighMetar)}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center gap-12">
-                  <div className="flex flex-col">
-                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      DEB Max
-                    </span>
-                    <span className="text-2xl font-bold font-mono text-orange-600 mt-1">
-                      {temp(debVal)}
-                    </span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      {isEn ? "Model Range" : "多模型区间"}
-                    </span>
-                    <span className="text-2xl font-bold font-mono text-slate-700 mt-1">
-                      {modelMin !== null && modelMax !== null ? `${temp(modelMin)} - ${temp(modelMax)}` : "--"}
-                    </span>
-                  </div>
-                </div>
-              )}
-              
-              <div className="hidden sm:flex flex-col items-end text-right">
-                <span className="text-[10px] text-slate-400 uppercase font-semibold">
-                  {isEn ? "Daily Peak" : "当日最高气温"}
-                </span>
-                <div className="mt-1 flex items-center gap-2 text-xs font-mono text-slate-600">
-                  <span>{isEn ? "Runway" : runwayHighLabel}: <strong className="text-[#009688]">{temp(observedHighRunway)}</strong></span>
-                  <span>|</span>
-                  <span>{isEn ? "METAR" : metarHighLabel}: <strong className="text-blue-600">{temp(observedHighMetar)}</strong></span>
-                  {wundergroundDailyHigh !== null && (
-                    <>
-                      <span>|</span>
-                      <span>WU: <strong className="text-purple-600">{temp(wundergroundDailyHigh)}</strong></span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+        <TemperatureStatsBars
+          isEn={isEn}
+          compact={compact}
+          timeframe={timeframe}
+          tempSymbol={row?.temp_symbol || "°C"}
+          runwayHeaderLabel={runwayHeaderLabel}
+          metarHeaderLabel={metarHeaderLabel}
+          runwayHighLabel={runwayHighLabel}
+          metarHighLabel={metarHighLabel}
+          isShenzhen={isShenzhen}
+          displayRunwayTemp={displayRunwayTemp}
+          observedHighMetar={observedHighMetar}
+          observedHighRunway={observedHighRunway}
+          wundergroundDailyHigh={wundergroundDailyHigh}
+          debVal={debVal}
+          modelMin={modelMin}
+          modelMax={modelMax}
+          spread={spread}
+          spreadLabel={spreadLabel}
+          spreadLabelEn={spreadLabelEn}
+          formattedUpdateTime={formattedUpdateTime}
+        />
 
-            {/* Bottom Row: Model Range Panel (Only for 1D mode) */}
-            {timeframe === "1D" && (
-              <div className="grid grid-cols-4 gap-4 border-t border-slate-100 pt-3 text-xs font-mono text-slate-700 bg-slate-50/50 -mx-4 px-4 rounded-b-md">
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold">
-                    {isEn ? "Model Range" : "模型区间"}
-                  </span>
-                  <strong className="text-slate-800 font-bold">
-                    {modelMin !== null && modelMax !== null ? `${temp(modelMin)} - ${temp(modelMax)}` : "--"}
-                  </strong>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold">
-                    DEB
-                  </span>
-                  <strong className="text-blue-600 font-bold">
-                    {temp(debVal)}
-                  </strong>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold">
-                    {isEn ? "Spread" : "分歧"}
-                  </span>
-                  <strong className={clsx("font-bold", spreadLabel === "高分歧" ? "text-amber-600" : "text-slate-600")}>
-                    {spread !== null ? `${spread.toFixed(1)}°C` : "--"}
-                    {spreadLabel && ` · ${isEn ? spreadLabelEn : spreadLabel}`}
-                  </strong>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold">
-                    {isEn ? "Updated" : "更新时间"}
-                  </span>
-                  <strong className="text-slate-800 font-bold">
-                    {formattedUpdateTime}
-                  </strong>
-                </div>
-              </div>
-            )}
-          </div>
+        {timeframe === "1D" && !compact && (
+          <TemperatureRunwayDetails isEn={isEn} plates={runwayPlates} tempSymbol={row?.temp_symbol || "°C"} />
         )}
 
-        {/* Runway observations (Only for 1D mode and when not compact) */}
-        {timeframe === "1D" && !compact && runwayPlates.length > 0 && (
-          <div className="shrink-0 border-b border-slate-200 bg-[#f8fafc] px-3 py-2">
-            <div className="flex items-center justify-between text-[11px] font-black text-slate-700 mb-1.5 uppercase">
-              <span>{isEn ? "Runway Observations" : "跑道观测"}</span>
-              {runwayPlates.some((p) => p.trend_15m !== null && p.trend_15m > 0 && !p.isSettlement) && (
-                <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded font-sans">
-                  {isEn ? "Non-settlement Runway Warming Alert" : "非结算跑道升温提醒"}
-                </span>
-              )}
-            </div>
-            <div className="grid gap-1">
-              {runwayPlates.map((plate) => (
-                <div
-                  key={plate.rwy}
-                  className={clsx(
-                    "grid grid-cols-7 gap-2 items-center border rounded px-2.5 py-1 text-[11px] font-mono",
-                    plate.isSettlement
-                      ? "border-emerald-200 bg-emerald-50/50 text-emerald-950 font-bold"
-                      : "border-slate-200 bg-white text-slate-600"
-                  )}
-                >
-                  <div className="flex items-center gap-1.5 font-sans font-bold text-slate-800">
-                    {plate.isSettlement && <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />}
-                    <span>{plate.rwy}</span>
-                    {plate.isSettlement && (
-                      <span className="text-[9px] bg-teal-200 text-teal-800 px-1 rounded font-normal">
-                        {isEn ? "Settlement" : "结算"}
-                      </span>
-                    )}
-                  </div>
-                  <div>TDZ: <strong>{plate.tdzTemp !== null ? `${plate.tdzTemp.toFixed(1)}°C` : "--"}</strong></div>
-                  <div>MID: <strong>{plate.midTemp !== null ? `${plate.midTemp.toFixed(1)}°C` : "--"}</strong></div>
-                  <div>END: <strong>{plate.endTemp !== null ? `${plate.endTemp.toFixed(1)}°C` : "--"}</strong></div>
-                  <div>max: <strong>{plate.maxTemp !== null ? `${plate.maxTemp.toFixed(1)}°C` : "--"}</strong></div>
-                  <div>high: <strong>{plate.dailyHigh !== null ? `${plate.dailyHigh.toFixed(1)}°C` : "--"}</strong></div>
-                  <div className={clsx(plate.trend_15m !== null && plate.trend_15m > 0 ? "text-orange-600 font-bold" : "text-slate-500")}>
-                    15m: <strong>{plate.trend_15m !== null ? `${plate.trend_15m >= 0 ? "+" : ""}${plate.trend_15m.toFixed(1)}°C` : "--"}</strong>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {timeframe === "1D" && !compact && (
+          <ModelCurvesSummary isEn={isEn} activeSeries={activeSeries} tempSymbol={row?.temp_symbol || "°C"} />
         )}
 
-        {/* Multi-model list (Only in 1D mode and when not compact) */}
-        {timeframe === "1D" && !compact && activeSeries.some((s) => s.key.startsWith("model_curve_")) && (
-          <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-2">
-            <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px]">
-              <span className="font-black text-slate-500 uppercase mr-2">
-                {isEn ? "Models:" : "多模型:"}
-              </span>
-              {activeSeries
-                .filter((s) => s.key.startsWith("model_curve_"))
-                .map((s) => {
-                  const stats = seriesStats(s.values);
-                  return (
-                    <span key={s.key} className="inline-flex items-center gap-1.5 font-mono">
-                      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
-                      <span className="text-slate-700 font-bold">{s.label}</span>
-                      <span className="text-slate-500">{temp(stats.latest)}</span>
-                    </span>
-                  );
-                })}
-            </div>
-          </div>
-        )}
-
-        {/* Chart */}
-        <div className="relative min-h-0 flex-1 p-2">
-          {/* Interactive legend */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-1.5 text-[11px] border-b border-[#e2e8f0] bg-white">
-            {chartSeries.length > 1 &&
-              chartSeries
-                .filter((s) => {
-                  const isIndividualRunway = s.key.startsWith("runway_") && s.key !== "runway_max";
-                  if (showRunwayDetails) {
-                    return s.key !== "runway_max";
-                  } else {
-                    return !isIndividualRunway;
-                  }
-                })
-                .map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    onClick={() => {
-                      setUserToggledKeys((prev) => ({
-                        ...prev,
-                        [s.key]: !isSeriesVisible(s.key),
-                      }));
-                    }}
-                    className={clsx(
-                      "inline-flex items-center gap-1.5 font-mono cursor-pointer transition-opacity hover:opacity-80",
-                      !isSeriesVisible(s.key) && "opacity-40 line-through"
-                    )}
-                  >
-                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
-                    <span className="text-slate-700 font-bold">{s.label}</span>
-                  </button>
-                ))}
-
-            {/* "Show Runway Details" toggle switch */}
-            {hasRunwayData && (
-              <label className="inline-flex items-center gap-1.5 ml-auto cursor-pointer text-slate-600 hover:text-slate-800 font-semibold select-none">
-                <input
-                  type="checkbox"
-                  checked={showRunwayDetails}
-                  onChange={(e) => setShowRunwayDetails(e.target.checked)}
-                  className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 h-3.5 w-3.5 cursor-pointer"
-                />
-                <span>{isEn ? "Show Runway Details" : "显示跑道明细"}</span>
-              </label>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height="100%">
-            <ReComposedChart
-              data={zoomedData}
-              margin={{ top: 16, right: compact ? 20 : 44, left: 4, bottom: 8 }}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onDoubleClick={() => setZoomRange(null)}
-            >
-              <CartesianGrid stroke="#dbe6ef" strokeDasharray="2 2" />
-              <XAxis
-                dataKey="label"
-                tick={{ fontSize: 9, fill: "#64748b" }}
-                tickLine={false}
-                axisLine={{ stroke: "#cbd5e1" }}
-                interval={Math.max(0, Math.floor(zoomedData.length / (compact ? 6 : 10)))}
-                minTickGap={compact ? 24 : 32}
-              />
-              <YAxis
-                orientation="right"
-                tick={{ fontSize: 9, fill: "#64748b" }}
-                tickFormatter={(v) => `${Number(v).toFixed(0)}°`}
-                axisLine={{ stroke: "#cbd5e1" }}
-                tickLine={false}
-                domain={chartDomain}
-                ticks={intDegreeTicks ?? undefined}
-              />
-              {timeframe === "1D" && cityThresholds.map((t, idx) => {
-                const isSelected = row && (Number(row.target_threshold ?? row.target_value) === t.threshold);
-                const labelText = isEn
-                  ? `${t.kind === "gte" ? "≥" : "≤"} ${t.threshold.toFixed(1)}° [${t.isBreached ? "Excluded" : "Active"}]`
-                  : `${t.kind === "gte" ? "≥" : "≤"} ${t.threshold.toFixed(1)}° [${t.isBreached ? "已排除" : "活跃"}]`;
-
-                return (
-                  <ReferenceLine
-                    key={idx}
-                    y={t.threshold}
-                    stroke={isSelected ? "#3b82f6" : t.isBreached ? "#ef4444" : "#f97316"}
-                    strokeDasharray={isSelected ? undefined : "4 4"}
-                    strokeWidth={isSelected ? 2 : 1}
-                    label={{
-                      value: compact ? undefined : labelText,
-                      fill: isSelected ? "#3b82f6" : t.isBreached ? "#ef4444" : "#f97316",
-                      fontSize: 9,
-                      position: isSelected ? "left" : "insideBottomRight",
-                    }}
-                  />
-                );
-              })}
-              <Tooltip
-                filterNull={false}
-                cursor={{ stroke: "#94a3b8", strokeWidth: 1 }}
-                contentStyle={{
-                  border: "1px solid #cbd5e1",
-                  borderRadius: 4,
-                  fontSize: 11,
-                  boxShadow: "0 8px 24px rgba(15,23,42,.12)",
-                }}
-                content={(props) => (
-                  <TemperatureTooltipContent
-                    active={props.active}
-                    label={props.label}
-                    payload={props.payload as ReadonlyArray<{ payload?: Record<string, any> }> | undefined}
-                    data={zoomedData}
-                    series={activeSeries}
-                  />
-                )}
-                formatter={(value: unknown) => {
-                  if (Array.isArray(value)) {
-                    const [low, high] = value;
-                    if (typeof low === "number" && typeof high === "number") {
-                      return `${low.toFixed(1)}° - ${high.toFixed(1)}°`;
-                    }
-                  }
-                  const num = Number(value);
-                  return Number.isFinite(num) ? `${num.toFixed(2)}°` : String(value);
-                }}
-              />
-              {/* Runway Temperature Band (low-high range area) */}
-              {hasRunwayData && (
-                <Area
-                  dataKey="runway_band"
-                  name={isEn ? "Runway Range" : "跑道区间"}
-                  stroke="none"
-                  fill="#009688"
-                  fillOpacity={showRunwayDetails ? 0.08 : 0.18}
-                  connectNulls={true}
-                  isAnimationActive={false}
-                />
-              )}
-              {refAreaLeft !== null && refAreaRight !== null && zoomedData[refAreaLeft] && zoomedData[refAreaRight] && (
-                <ReferenceArea
-                  x1={zoomedData[refAreaLeft].label}
-                  x2={zoomedData[refAreaRight].label}
-                  strokeOpacity={0.3}
-                  fill="#3b82f6"
-                  fillOpacity={0.15}
-                />
-              )}
-              {activeSeries.map((item) => (
-                <Line
-                  key={item.key}
-                  type={item.curve ?? (item.smooth ? "monotone" : "linear")}
-                  dataKey={item.key}
-                  name={item.label}
-                  stroke={item.color}
-                  strokeWidth={item.featured ? 2.8 : 1.2}
-                  strokeDasharray={item.dashed ? "4 3" : undefined}
-                  dot={item.showDot ? { r: item.featured ? 3 : 2, fill: item.color, strokeWidth: 0 } : false}
-                  activeDot={{ r: item.featured ? 6 : 4 }}
-                  connectNulls={true}
-                  isAnimationActive={false}
-                />
-              ))}
-            </ReComposedChart>
-          </ResponsiveContainer>
-          {isHourlyLoading && (
-            <div className="pointer-events-none absolute inset-2 z-10 grid place-items-center bg-white/65 backdrop-blur-[1px]">
-              <div className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 shadow-sm">
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500" />
-                <span>{isEn ? "Loading chart" : "加载图表"}</span>
-              </div>
-            </div>
-          )}
-        </div>
+        <TemperatureChartCanvas
+          isEn={isEn}
+          compact={compact}
+          timeframe={timeframe}
+          row={row}
+          cityThresholds={cityThresholds}
+          chartSeries={chartSeries}
+          activeSeries={activeSeries}
+          zoomedData={zoomedData}
+          chartDomain={chartDomain}
+          intDegreeTicks={intDegreeTicks}
+          hasRunwayData={hasRunwayData}
+          showRunwayDetails={showRunwayDetails}
+          isHourlyLoading={isHourlyLoading}
+          refAreaLeft={refAreaLeft}
+          refAreaRight={refAreaRight}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onZoomReset={() => setZoomRange(null)}
+          isSeriesVisible={isSeriesVisible}
+          onSeriesToggle={(seriesKey) => {
+            setUserToggledKeys((prev) => ({
+              ...prev,
+              [seriesKey]: !isSeriesVisible(seriesKey),
+            }));
+          }}
+          onShowRunwayDetailsChange={setShowRunwayDetails}
+        />
       </div>
     </Panel>
   );
