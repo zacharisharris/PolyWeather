@@ -87,6 +87,20 @@ export function runTests() {
   assert(bffEventsRoute.includes("searchParams"), "Next.js SSE proxy must forward query parameters to FastAPI");
 
   const chart = readFrontendFile("components", "dashboard", "scan-terminal", "LiveTemperatureThresholdChart.tsx");
+  const chartCanvasPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureChartCanvas.tsx");
+  const chartStatsPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureStatsBars.tsx");
+  const chartRunwayPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureRunwayDetails.tsx");
+  const chartTooltipPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureTooltipContent.tsx");
+  const chartSummaryPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "ModelCurvesSummary.tsx");
+  assert(fs.existsSync(chartCanvasPath), "temperature chart Recharts canvas must live in TemperatureChartCanvas.tsx");
+  assert(fs.existsSync(chartStatsPath), "temperature chart stat bars must live in TemperatureStatsBars.tsx");
+  assert(fs.existsSync(chartRunwayPath), "temperature chart runway detail panel must live in TemperatureRunwayDetails.tsx");
+  assert(fs.existsSync(chartTooltipPath), "temperature chart tooltip must live in TemperatureTooltipContent.tsx");
+  assert(fs.existsSync(chartSummaryPath), "temperature chart model summary must live in ModelCurvesSummary.tsx");
+  const chartCanvas = fs.readFileSync(chartCanvasPath, "utf8");
+  const chartTooltip = fs.readFileSync(chartTooltipPath, "utf8");
+  const chartRunway = fs.readFileSync(chartRunwayPath, "utf8");
+  const chartSummary = fs.readFileSync(chartSummaryPath, "utf8");
   const chartLogicPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "temperature-chart-logic.ts");
   assert(fs.existsSync(chartLogicPath), "temperature chart pure data logic must live in temperature-chart-logic.ts");
   const chartLogic = fs.readFileSync(chartLogicPath, "utf8");
@@ -99,13 +113,70 @@ export function runTests() {
   assert(chart.includes("useSseResyncVersion"), "temperature chart must resync full detail when SSE replay is incomplete");
   assert(chartLogic.includes("runway_points"), "temperature chart must merge v1 runway_points into runway history");
   assert(chart.includes("2 * 60_000"), "temperature chart must wait two minutes without patches before full-fetch fallback");
-  assert(chart.includes("TemperatureTooltipContent"), "temperature chart must use a custom tooltip content component");
-  assert(chart.includes("filterNull={false}"), "temperature chart tooltip must keep null-slot payload so hover works between sparse points");
-  assert(chart.includes("nearestSeriesValue"), "temperature chart tooltip must fall back to nearest non-null value for connected sparse lines");
+  assert(chart.includes("TemperatureChartCanvas"), "temperature chart shell must compose the extracted chart canvas");
+  assert(chart.includes("TemperatureStatsBars"), "temperature chart shell must compose the extracted stat bars");
+  assert(chart.includes("TemperatureRunwayDetails"), "temperature chart shell must compose the extracted runway panel");
+  assert(chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city temperature unit into stat bars");
+  assert(chart.includes("<TemperatureRunwayDetails") && chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city unit into runway details");
+  assert(chart.includes("<ModelCurvesSummary") && chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city unit into model summaries");
+  const chartStats = fs.readFileSync(chartStatsPath, "utf8");
+  assert(chartStats.includes("tempSymbol"), "temperature stat bars must accept the city temperature unit");
+  assert(chartStats.includes("temp(displayRunwayTemp, tempSymbol)"), "temperature stat bars must render live observations with the city unit");
+  assert(chartRunway.includes("tempSymbol") && !chartRunway.includes("}°C`"), "runway detail rows must render values with the city unit");
+  assert(chartSummary.includes("tempSymbol") && chartSummary.includes("temp(stats.latest, tempSymbol)"), "model curve summaries must render values with the city unit");
+  assert(chartCanvas.includes("const tempSymbol = row?.temp_symbol || \"°C\""), "temperature chart canvas must derive the city unit from the row");
+  assert(chartCanvas.includes("tempSymbol={tempSymbol}"), "temperature chart canvas must pass the city unit into tooltips");
+  assert(chartCanvas.includes("tickFormatter={(v) => `${Number(v).toFixed(0)}${tempSymbol}`}"), "temperature y-axis ticks must include °C/°F instead of a bare degree mark");
+  assert(chartTooltip.includes("tempSymbol"), "temperature tooltip must accept the city temperature unit");
+  assert(!chart.includes("from \"recharts\""), "LiveTemperatureThresholdChart.tsx must not import Recharts directly");
+  assert(!chart.includes("function TemperatureTooltipContent"), "LiveTemperatureThresholdChart.tsx must not define tooltip content inline");
+  assert(chartCanvas.includes("TemperatureTooltipContent"), "temperature chart canvas must use a custom tooltip content component");
+  assert(chartCanvas.includes("filterNull={false}"), "temperature chart tooltip must keep null-slot payload so hover works between sparse points");
+  assert(chartTooltip.includes("nearestSeriesValue"), "temperature chart tooltip must fall back to nearest non-null value for connected sparse lines");
   assert(chart.includes("isHourlyLoading"), "temperature chart must keep a per-panel hourly loading state");
-  assert(chart.includes("加载图表") && chart.includes("absolute inset-2"), "temperature chart must render an in-chart loading overlay");
+  assert(chartCanvas.includes("加载图表") && chartCanvas.includes("absolute inset-2"), "temperature chart must render an in-chart loading overlay");
+  assert(chart.includes("hasLoadedHourlyDetailRef"), "temperature chart must distinguish first load from background refreshes");
+  assert(chart.includes("currentCityLocalDate"), "temperature chart must track the current city-local date while the page stays open");
+  assert(chart.includes("localDayRolloverFetchDateRef"), "temperature chart must avoid duplicate midnight rollover detail fetches");
+  assert(
+    chart.includes("ignoreCache: true") && chart.includes("currentCityLocalDate !== loadedLocalDate"),
+    "temperature chart must background-refresh full city detail when the city-local day rolls over",
+  );
+  const fallbackRefreshBlock = chart.match(/const refreshFullDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
+  assert(
+    !fallbackRefreshBlock.includes("setIsHourlyLoading(true)"),
+    "no-patch fallback refresh should update the chart in the background without showing the loading overlay",
+  );
+  const resyncBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!resyncVersion \|\| !city\) return;[\s\S]*?\}, \[resyncVersion, city, targetResolution\]\);/)?.[0] || "";
+  assert(
+    !resyncBlock.includes("setIsHourlyLoading(true)"),
+    "SSE replay resync should refresh full detail in the background without showing the loading overlay",
+  );
   assert(chart.includes("viewMode"), "temperature chart must expose a view mode for DEB-peak auto view versus full-day view");
   assert(chart.includes("getDebPeakWindowRange"), "temperature chart must derive its default view from the DEB peak window");
+  assert(
+    chart.includes('isEn ? "Peak" : "高温"') && chart.includes('isEn ? "All Day" : "全天"'),
+    "temperature chart view-mode labels must translate 高温/全天 as Peak/All Day",
+  );
+  assert(
+    !chart.includes('isEn ? "Auto" : "高温"') && !chart.includes('isEn ? "Full" : "全天"'),
+    "temperature chart view-mode labels must not expose internal Auto/Full wording",
+  );
+  assert(chart.includes("nextTargetResolution"), "temperature chart must derive target resolution without setting state on every render");
+  assert(
+    chart.includes("targetResolution !== nextTargetResolution"),
+    "temperature chart must guard target-resolution state updates to prevent render/update loops",
+  );
+  assert(!chartCanvas.includes("ResponsiveContainer"), "temperature chart canvas must not mount Recharts through ResponsiveContainer at 0x0");
+  assert(chartCanvas.includes("ResizeObserver"), "temperature chart canvas must measure its host with ResizeObserver");
+  assert(
+    chartCanvas.includes("chartSize.width > 0") && chartCanvas.includes("chartSize.height > 0"),
+    "temperature chart canvas must render Recharts only after positive host dimensions are measured",
+  );
+  assert(
+    chartCanvas.includes("width={chartWidth}") && chartCanvas.includes("height={chartHeight}"),
+    "temperature chart canvas must pass explicit positive width/height to Recharts",
+  );
   assert(!chart.includes("3D"), "temperature chart UI must not expose a 3D/future-forecast mode");
   assert(!chart.includes("build3DayChartData"), "temperature chart component must not render future prediction curves");
   assert(
