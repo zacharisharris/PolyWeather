@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import { useEffect, useMemo, useState } from "react";
+import { LoadingSignal } from "@/components/dashboard/scan-terminal/LoadingSignal";
 import {
   Brush,
   CartesianGrid,
@@ -32,10 +33,10 @@ const ROLLING_WINDOW_AFTER_FORECAST_MS = 8 * 60 * 60 * 1000;
 
 const SETTLEMENT_RUNWAY_PAIRS: Record<string, Array<[string, string]>> = {
   shanghai: [["17L", "35R"]],
-  beijing: [["01", "19"]],
+  beijing: [["19", "01"]],
   guangzhou: [["02L", "20R"]],
   chengdu: [["02L", "20R"]],
-  chongqing: [["02L", "20R"]],
+  chongqing: [["20R", "02L"]],
   wuhan: [["04", "22"]],
   seoul: [["15R", "33L"]],
 };
@@ -65,6 +66,19 @@ function isTemperatureSeriesVisibleByDefault(city: string, seriesKey: string) {
     return normalizeCityKey(city) === "paris" && seriesKey === "model_curve_AROME HD";
   }
   return true;
+}
+
+function getVisibleTemperatureSeries(
+  city: string,
+  series: EvidenceSeries[],
+  userToggledKeys: Record<string, boolean>,
+) {
+  return series.filter((item) => {
+    if (userToggledKeys[item.key] !== undefined) {
+      return userToggledKeys[item.key];
+    }
+    return isTemperatureSeriesVisibleByDefault(city, item.key);
+  });
 }
 
 function buildRunwayPlates(
@@ -152,6 +166,7 @@ function buildRunwayPlates(
 }
 
 type ObsPoint = { time?: string | null; temp?: number | null };
+type RawObsPoint = ObsPoint | [string | number | null, number | null | undefined];
 
 type EvidenceSeries = {
   key: string;
@@ -177,12 +192,54 @@ type RunwayHistorySeries = {
 };
 
 const MAX_OBS_POINTS = 1440;
-const HOURLY_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.model;
+const HOURLY_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.metar;
 const FULL_DAY_SLOT_MINUTES = 30;
 const FULL_DAY_SLOTS = 48;
 const SLOT_INTERVAL_MS = FULL_DAY_SLOT_MINUTES * 60 * 1000;
 const _hourlyCache = new Map<string, { ts: number; data: HourlyForecast }>();
+const _hourlyRequestCache = new Map<string, Promise<HourlyForecast>>();
 const RUNWAY_LINE_COLORS = ["#00897b", "#d97706", "#7c3aed", "#0891b2", "#ea580c", "#64748b"];
+
+const SESSION_CACHE_PREFIX = "polyweather_city_detail_v1:";
+const SESSION_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.metar;
+
+function readSessionCache(city: string): { ts: number; data: HourlyForecast } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`${SESSION_CACHE_PREFIX}${city}`);
+    if (!raw) return null;
+    const item = JSON.parse(raw);
+    if (item && item.ts && Date.now() - item.ts < SESSION_CACHE_TTL_MS) {
+      return item;
+    }
+  } catch {}
+  return null;
+}
+
+function writeSessionCache(city: string, data: HourlyForecast) {
+  if (typeof window === "undefined" || !data) return;
+  try {
+    sessionStorage.setItem(
+      `${SESSION_CACHE_PREFIX}${city}`,
+      JSON.stringify({ ts: Date.now(), data })
+    );
+  } catch {}
+}
+
+export function clearCityDetailCache() {
+  _hourlyCache.clear();
+  _hourlyRequestCache.clear();
+  if (typeof window !== "undefined") {
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const key = sessionStorage.key(i);
+        if (key && key.startsWith(SESSION_CACHE_PREFIX)) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    } catch {}
+  }
+}
 
 function validNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -253,8 +310,17 @@ function formatTimestamp(ts: number): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
-function normObs(points: ObsPoint[] | null | undefined, tzOffsetSeconds: number, limit = MAX_OBS_POINTS) {
+function normalizeRawObsPoint(point: RawObsPoint): ObsPoint | null {
+  if (Array.isArray(point)) {
+    return { time: point[0] == null ? null : String(point[0]), temp: validNumber(point[1]) };
+  }
+  return point;
+}
+
+function normObs(points: RawObsPoint[] | null | undefined, tzOffsetSeconds: number, limit = MAX_OBS_POINTS) {
   return (points || [])
+    .map(normalizeRawObsPoint)
+    .filter((p): p is ObsPoint => p !== null)
     .filter((p) => validNumber(p.temp) !== null && p.time)
     .map((p) => ({
       ts: getCityLocalUtcTimestamp(p.time, tzOffsetSeconds)!,
@@ -271,6 +337,63 @@ function seriesStats(values: Array<number | null>) {
   const first15 = nums.length > 1 ? nums[Math.max(0, nums.length - 15)] : null;
   const delta15 = latest !== null && first15 !== null ? latest - first15 : null;
   return { latest, high, delta15 };
+}
+
+function latestObservationValue(obs: Array<{ ts: number; value: number }>) {
+  if (!obs.length) return null;
+  return obs.reduce((latest, point) => (point.ts > latest.ts ? point : latest), obs[0]).value;
+}
+
+function maxObservationValue(obs: Array<{ ts: number; value: number }>) {
+  if (!obs.length) return null;
+  return Math.max(...obs.map((point) => point.value));
+}
+
+function observationSetContains(
+  superset: Array<{ ts: number; value: number }>,
+  subset: Array<{ ts: number; value: number }>,
+) {
+  if (!superset.length || !subset.length) return false;
+  return subset.every((point) =>
+    superset.some((candidate) => candidate.ts === point.ts && Math.abs(candidate.value - point.value) < 0.01),
+  );
+}
+
+function getObservationDisplayMetrics(
+  row: ScanOpportunityRow | null,
+  hourly: HourlyForecast,
+  settlementPlate?: { maxTemp: number | null } | null,
+) {
+  const tzOffset = row?.tz_offset_seconds ?? 0;
+  const settlementObs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
+  const metarObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs || row?.metar_recent_obs || row?.metar_context?.recent_obs, tzOffset);
+  const latestSettlement = latestObservationValue(settlementObs);
+  const latestMetar = latestObservationValue(metarObs);
+  const highSettlement = maxObservationValue(settlementObs);
+  const highMetar = maxObservationValue(metarObs);
+  const airportCurrentTemp = validNumber(hourly?.airportCurrent?.temp) ?? validNumber(hourly?.airportPrimary?.temp);
+  const airportHigh = validNumber(hourly?.airportCurrent?.max_so_far) ?? validNumber(hourly?.airportPrimary?.max_so_far);
+  const rowMetarHigh = validNumber(row?.metar_context?.airport_max_so_far ?? row?.metar_context?.max_temp ?? row?.current_max_so_far);
+
+  const currentRunwayTemp =
+    validNumber(hourly?.amos?.temp_c) ??
+    settlementPlate?.maxTemp ??
+    latestSettlement ??
+    latestMetar ??
+    airportCurrentTemp ??
+    validNumber(row?.current_temp) ??
+    null;
+  const observedHighMetar = airportHigh ?? highSettlement ?? highMetar ?? rowMetarHigh ?? null;
+  const observedHighRunway =
+    settlementPlate?.maxTemp ??
+    highSettlement ??
+    airportHigh ??
+    highMetar ??
+    validNumber(row?.current_max_so_far) ??
+    currentRunwayTemp ??
+    null;
+
+  return { currentRunwayTemp, observedHighMetar, observedHighRunway };
 }
 
 function isSettlementRunway(row: ScanOpportunityRow | null, rwy: string) {
@@ -295,6 +418,7 @@ function runwayLabelFromPair(rawPair: unknown, index: number) {
 
 type HourlyForecast = {
   forecastTodayHigh?: number | null;
+  debPrediction?: number | null;
   localTime?: string | null;
   times: string[];
   temps: Array<number | null>;
@@ -307,7 +431,83 @@ type HourlyForecast = {
   multiModelDaily?: Record<string, DailyModelForecast>;
   settlementTodayObs?: ObsPoint[];
   metarTodayObs?: ObsPoint[];
+  airportPrimaryTodayObs?: RawObsPoint[];
 } | null;
+
+function seedHourlyForecastFromRow(row: ScanOpportunityRow | null): HourlyForecast {
+  if (!row) return null;
+  return {
+    forecastTodayHigh: null,
+    debPrediction: validNumber(row.deb_prediction),
+    localTime: row.local_time || null,
+    times: [],
+    temps: [],
+    modelCurves: undefined,
+    runwayPlateHistory: (row as any)?.runway_plate_history || undefined,
+    amos: null,
+    airportCurrent: null,
+    airportPrimary: null,
+    forecastDaily: [],
+    multiModelDaily: {},
+    settlementTodayObs: row.settlement_today_obs || row.metar_context?.settlement_today_obs || undefined,
+    metarTodayObs: row.metar_today_obs || row.metar_context?.today_obs || row.metar_recent_obs || row.metar_context?.recent_obs || undefined,
+    airportPrimaryTodayObs: undefined,
+  };
+}
+
+async function fetchHourlyForecastForCity(city: string): Promise<HourlyForecast> {
+  const cached = _hourlyCache.get(city);
+  if (cached && Date.now() - cached.ts < HOURLY_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const sessionCached = readSessionCache(city);
+  if (sessionCached) {
+    _hourlyCache.set(city, sessionCached);
+    return sessionCached.data;
+  }
+
+  const pending = _hourlyRequestCache.get(city);
+  if (pending) return pending;
+
+  const request = fetch(`/api/city/${encodeURIComponent(city)}/detail?depth=full&force_refresh=false`, {
+    headers: { Accept: "application/json" },
+  })
+    .then(async (res) => {
+      if (!res.ok) return null;
+      return res.json() as Promise<CityDetail>;
+    })
+    .then((json) => {
+      const hourlySource = (json as any)?.hourly ?? (json as any)?.timeseries?.hourly;
+      if (!json || !hourlySource) return null;
+      const data: HourlyForecast = {
+        forecastTodayHigh: json.forecast?.today_high ?? null,
+        debPrediction: json.deb?.prediction ?? (json as any)?.overview?.deb_prediction ?? null,
+        localTime: json.local_time || null,
+        times: hourlySource.times || [],
+        temps: hourlySource.temps || [],
+        modelCurves: (json.models_hourly ?? (json as any)?.timeseries?.models_hourly)?.curves || undefined,
+        runwayPlateHistory: (json as any)?.runway_plate_history || (json.amos as any)?.runway_plate_history || undefined,
+        amos: json.amos || null,
+        airportCurrent: json.airport_current || null,
+        airportPrimary: json.airport_primary || null,
+        forecastDaily: json.forecast?.daily || [],
+        multiModelDaily: json.multi_model_daily || {},
+        settlementTodayObs: (json as any).timeseries?.settlement_today_obs || (json as any)?.settlement_today_obs || undefined,
+        metarTodayObs: (json as any).timeseries?.metar_today_obs || (json as any)?.metar_today_obs || undefined,
+        airportPrimaryTodayObs: (json as any)?.official?.airport_primary_today_obs || (json as any)?.airport_primary_today_obs || undefined,
+      };
+      _hourlyCache.set(city, { ts: Date.now(), data });
+      writeSessionCache(city, data);
+      return data;
+    })
+    .finally(() => {
+      _hourlyRequestCache.delete(city);
+    });
+
+  _hourlyRequestCache.set(city, request);
+  return request;
+}
 
 function parseRunwayHistoryValue(point: Record<string, unknown>) {
   return validNumber(point.max_temp_c) ?? validNumber(point.temp_c) ?? validNumber(point.temp) ?? validNumber(point.value);
@@ -368,6 +568,7 @@ function buildRunwayHistorySeries(
   const runwayObs = amos?.runway_obs;
   const runwayPairs = runwayObs?.runway_pairs || [];
   const runwayTemps = runwayObs?.temperatures || [];
+  const pointTemps = runwayObs?.point_temperatures || [];
   const anchor =
     getCityLocalUtcTimestamp(amos?.observation_time_local || amos?.observation_time || hourly?.localTime || row?.local_time, tzOffset, localDateStr) ??
     getCityLocalUtcTimestamp(row?.local_time, tzOffset, localDateStr);
@@ -376,20 +577,35 @@ function buildRunwayHistorySeries(
 
   return runwayTemps
     .map((rawTemps, index) => {
-      if (!Array.isArray(rawTemps) || rawTemps.length <= 2) return null;
+      if (!Array.isArray(rawTemps)) return null;
       const rwy = runwayLabelFromPair(runwayPairs[index], index);
       const isSettlement = isSettlementRunway(row, rwy);
-      const values = rawTemps
-        .map(validNumber)
+      const pointTemp = Array.isArray(pointTemps) ? pointTemps[index] : null;
+      const snapshotValues = [
+        validNumber((pointTemp as any)?.tdz_temp),
+        validNumber((pointTemp as any)?.mid_temp),
+        validNumber((pointTemp as any)?.end_temp),
+        validNumber((pointTemp as any)?.target_runway_max),
+      ].filter((value): value is number => value !== null);
+      const samples = rawTemps.map(validNumber).filter((value): value is number => value !== null);
+      const valuesForLine = samples.length > 1
+        ? samples
+        : snapshotValues.length > 1
+          ? snapshotValues
+          : samples.length === 1
+            ? [samples[0], samples[0]]
+            : snapshotValues.length === 1
+              ? [snapshotValues[0], snapshotValues[0]]
+              : [];
+      const values = valuesForLine
         .map((value, pointIndex) => {
-          if (value === null) return null;
-          const minutesFromEnd = rawTemps.length - 1 - pointIndex;
+          const minutesFromEnd = (valuesForLine.length - 1 - pointIndex);
           return {
             ts: anchor - minutesFromEnd * 60 * 1000,
             value,
           };
         })
-        .filter((point): point is { ts: number; value: number } => point !== null);
+        .filter((point) => validNumber(point.value) !== null);
       if (values.length <= 1) return null;
       return {
         key: runwaySeriesKey(rwy),
@@ -592,7 +808,8 @@ function buildDailyChartData(
 
     const label = formatDailyDateLabel(dateStr);
 
-    const debMax = validNumber(dayMultiModel?.deb?.prediction) ?? (dateStr === localDateStr ? validNumber(row?.deb_prediction) : null);
+    const debMax = validNumber(dayMultiModel?.deb?.prediction) ??
+      (dateStr === localDateStr ? validNumber(hourly?.debPrediction) ?? validNumber(row?.deb_prediction) : null);
     const maxTemp = validNumber(dayForecast?.max_temp);
     const minTemp = validNumber(dayForecast?.min_temp);
 
@@ -625,6 +842,7 @@ function buildFullDayChartData(
 
   const settlementObs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset);
   const metarObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs || row?.metar_recent_obs || row?.metar_context?.recent_obs, tzOffset);
+  const madisObs = normObs(hourly?.airportPrimaryTodayObs, tzOffset);
   const runwayHistorySeries = buildRunwayHistorySeries(row, hourly, tzOffset, localDateStr);
 
   const slots = generateFullDaySlots(localDateStr);
@@ -642,7 +860,7 @@ function buildFullDayChartData(
     series.push({
       key: rhs.key,
       label: rhs.label,
-      source: "AMOS/AMSC",
+      source: "",
       color: rhs.color,
       featured: rhs.isSettlement,
       dashed: !rhs.isSettlement,
@@ -651,12 +869,17 @@ function buildFullDayChartData(
   });
 
   // ── Settlement observations ──
+  // Determine if this is an HKO-sourced city to force the label
+  const settlementCityKey = normalizeCityKey(row?.city);
+  const isHKOCity = settlementCityKey === 'hongkong' || settlementCityKey === 'laufaushan'
+    || settlementCityKey === 'shenzhen' || (row?.city || '').toLowerCase().includes('hong kong')
+    || (row?.city || '').toLowerCase().includes('lau fau shan');
   if (settlementObs.length) {
     const svals = binObservationsToSlots(slots, settlementObs);
     if (svals.some((v) => v !== null)) {
       series.push({
         key: "settlement",
-        label: row?.metar_context?.station_label || row?.metar_context?.station || "Settlement",
+        label: isHKOCity ? "HKO" : (row?.metar_context?.station_label || row?.metar_context?.station || "Settlement"),
         source: row?.metar_context?.station || row?.airport || "Settlement",
         color: "#009688",
         featured: true,
@@ -665,13 +888,32 @@ function buildFullDayChartData(
     }
   }
 
-  // ── METAR ──
-  if (metarObs.length) {
+  // ── Airport Primary (MADIS / AMSC AWOS) ──
+  // Skip this series for AMSC AWOS cities — their data is redundant with
+  // runway sensor data and adds a confusing "AMSC AWOS" label to the chart.
+  const isAmscSource =
+    (hourly?.airportPrimary as any)?.source === "amsc_awos" ||
+    String(hourly?.airportPrimary?.source_label || "").toLowerCase().includes("amsc");
+  if (madisObs.length && !isAmscSource) {
+    const madisVals = binObservationsToSlots(slots, madisObs);
+    if (madisVals.some((v) => v !== null)) {
+      series.push({
+        key: "madis",
+        label: hourly?.airportPrimary?.source_label || "NOAA MADIS",
+        source: hourly?.airportPrimary?.station_code || row?.airport || "MADIS",
+        color: "#0284c7",
+        dashed: false,
+        values: madisVals,
+      });
+    }
+  }
+
+  if (metarObs.length && !observationSetContains(madisObs, metarObs)) {
     const mvals = binObservationsToSlots(slots, metarObs);
     if (mvals.some((v) => v !== null)) {
       series.push({
         key: "metar",
-        label: row?.metar_context?.station_label || "METAR",
+        label: isHKOCity ? "HKO" : (row?.metar_context?.station_label || "METAR"),
         source: row?.airport || "METAR",
         color: "#0ea5e9",
         dashed: true,
@@ -685,7 +927,7 @@ function buildFullDayChartData(
     const debPath = buildDebBaselinePath(
       hourly.times,
       hourly.temps,
-      row?.deb_prediction,
+      validNumber(hourly?.debPrediction) ?? row?.deb_prediction,
       hourly.localTime || row?.local_time,
       hourly.forecastTodayHigh,
     );
@@ -740,7 +982,7 @@ function buildFullDayChartData(
 
   // ── Fallback ──
   if (!series.length) {
-    const fb = validNumber(row?.current_temp) ?? validNumber(row?.deb_prediction) ?? validNumber(row?.target_threshold);
+    const fb = validNumber(row?.current_temp) ?? validNumber(hourly?.debPrediction) ?? validNumber(row?.deb_prediction) ?? validNumber(row?.target_threshold);
     if (fb !== null) {
       series.push({
         key: "current",
@@ -855,6 +1097,8 @@ export function LiveTemperatureThresholdChart({
   onClose,
   isMaximized = false,
   disableClose = false,
+  isActive = !compact,
+  slotIndex = 0,
 }: {
   isEn: boolean;
   row: ScanOpportunityRow | null;
@@ -865,11 +1109,15 @@ export function LiveTemperatureThresholdChart({
   onClose?: () => void;
   isMaximized?: boolean;
   disableClose?: boolean;
+  isActive?: boolean;
+  slotIndex?: number;
 }) {
   const [hourly, setHourly] = useState<HourlyForecast>(null);
+  const [isFetching, setIsFetching] = useState(false);
   const city = String(row?.city || "").toLowerCase().trim();
   const [timeframe, setTimeframe] = useState<"1D" | "3D">("1D");
   const [userToggledKeys, setUserToggledKeys] = useState<Record<string, boolean>>({});
+  const [liveTemp, setLiveTemp] = useState<number | null>(null);
 
   useEffect(() => {
     setUserToggledKeys({});
@@ -877,43 +1125,65 @@ export function LiveTemperatureThresholdChart({
 
   useEffect(() => {
     if (!city) return;
-    const cached = _hourlyCache.get(city);
+    
+    // Check in-memory cache first
+    let cached = _hourlyCache.get(city);
+    if (!cached) {
+      // Fallback to session cache
+      const sessionEntry = readSessionCache(city);
+      if (sessionEntry) {
+        cached = sessionEntry;
+        _hourlyCache.set(city, sessionEntry);
+      }
+    }
+
     if (cached && Date.now() - cached.ts < HOURLY_CACHE_TTL_MS) {
       setHourly(cached.data);
+      setIsFetching(false);
       return;
     }
+
+    setHourly(seedHourlyForecastFromRow(row));
+    setIsFetching(true);
     let cancelled = false;
-    fetch(`/api/city/${encodeURIComponent(city)}/detail?depth=full&force_refresh=false`, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-    })
-      .then(async (res) => {
-        if (!res.ok) return null;
-        return res.json() as Promise<CityDetail>;
-      })
-      .then((json) => {
-        const hourlySource = (json as any)?.hourly ?? (json as any)?.timeseries?.hourly;
-        if (cancelled || !json || !hourlySource) return;
-        const data: HourlyForecast = {
-          forecastTodayHigh: json.forecast?.today_high ?? null,
-          localTime: json.local_time || null,
-          times: hourlySource.times || [],
-          temps: hourlySource.temps || [],
-          modelCurves: (json.models_hourly ?? (json as any)?.timeseries?.models_hourly)?.curves || undefined,
-          runwayPlateHistory: (json as any)?.runway_plate_history || (json.amos as any)?.runway_plate_history || undefined,
-          amos: json.amos || null,
-          airportCurrent: json.airport_current || null,
-          airportPrimary: json.airport_primary || null,
-          forecastDaily: json.forecast?.daily || [],
-          multiModelDaily: json.multi_model_daily || {},
-          settlementTodayObs: (json as any).timeseries?.settlement_today_obs || (json as any)?.settlement_today_obs || undefined,
-          metarTodayObs: (json as any).timeseries?.metar_today_obs || (json as any)?.metar_today_obs || undefined,
-        };
-        _hourlyCache.set(city, { ts: Date.now(), data });
-        setHourly(data);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
+
+    // Prioritize active slots, stagger/delay background slots to optimize load performance
+    const delay = isActive ? 0 : (slotIndex ? 300 + slotIndex * 250 : 350);
+
+    const timer = setTimeout(() => {
+      fetchHourlyForecastForCity(city)
+        .then((data) => {
+          if (cancelled || !data) return;
+          setHourly(data);
+          setIsFetching(false);
+        })
+        .catch(() => {
+          if (!cancelled) setIsFetching(false);
+        });
+    }, delay);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [city, row, isActive, slotIndex]);
+
+  // ── 60s lightweight live-temp poll ──
+  useEffect(() => {
+    if (!city) return;
+    const fetchLiveTemp = () => {
+      fetch(`/api/city/${encodeURIComponent(city)}/summary`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((payload) => {
+          if (!payload) return;
+          const temp = validNumber(payload?.current?.temp);
+          if (temp !== null) setLiveTemp(temp);
+        })
+        .catch(() => {});
+    };
+    fetchLiveTemp();
+    const id = setInterval(fetchLiveTemp, 60_000);
+    return () => clearInterval(id);
   }, [city]);
 
   const { data, series } = useMemo(() => {
@@ -951,45 +1221,52 @@ export function LiveTemperatureThresholdChart({
   };
 
   const activeSeries = useMemo(() => {
-    return chartSeries.filter((s) => isSeriesVisible(s.key));
+    return getVisibleTemperatureSeries(city, chartSeries, userToggledKeys);
   }, [chartSeries, userToggledKeys, city]);
 
-  const cityKey = String(row?.city || "").toLowerCase().trim();
+  const normalizedKey = normalizeCityKey(row?.city);
   const runwaySensorCities = new Set([
-    'beijing', 'shanghai', 'guangzhou', 'shenzhen', 'qingdao',
+    'beijing', 'shanghai', 'guangzhou', 'qingdao',
     'chengdu', 'chongqing', 'wuhan', // AMSC runway sensors
     'seoul', 'busan',                 // AMOS runway sensors
   ]);
-  const isHKO = cityKey === 'hong kong' || cityKey === 'lau fau shan' || cityKey.includes('hongkong') || cityKey.includes('laufau');
-  const isTokyo = cityKey === 'tokyo';
-  const isSingapore = cityKey === 'singapore';
-  const isParis = cityKey === 'paris';
-  const isWeatherStation = !runwaySensorCities.has(cityKey)
-    && !isHKO && !isTokyo && !isSingapore && !isParis;
+  const isShenzhen = normalizedKey === 'shenzhen';
+  const isHKO = (normalizedKey === 'hongkong' || normalizedKey === 'laufaushan') && !isShenzhen;
+  const isTokyo = normalizedKey === 'tokyo';
+  const isSingapore = normalizedKey === 'singapore';
+  const isParis = normalizedKey === 'paris';
+  const isWeatherStation = !runwaySensorCities.has(normalizedKey)
+    && !isHKO && !isShenzhen && !isTokyo && !isSingapore && !isParis;
 
-  const runwayHeaderLabel = isHKO ? '参考站点 (1分钟)'
+  const runwayHeaderLabel = isShenzhen ? '天文台实测 (10分钟)'
+    : isHKO ? '参考站点 (1分钟)'
     : isTokyo ? '机场气象站 (10分钟)'
     : isSingapore ? '航站楼温度'
     : isParis ? '官方机场观测 (15分钟)'
     : isWeatherStation ? '气象站实测'
     : '跑道实测 (1分钟)';
 
-  const metarHeaderLabel = isHKO ? '天文台实测 (10分钟)'
+  const metarHeaderLabel = isShenzhen ? '天文台实测 (10分钟)'
+    : isHKO ? '天文台实测 (10分钟)'
     : 'METAR 结算 (30分钟)';
 
-  const runwayHighLabel = isHKO ? '参考站点'
+  const runwayHighLabel = isShenzhen ? '天文台实测'
+    : isHKO ? '参考站点'
     : isTokyo ? '机场气象站'
     : isSingapore ? '航站楼'
     : isParis ? '官方机场观测'
     : isWeatherStation ? '气象站'
     : '跑道实测';
 
-  const metarHighLabel = isHKO ? '天文台'
+  const metarHighLabel = isShenzhen ? '天文台'
+    : isHKO ? '天文台'
     : 'METAR 官方';
 
-  const currentRunwayTemp = validNumber(hourly?.amos?.temp_c) ?? validNumber(row?.current_temp) ?? settlementPlate?.maxTemp ?? null;
-  const observedHighMetar = validNumber(row?.metar_context?.airport_max_so_far ?? row?.metar_context?.max_temp ?? row?.current_max_so_far) ?? null;
-  const observedHighRunway = validNumber(row?.current_max_so_far) ?? settlementPlate?.maxTemp ?? currentRunwayTemp ?? null;
+  const { currentRunwayTemp, observedHighMetar, observedHighRunway } = useMemo(
+    () => getObservationDisplayMetrics(row, hourly, settlementPlate),
+    [row, hourly, settlementPlate],
+  );
+  const displayRunwayTemp = liveTemp ?? currentRunwayTemp;
   const wundergroundDailyHigh = validNumber(hourly?.airportCurrent?.max_so_far ?? hourly?.airportPrimary?.max_so_far) ?? null;
 
   const modelValues = Object.values(row?.model_cluster_sources || {})
@@ -997,7 +1274,7 @@ export function LiveTemperatureThresholdChart({
     .filter((v): v is number => v !== null);
   const modelMin = modelValues.length ? Math.min(...modelValues) : (row?.cluster_core_low ?? null);
   const modelMax = modelValues.length ? Math.max(...modelValues) : (row?.cluster_core_high ?? null);
-  const debVal = validNumber(row?.deb_prediction) ?? null;
+  const debVal = validNumber(hourly?.debPrediction) ?? validNumber(row?.deb_prediction) ?? null;
 
   const spread = (modelMax !== null && modelMin !== null) ? modelMax - modelMin : null;
   const spreadLabel = spread === null ? "" : (spread <= 2.0 ? "低分歧" : (spread <= 4.0 ? "中等分歧" : "高分歧"));
@@ -1041,10 +1318,10 @@ export function LiveTemperatureThresholdChart({
     return list.sort((a, b) => a.threshold - b.threshold);
   }, [row, allRows]);
 
-  const intDegreeTicks = useMemo(() => buildIntDegreeTicks(series, data), [series, data]);
+  const intDegreeTicks = useMemo(() => buildIntDegreeTicks(activeSeries, data), [activeSeries, data]);
   const chartDomain = useMemo(
-    () => buildChartDomain(series, data),
-    [series, data],
+    () => buildChartDomain(activeSeries, data),
+    [activeSeries, data],
   );
 
   const subtitle = row
@@ -1140,6 +1417,13 @@ export function LiveTemperatureThresholdChart({
 
   return (
     <Panel title={panelTitle} actions={timeframeActions}>
+      {isFetching && (
+        <LoadingSignal
+          title={isEn ? "Loading city data..." : "加载城市数据中..."}
+          description={isEn ? `Fetching latest observations for ${row?.city_display_name || row?.city || "this city"}` : `正在获取 ${row?.city_display_name || row?.city || "该城市"} 的最新观测数据`}
+          compact={compact}
+        />
+      )}
       <div className="flex h-full min-h-[300px] flex-col">
         {/* Compact stats bar */}
         {compact ? (
@@ -1148,11 +1432,11 @@ export function LiveTemperatureThresholdChart({
               <div className="flex items-center gap-4 text-[11px]">
                 <span className="font-semibold text-slate-500">
                   {isEn ? "Runway" : runwayHeaderLabel}:{" "}
-                  <strong className="text-[#009688] font-mono">{temp(currentRunwayTemp)}</strong>
+                  <strong className="text-[#009688] font-mono">{temp(displayRunwayTemp)}</strong>
                 </span>
                 <span className="text-slate-300">|</span>
                 <span className="font-semibold text-slate-500">
-                  {isEn ? "METAR" : metarHeaderLabel}:{" "}
+                  {isEn ? "METAR" : (isShenzhen ? "当日最高" : metarHeaderLabel)}:{" "}
                   <strong className="text-blue-600 font-mono">{temp(observedHighMetar)}</strong>
                 </span>
               </div>
@@ -1190,7 +1474,7 @@ export function LiveTemperatureThresholdChart({
                       {isEn ? "Runway Live (1m)" : `${runwayHeaderLabel}`}
                     </span>
                     <span className="text-2xl font-bold font-mono text-[#009688] mt-1">
-                      {temp(currentRunwayTemp)}
+                      {temp(displayRunwayTemp)}
                     </span>
                   </div>
                   <div className="flex flex-col">
@@ -1328,13 +1612,13 @@ export function LiveTemperatureThresholdChart({
         )}
 
         {/* Multi-model list (Only in 1D mode and when not compact) */}
-        {timeframe === "1D" && !compact && hasRunwayData && series.some((s) => s.key.startsWith("model_curve_")) && (
+        {timeframe === "1D" && !compact && hasRunwayData && activeSeries.some((s) => s.key.startsWith("model_curve_")) && (
           <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-2">
             <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px]">
               <span className="font-black text-slate-500 uppercase mr-2">
                 {isEn ? "Models:" : "多模型:"}
               </span>
-              {series
+              {activeSeries
                 .filter((s) => s.key.startsWith("model_curve_"))
                 .map((s) => {
                   const stats = seriesStats(s.values);
@@ -1467,3 +1751,5 @@ export function __buildTemperatureChartDataForTest(
 }
 
 export const __isTemperatureSeriesVisibleByDefaultForTest = isTemperatureSeriesVisibleByDefault;
+export const __getVisibleTemperatureSeriesForTest = getVisibleTemperatureSeries;
+export const __getObservationDisplayMetricsForTest = getObservationDisplayMetrics;
