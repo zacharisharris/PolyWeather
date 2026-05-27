@@ -204,9 +204,26 @@ export interface ForecastData {
   sunshine_hours?: number | null;
 }
 
+export interface DebHourlyPath {
+  source?: string | null;
+  version?: string | null;
+  times?: string[];
+  temps?: Array<number | null>;
+  base_source?: string | null;
+  base_offset?: number | null;
+  correction?: Record<string, unknown> | null;
+}
+
 export interface DebForecast {
   prediction: number | null;
+  raw_prediction?: number | null;
+  version?: string | null;
   weights_info?: string | null;
+  bias_adjustment?: number | null;
+  bias_samples?: number | null;
+  intraday_adjustment?: number | null;
+  hourly_path?: DebHourlyPath | null;
+  hourly_correction?: Record<string, unknown> | null;
 }
 
 export interface CitySummary {
