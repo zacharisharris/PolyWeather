@@ -541,6 +541,8 @@ export interface ScanOpportunityRow {
   target_unit?: string | null;
   model_probability?: number | null;
   market_probability?: number | null;
+  probability_engine?: string | null;
+  probability_calibration_mode?: string | null;
   model_event_probability?: number | null;
   raw_model_event_probability?: number | null;
   market_event_probability?: number | null;
@@ -953,9 +955,11 @@ export interface AmosData {
     temperatures?: Array<[number | null, number | null]> | null;
     point_temperatures?: Array<{
       runway?: string | null;
+      temp?: number | null;
       tdz_temp?: number | null;
       mid_temp?: number | null;
       end_temp?: number | null;
+      target_runway_max?: number | null;
     }> | null;
     pressures_hpa?: Array<number | null> | null;
     wind_directions?: Array<[number, number, number] | null> | null;
