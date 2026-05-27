@@ -42,6 +42,20 @@ export function runTests() {
   assert(store.includes("replay_events"), "event store must expose replay_events");
   assert(store.includes("replay_requires_resync"), "event store must detect incomplete replay windows");
 
+  const redisStorePath = path.join(repoRoot, "web", "redis_realtime_event_store.py");
+  assert(fs.existsSync(redisStorePath), "backend must define a Redis Stream realtime event store");
+  const redisStore = fs.readFileSync(redisStorePath, "utf8");
+  assert(redisStore.includes("RedisRealtimeEventStore"), "Redis store must expose RedisRealtimeEventStore");
+  assert(redisStore.includes("XADD") && redisStore.includes("MAXLEN"), "Redis store must append patches to a bounded Redis Stream");
+  assert(redisStore.includes("xread"), "Redis store must support live fanout through Redis Stream reads");
+  assert(redisStore.includes("counter:city_observation_revision"), "Redis store must keep a numeric revision counter for frontend compatibility");
+
+  const storeFactoryPath = path.join(repoRoot, "web", "realtime_event_store_factory.py");
+  assert(fs.existsSync(storeFactoryPath), "backend must define a realtime event store factory");
+  const storeFactory = fs.readFileSync(storeFactoryPath, "utf8");
+  assert(storeFactory.includes("POLYWEATHER_EVENT_STORE"), "event store factory must select sqlite/redis from runtime config");
+  assert(storeFactory.includes("POLYWEATHER_REDIS_REQUIRED"), "event store factory must support strict Redis mode");
+
   const sseRouterPath = path.join(repoRoot, "web", "routers", "sse_router.py");
   assert(fs.existsSync(sseRouterPath), "FastAPI backend must define web/routers/sse_router.py");
   const sseRouter = fs.readFileSync(sseRouterPath, "utf8");
@@ -53,6 +67,9 @@ export function runTests() {
   assert(sseRouter.includes('"/api/internal/collector-patch"'), "SSE router must expose collector patch ingest endpoint");
   assert(sseRouter.includes("StreamingResponse"), "SSE route must return StreamingResponse");
   assert(sseRouter.includes('"text/event-stream"'), "SSE route must use text/event-stream media type");
+  assert(sseRouter.includes("create_realtime_event_store"), "SSE router must use the realtime event store factory");
+  assert(sseRouter.includes("_ensure_live_subscription"), "SSE router must start external live fanout when the store provides it");
+  assert(sseRouter.includes("uses_external_live_fanout"), "Redis-backed ingest must not directly broadcast duplicate local events");
 
   const appFactory = readRepoFile("web", "app_factory.py");
   assert(appFactory.includes("sse_router"), "FastAPI app factory must register the SSE router");
@@ -152,8 +169,26 @@ export function runTests() {
     !resyncBlock.includes("setIsHourlyLoading(true)"),
     "SSE replay resync should refresh full detail in the background without showing the loading overlay",
   );
+  assert(
+    chart.includes("visibilitychange") &&
+      chart.includes('document.visibilityState !== "visible"') &&
+      chart.includes("refreshForegroundFullDetail"),
+    "temperature chart must immediately refresh visible charts when the browser tab returns to the foreground",
+  );
+  const foregroundRefreshBlock = chart.match(/const refreshForegroundFullDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
+  assert(
+    foregroundRefreshBlock.includes("ignoreCache: true") &&
+      foregroundRefreshBlock.includes("fetchHourlyForecastForCity") &&
+      !foregroundRefreshBlock.includes("setIsHourlyLoading(true)"),
+    "foreground resume refresh should update full detail immediately in the background without showing the loading overlay",
+  );
   assert(chart.includes("viewMode"), "temperature chart must expose a view mode for DEB-peak auto view versus full-day view");
-  assert(chart.includes("getDebPeakWindowRange"), "temperature chart must derive its default view from the DEB peak window");
+  assert(chart.includes('useState<"auto" | "full">("full")'), "temperature chart must default every city panel to the all-day view");
+  assert(
+    chart.includes('setViewMode("full")') && !chart.includes('setViewMode("auto")'),
+    "temperature chart must reset city changes to the all-day view instead of silently switching back to the DEB peak window",
+  );
+  assert(chart.includes("getDebPeakWindowRange"), "temperature chart must still derive the optional Peak view from the DEB peak window");
   assert(
     chart.includes('isEn ? "Peak" : "高温"') && chart.includes('isEn ? "All Day" : "全天"'),
     "temperature chart view-mode labels must translate 高温/全天 as Peak/All Day",
@@ -167,6 +202,23 @@ export function runTests() {
     chart.includes("targetResolution !== nextTargetResolution"),
     "temperature chart must guard target-resolution state updates to prevent render/update loops",
   );
+  assert(
+    chart.includes("prefersHighFrequencyRunwayResolution") && chart.includes('return "1m";'),
+    "runway charts must request 1-minute detail resolution so historical runway lines match live SSE patch cadence",
+  );
+  assert(
+    chart.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS") &&
+      chart.includes("lastProbabilityRefreshAtRef") &&
+      chart.includes("refreshProbabilityOverlayAfterPatch"),
+    "temperature chart must trigger a throttled background probability refresh after live observation patches",
+  );
+  const patchEffectBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!latestPatch[\s\S]*?\}, \[latestPatch, row, city, targetResolution, compact, isActive, isMaximized\]\);/)?.[0] || "";
+  assert(
+    patchEffectBlock.includes("refreshProbabilityOverlayAfterPatch") &&
+      patchEffectBlock.includes("ignoreCache: true") &&
+      !patchEffectBlock.includes("setIsHourlyLoading(true)"),
+    "live patch probability refresh must recompute legacy Gaussian in the background without showing a loading overlay",
+  );
   assert(!chartCanvas.includes("ResponsiveContainer"), "temperature chart canvas must not mount Recharts through ResponsiveContainer at 0x0");
   assert(chartCanvas.includes("ResizeObserver"), "temperature chart canvas must measure its host with ResizeObserver");
   assert(
@@ -176,6 +228,10 @@ export function runTests() {
   assert(
     chartCanvas.includes("width={chartWidth}") && chartCanvas.includes("height={chartHeight}"),
     "temperature chart canvas must pass explicit positive width/height to Recharts",
+  );
+  assert(
+    chartCanvas.includes("canToggleRunwayDetails") && chartCanvas.includes("individualRunwaySeriesCount > 1"),
+    "single-runway charts must not show the runway-detail toggle because aggregate and individual views are visually redundant",
   );
   assert(!chart.includes("3D"), "temperature chart UI must not expose a 3D/future-forecast mode");
   assert(!chart.includes("build3DayChartData"), "temperature chart component must not render future prediction curves");

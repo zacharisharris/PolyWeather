@@ -10,7 +10,7 @@ import re
 import os
 import time
 from html import unescape
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -75,6 +75,42 @@ def _amos_extract_metar_qnh(metar_line: str) -> Optional[float]:
     return None
 
 
+def _amos_extract_observation_time(text: str, icao: str) -> tuple[Optional[str], Optional[str]]:
+    """Return AMOS page timestamp as (UTC ISO, KST local display)."""
+    icao_pattern = re.escape(str(icao or "").strip().upper())
+    patterns = []
+    if icao_pattern:
+        patterns.append(
+            rf"\({icao_pattern}\)\s*(\d{{4}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일\s*(\d{{1,2}}):(\d{{2}})\s*KST"
+        )
+    patterns.append(
+        r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s*(\d{1,2}):(\d{2})\s*KST"
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, text or "", re.I)
+        if not match:
+            continue
+        try:
+            year, month, day, hour, minute = [int(part) for part in match.groups()[:5]]
+            local_dt = datetime(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                tzinfo=timezone(timedelta(hours=9)),
+            )
+            utc_dt = local_dt.astimezone(timezone.utc).replace(microsecond=0)
+            return (
+                utc_dt.isoformat().replace("+00:00", "Z"),
+                local_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
 def _amos_extract_metar_wind(metar_line: str) -> Optional[float]:
     """Extract wind speed in knots from METAR like '22014KT'."""
     match = re.search(r"\b(\d{3})(\d{2,3})KT\b", metar_line)
@@ -101,6 +137,40 @@ def _amos_is_runway_token(value: str) -> bool:
         re.match(r"^\d{2}[LRC]?$", text, re.I)
         or re.match(r"^[NS]\s+[LR]$", text, re.I)
     )
+
+
+def _amos_normalize_runway_label(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().upper())
+
+
+def _amos_runway_pair_label(pair: Any, index: int) -> str:
+    if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+        left = _amos_normalize_runway_label(pair[0])
+        right = _amos_normalize_runway_label(pair[1])
+        if left and right:
+            return f"{left}/{right}"
+    return f"RWY {index + 1}"
+
+
+def _amos_build_point_temperatures(
+    runway_pairs: list[tuple[str, str]],
+    temperatures: list[tuple[Any, Any]],
+) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for index, pair in enumerate(runway_pairs):
+        if index >= len(temperatures):
+            continue
+        temp = _amos_safe_float(temperatures[index][0])
+        if temp is None:
+            continue
+        points.append(
+            {
+                "runway": _amos_runway_pair_label(pair, index),
+                "temp": temp,
+                "target_runway_max": temp,
+            }
+        )
+    return points
 
 
 def _amos_parse_cell_table(lines: list[str]) -> Optional[dict[str, Any]]:
@@ -200,6 +270,7 @@ def _amos_parse_cell_table(lines: list[str]) -> Optional[dict[str, Any]]:
     return {
         "runway_pairs": runway_pairs,
         "temperatures": temperatures,
+        "point_temperatures": _amos_build_point_temperatures(runway_pairs, temperatures),
         "pressures_hpa": pressures_hpa,
         "wind_directions": wind_directions,
         "wind_speeds": wind_speeds,
@@ -323,6 +394,7 @@ def _amos_parse_runway_table(text: str) -> dict[str, Any]:
     return {
         "runway_pairs": runway_pairs,
         "temperatures": temperatures,
+        "point_temperatures": _amos_build_point_temperatures(runway_pairs, temperatures),
         "pressures_hpa": pressures_hpa,
         "wind_directions": wind_directions,
         "wind_speeds": wind_speeds,
@@ -477,6 +549,14 @@ class AmosStationSourceMixin:
                 mid = len(sorted_p) // 2
                 pressure_hpa = float(sorted_p[mid]) if len(sorted_p) % 2 else float((sorted_p[mid-1] + sorted_p[mid]) / 2)
 
+            observation_time, observation_time_local = _amos_extract_observation_time(html, icao)
+            if not observation_time:
+                now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+                observation_time = now_utc.isoformat().replace("+00:00", "Z")
+                observation_time_local = now_utc.astimezone(
+                    timezone(timedelta(hours=9))
+                ).strftime("%Y-%m-%d %H:%M:%S")
+
             temp = round(temp_c * 9 / 5 + 32, 1) if use_fahrenheit and temp_c is not None else temp_c
             dew = round(dew_c * 9 / 5 + 32, 1) if use_fahrenheit and dew_c is not None else dew_c
 
@@ -505,7 +585,8 @@ class AmosStationSourceMixin:
                 "runway_obs": runway_data if runway_data.get("temperatures") else None,
                 "observation_source": "AMOS runway sensors",
                 "observation_source_zh": "AMOS 跑道传感器",
-                "observation_time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "observation_time": observation_time,
+                "observation_time_local": observation_time_local,
             }
 
             # Compute runway temp range for compact display ("14.6~15.2")

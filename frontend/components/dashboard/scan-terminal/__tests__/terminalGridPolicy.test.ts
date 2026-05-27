@@ -15,6 +15,10 @@ export function runTests() {
     path.join(projectRoot, "components", "dashboard", "scan-terminal", "GridLayoutSelector.tsx"),
     "utf8",
   );
+  const chartSource = fs.readFileSync(
+    path.join(projectRoot, "components", "dashboard", "scan-terminal", "LiveTemperatureThresholdChart.tsx"),
+    "utf8",
+  );
 
   assert(
     dashboardSource.includes("MAX_TERMINAL_CHARTS = 9"),
@@ -40,5 +44,15 @@ export function runTests() {
     selectorSource.includes("[1, 2, 3].map") &&
       selectorSource.includes("grid grid-cols-3"),
     "grid selector must expose at most a 3 by 3 chart layout",
+  );
+  assert(
+    dashboardSource.includes("if (!cityInSlot || !rowForSlot)") &&
+      dashboardSource.includes("handleSelectCityForSlot(slotIndex, null);"),
+    "stale saved chart slots must render the empty city picker instead of a row=null Temperature Chart",
+  );
+  assert(
+    chartSource.includes("setLiveTemp(null);") &&
+      chartSource.includes("lastAppliedPatchRevisionRef.current = 0;"),
+    "switching city slots must clear the previous live temperature so Fahrenheit values cannot leak into Celsius charts",
   );
 }

@@ -21,19 +21,64 @@ import {
   fetchHourlyForecastForCity,
   getActiveTemperatureSeries,
   getDebPeakWindowRange,
+  getPeakGlowState,
   getLiveObservationLabels,
   getObservationDisplayMetrics,
   getVisibleTemperatureSeries,
   isTemperatureSeriesVisibleByDefault,
   mergePatchIntoHourly,
   normObs,
+  prefersHighFrequencyRunwayResolution,
   readSessionCache,
+  selectDisplayRunwayTemp,
   seedHourlyForecastFromRow,
   shouldPollLiveChart,
   validNumber,
   type HourlyForecast,
 } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 export { clearCityDetailCache } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
+
+const PEAK_GLOW_PANEL_CLASS = {
+  none: "",
+  watch: "peak-glow-card peak-glow-watch",
+  near_peak: "peak-glow-card peak-glow-near",
+  breakout: "peak-glow-card peak-glow-breakout",
+  cooling: "peak-glow-card peak-glow-cooling",
+} as const;
+
+const PEAK_GLOW_BADGE_CLASS = {
+  none: "",
+  watch: "border-amber-200 bg-amber-50 text-amber-700",
+  near_peak: "border-orange-200 bg-orange-50 text-orange-700",
+  breakout: "border-rose-200 bg-rose-50 text-rose-700",
+  cooling: "border-slate-200 bg-slate-100 text-slate-500",
+} as const;
+
+const PROBABILITY_REFRESH_AFTER_PATCH_MS = 60_000;
+
+function peakGlowLabel(state: keyof typeof PEAK_GLOW_PANEL_CLASS, isEn: boolean) {
+  if (state === "watch") return isEn ? "Watch" : "关注";
+  if (state === "near_peak") return isEn ? "Near peak" : "接近峰值";
+  if (state === "breakout") return isEn ? "Breakout" : "突破";
+  if (state === "cooling") return isEn ? "Cooling" : "降温";
+  return "";
+}
+
+function peakGlowTitle(
+  state: keyof typeof PEAK_GLOW_PANEL_CLASS,
+  distanceToHigh: number | null,
+  isEn: boolean,
+) {
+  const label = peakGlowLabel(state, isEn);
+  if (!label) return "";
+  if (distanceToHigh === null) return label;
+  const absDistance = Math.abs(distanceToHigh).toFixed(1);
+  if (state === "breakout") {
+    return isEn ? `${label}: new observed high` : `${label}：刷新实测高点`;
+  }
+  if (state === "cooling") return isEn ? `${label}: peak likely passed` : `${label}：峰值可能已过`;
+  return isEn ? `${label}: ${absDistance}° below observed high` : `${label}：距实测高点 ${absDistance}°`;
+}
 
 function formatCityLocalDate(tzOffsetSeconds: number | null | undefined) {
   const cityOffsetMs = (tzOffsetSeconds ?? 0) * 1000;
@@ -76,20 +121,23 @@ export function LiveTemperatureThresholdChart({
   const latestPatch = useLatestPatch(city);
   const resyncVersion = useSseResyncVersion();
   const timeframe = "1D";
-  const [viewMode, setViewMode] = useState<"auto" | "full">("auto");
+  const [viewMode, setViewMode] = useState<"auto" | "full">("full");
   const [userToggledKeys, setUserToggledKeys] = useState<Record<string, boolean>>({});
   const [liveTemp, setLiveTemp] = useState<number | null>(null);
   const [isHourlyLoading, setIsHourlyLoading] = useState(false);
   const hasLoadedHourlyDetailRef = useRef(false);
   const lastPatchAtRef = useRef<number>(Date.now());
   const lastAppliedPatchRevisionRef = useRef<number>(0);
+  const lastProbabilityRefreshAtRef = useRef<number>(0);
   const localDayRolloverFetchDateRef = useRef<string>("");
 
   const [showRunwayDetails, setShowRunwayDetails] = useState<boolean>(true);
   const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
   const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [zoomRange, setZoomRange] = useState<[number, number] | null>(null);
-  const [targetResolution, setTargetResolution] = useState<string>("10m");
+  const [targetResolution, setTargetResolution] = useState<string>(() =>
+    prefersHighFrequencyRunwayResolution(row, null) ? "1m" : "10m",
+  );
   const [currentCityLocalDate, setCurrentCityLocalDate] = useState(() =>
     formatCityLocalDate(row?.tz_offset_seconds),
   );
@@ -97,13 +145,16 @@ export function LiveTemperatureThresholdChart({
   useEffect(() => {
     setUserToggledKeys({});
     setZoomRange(null);
-    setViewMode("auto");
+    setViewMode("full");
     setShowRunwayDetails(true);
+    setTargetResolution(prefersHighFrequencyRunwayResolution(row, null) ? "1m" : "10m");
     setHourly(seedHourlyForecastFromRow(row));
+    setLiveTemp(null);
     setIsHourlyLoading(Boolean(city));
     hasLoadedHourlyDetailRef.current = false;
     lastPatchAtRef.current = Date.now();
     lastAppliedPatchRevisionRef.current = 0;
+    lastProbabilityRefreshAtRef.current = 0;
     localDayRolloverFetchDateRef.current = "";
     setCurrentCityLocalDate(formatCityLocalDate(row?.tz_offset_seconds));
   }, [city]);
@@ -176,7 +227,33 @@ export function LiveTemperatureThresholdChart({
     const tempValue = validNumber(latestPatch.changes.temp);
     if (tempValue !== null) setLiveTemp(tempValue);
     setHourly((prev) => mergePatchIntoHourly(prev ?? seedHourlyForecastFromRow(row), latestPatch));
-  }, [latestPatch, row]);
+
+    const hasObservationChange =
+      tempValue !== null ||
+      Array.isArray(latestPatch.changes.runway_points) ||
+      Boolean(latestPatch.changes.amos);
+    if (!hasObservationChange || !shouldPollLiveChart({ city, compact, isActive, isMaximized })) return;
+
+    const now = Date.now();
+    if (now - lastProbabilityRefreshAtRef.current < PROBABILITY_REFRESH_AFTER_PATCH_MS) return;
+    lastProbabilityRefreshAtRef.current = now;
+
+    let cancelled = false;
+    const refreshProbabilityOverlayAfterPatch = () => {
+      fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
+        .then((data) => {
+          if (cancelled || !data) return;
+          hasLoadedHourlyDetailRef.current = true;
+          setHourly(data);
+        })
+        .catch(() => {});
+    };
+
+    refreshProbabilityOverlayAfterPatch();
+    return () => {
+      cancelled = true;
+    };
+  }, [latestPatch, row, city, targetResolution, compact, isActive, isMaximized]);
 
   useEffect(() => {
     if (!resyncVersion || !city) return;
@@ -204,7 +281,7 @@ export function LiveTemperatureThresholdChart({
     const refreshFullDetail = () => {
       lastPatchAtRef.current = Date.now();
 
-      fetchHourlyForecastForCity(city, { ignoreCache: true })
+      fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
         .then((data) => {
           if (cancelled || !data) return;
           hasLoadedHourlyDetailRef.current = true;
@@ -237,7 +314,46 @@ export function LiveTemperatureThresholdChart({
       cancelled = true;
       clearInterval(id);
     };
-  }, [city, compact, isActive, isMaximized]);
+  }, [city, compact, isActive, isMaximized, targetResolution]);
+
+  useEffect(() => {
+    if (!shouldPollLiveChart({ city, compact, isActive, isMaximized })) return;
+    let cancelled = false;
+
+    const refreshForegroundFullDetail = () => {
+      lastPatchAtRef.current = Date.now();
+
+      fetch(`/api/city/${encodeURIComponent(city)}/summary`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((payload) => {
+          if (cancelled || !payload) return;
+          const temp = validNumber(payload?.current?.temp);
+          if (temp !== null) setLiveTemp(temp);
+        })
+        .catch(() => {});
+
+      fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
+        .then((data) => {
+          if (cancelled || !data) return;
+          hasLoadedHourlyDetailRef.current = true;
+          setHourly(data);
+        })
+        .catch(() => {});
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshForegroundFullDetail();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", refreshForegroundFullDetail);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", refreshForegroundFullDetail);
+    };
+  }, [city, compact, isActive, isMaximized, targetResolution]);
 
   useEffect(() => {
     if (!city || !currentCityLocalDate) return;
@@ -272,7 +388,8 @@ export function LiveTemperatureThresholdChart({
   }, [hourly, currentCityLocalDate, row?.local_date]);
   const chartLocalDate = chartHourly?.localDate || row?.local_date || currentCityLocalDate;
 
-  const { data, series } = useMemo(() => buildFullDayChartData(row, chartHourly, isEn), [row, chartHourly, isEn]);
+  const { data, series, probabilityOverlay } = useMemo(() => buildFullDayChartData(row, chartHourly, isEn), [row, chartHourly, isEn]);
+  const peakGlow = useMemo(() => getPeakGlowState(row, data, series), [row, data, series]);
 
   const autoWindowRange = useMemo(
     () => (viewMode === "auto" ? getDebPeakWindowRange(data, series) : null),
@@ -280,6 +397,10 @@ export function LiveTemperatureThresholdChart({
   );
   const visibleRange = zoomRange ?? autoWindowRange;
   const visibleRangeKey = visibleRange ? `${visibleRange[0]}:${visibleRange[1]}` : "full";
+  const shouldUseRunwayResolution = useMemo(
+    () => prefersHighFrequencyRunwayResolution(row, chartHourly),
+    [row, chartHourly],
+  );
 
   const zoomedData = useMemo(() => {
     if (!visibleRange || data.length === 0) return data;
@@ -288,6 +409,9 @@ export function LiveTemperatureThresholdChart({
   }, [data, visibleRangeKey]);
 
   const nextTargetResolution = useMemo(() => {
+    if (shouldUseRunwayResolution) {
+      return "1m";
+    }
     if (visibleRange && data.length > 0) {
       const zoomedData = data.slice(visibleRange[0], visibleRange[1] + 1);
       if (zoomedData.length > 0) {
@@ -299,7 +423,7 @@ export function LiveTemperatureThresholdChart({
       }
     }
     return "10m";
-  }, [data, visibleRangeKey]);
+  }, [data, visibleRangeKey, shouldUseRunwayResolution]);
 
   useEffect(() => {
     if (targetResolution !== nextTargetResolution) {
@@ -355,7 +479,7 @@ export function LiveTemperatureThresholdChart({
     () => getObservationDisplayMetrics(row, chartHourly, settlementPlate),
     [row, chartHourly, settlementPlate],
   );
-  const displayRunwayTemp = liveTemp ?? currentRunwayTemp;
+  const displayRunwayTemp = selectDisplayRunwayTemp(liveTemp, currentRunwayTemp, hasRunwayData);
   const wundergroundDailyHigh = validNumber(chartHourly?.airportCurrent?.max_so_far ?? chartHourly?.airportPrimary?.max_so_far) ?? null;
 
   const localDateStr = chartLocalDate || new Date().toISOString().slice(0, 10);
@@ -419,10 +543,13 @@ export function LiveTemperatureThresholdChart({
     return list.sort((a, b) => a.threshold - b.threshold);
   }, [row, allRows]);
 
-  const intDegreeTicks = useMemo(() => buildIntDegreeTicks(activeSeries, zoomedData), [activeSeries, zoomedData]);
+  const intDegreeTicks = useMemo(
+    () => buildIntDegreeTicks(activeSeries, zoomedData, probabilityOverlay),
+    [activeSeries, zoomedData, probabilityOverlay],
+  );
   const chartDomain = useMemo(
-    () => buildChartDomain(activeSeries, zoomedData),
-    [activeSeries, zoomedData],
+    () => buildChartDomain(activeSeries, zoomedData, probabilityOverlay),
+    [activeSeries, zoomedData, probabilityOverlay],
   );
 
   const subtitle = row ? (isEn ? "Live & Forecast" : "实测与预测") : "";
@@ -442,6 +569,17 @@ export function LiveTemperatureThresholdChart({
       </button>
       <span className="text-slate-400 font-normal">·</span>
       <span className="text-slate-500 font-normal">{subtitle}</span>
+      {peakGlow.state !== "none" && (
+        <span
+          className={clsx(
+            "ml-1 rounded border px-1.5 py-0.5 text-[9px] font-black normal-case tracking-normal",
+            PEAK_GLOW_BADGE_CLASS[peakGlow.state],
+          )}
+          title={peakGlowTitle(peakGlow.state, peakGlow.distanceToHigh, isEn)}
+        >
+          {peakGlowLabel(peakGlow.state, isEn)}
+        </span>
+      )}
     </div>
   ) : isEn ? (
     "Temperature Chart"
@@ -559,7 +697,11 @@ export function LiveTemperatureThresholdChart({
   };
 
   return (
-    <Panel title={panelTitle} actions={timeframeActions}>
+    <Panel
+      title={panelTitle}
+      actions={timeframeActions}
+      className={PEAK_GLOW_PANEL_CLASS[peakGlow.state]}
+    >
       <div className="flex h-full min-h-[300px] flex-col">
         <TemperatureStatsBars
           isEn={isEn}
@@ -600,6 +742,7 @@ export function LiveTemperatureThresholdChart({
           cityThresholds={cityThresholds}
           chartSeries={chartSeries}
           activeSeries={activeSeries}
+          probabilityOverlay={probabilityOverlay}
           zoomedData={zoomedData}
           chartDomain={chartDomain}
           intDegreeTicks={intDegreeTicks}
@@ -641,5 +784,7 @@ export const __getActiveTemperatureSeriesForTest = getActiveTemperatureSeries;
 export const __getDebPeakWindowRangeForTest = getDebPeakWindowRange;
 export const __getLiveObservationLabelsForTest = getLiveObservationLabels;
 export const __getObservationDisplayMetricsForTest = getObservationDisplayMetrics;
+export const __getPeakGlowStateForTest = getPeakGlowState;
 export const __shouldPollLiveChartForTest = shouldPollLiveChart;
 export const __mergePatchIntoHourlyForTest = mergePatchIntoHourly;
+export const __selectDisplayRunwayTempForTest = selectDisplayRunwayTemp;
