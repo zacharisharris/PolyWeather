@@ -25,11 +25,13 @@ from web.core import (
     _weather,
 )
 from src.analysis.deb_algorithm import calculate_deb_prediction
+from src.analysis.deb_hourly_consensus import build_deb_hourly_consensus_path
 from src.analysis.deb_hourly_correction import (
     build_deb_hourly_path,
     get_cached_hourly_peak_corrector,
 )
 from src.analysis.settlement_rounding import apply_city_settlement
+from src.analysis.trend_engine import _resolve_peak_hours
 from src.data_collection.country_networks import build_country_network_snapshot
 from src.data_collection.city_registry import ALIASES, CITY_REGISTRY
 from src.data_collection.city_time import get_city_utc_offset_seconds
@@ -82,6 +84,26 @@ HIGH_FREQ_AIRPORT_ANALYSIS_CITIES = {
     "wuhan",
 }
 
+AMSC_SETTLEMENT_RUNWAY_PAIRS: Dict[str, tuple[str, str]] = {
+    "shanghai": ("17L", "35R"),
+    "chengdu": ("02L", "20R"),
+    "chongqing": ("20R", "02L"),
+    "guangzhou": ("02L", "20R"),
+    "wuhan": ("04", "22"),
+    "beijing": ("19", "01"),
+    "qingdao": ("16", "34"),
+}
+
+AMSC_SETTLEMENT_RUNWAY_TARGETS: Dict[str, str] = {
+    "shanghai": "35R",
+    "chengdu": "02L",
+    "chongqing": "02L",
+    "guangzhou": "02L",
+    "wuhan": "04",
+    "beijing": "01",
+    "qingdao": "34",
+}
+
 
 def _mgm_hourly_high(mgm: Dict[str, Any]) -> Optional[float]:
     hourly = mgm.get("hourly") if isinstance(mgm, dict) else []
@@ -95,6 +117,55 @@ def _mgm_hourly_high(mgm: Dict[str, Any]) -> Optional[float]:
         if value is not None:
             values.append(value)
     return max(values) if values else None
+
+
+def _normalize_runway_label(value: Any) -> str:
+    return re.sub(r"[^0-9A-Z]+", "", str(value or "").strip().upper())
+
+
+def _split_runway_pair_label(value: Any) -> tuple[str, str]:
+    parts = [_normalize_runway_label(part) for part in str(value or "").split("/") if str(part).strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    runway = _normalize_runway_label(value)
+    return runway, runway
+
+
+def _runway_pair_matches(left: tuple[str, str], right: tuple[str, str]) -> bool:
+    return tuple(sorted(left)) == tuple(sorted(right))
+
+
+def _settlement_runway_endpoint_temp(city: str, row: Dict[str, Any]) -> Optional[float]:
+    city_key = (city or "").strip().lower()
+    configured_pair = AMSC_SETTLEMENT_RUNWAY_PAIRS.get(city_key)
+    target = _normalize_runway_label(AMSC_SETTLEMENT_RUNWAY_TARGETS.get(city_key))
+    if not configured_pair or not target:
+        return None
+
+    pair = _split_runway_pair_label(row.get("runway"))
+    configured = tuple(_normalize_runway_label(part) for part in configured_pair)
+    if not _runway_pair_matches(pair, configured):
+        return None
+
+    tdz_temp = _sf(row.get("tdz_temp"))
+    end_temp = _sf(row.get("end_temp"))
+    if target == pair[0]:
+        return tdz_temp if tdz_temp is not None else end_temp
+    if target == pair[1]:
+        return end_temp if end_temp is not None else tdz_temp
+    return None
+
+
+def _runway_history_temp_for_city(city: str, row: Dict[str, Any]) -> Optional[float]:
+    endpoint_temp = _settlement_runway_endpoint_temp(city, row)
+    if endpoint_temp is not None:
+        return endpoint_temp
+    target_runway_max = _sf(row.get("target_runway_max"))
+    if target_runway_max is not None:
+        return target_runway_max
+    return _sf(row.get("tdz_temp"))
+
+
 _ANALYSIS_CACHE_STATS_LOCK = threading.Lock()
 _ANALYSIS_CACHE_STATS: Dict[str, Any] = {
     "total_requests": 0,
@@ -737,6 +808,7 @@ def _analyze(
         mm_hourly = _weather.fetch_multi_model(lat, lon, city=city, use_fahrenheit=is_f)
         if mm_hourly and mm_hourly.get("hourly_times"):
             mm = {**mm, **mm_hourly}
+    raw["multi_model"] = mm
     risk = CITY_RISK_PROFILES.get(city, {})
     network_snapshot = (
         build_country_network_snapshot(city, raw)
@@ -1089,6 +1161,7 @@ def _analyze(
     deb_raw_val, deb_version = None, None
     deb_bias_adjustment, deb_bias_samples = 0.0, 0
     deb_intraday_adjustment = 0.0
+    deb_hourly_consensus = None
     if current_forecasts:
         deb_result = calculate_deb_prediction(city, current_forecasts)
         if deb_result.get("prediction") is not None:
@@ -1098,6 +1171,14 @@ def _analyze(
             deb_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
             deb_bias_samples = deb_result.get("bias_samples") or 0
             deb_weights = deb_result.get("weights_info") or ""
+            deb_hourly_consensus = build_deb_hourly_consensus_path(
+                city=city,
+                hourly_times=mm.get("hourly_times") or [],
+                hourly_forecasts=mm.get("hourly_forecasts") or {},
+                daily_forecasts=current_forecasts,
+                deb_prediction=deb_val,
+                local_date=local_date_str,
+            )
 
     # ── 7. Ensemble stats ──
     ens_data = {
@@ -1186,13 +1267,16 @@ def _analyze(
             h_lifted_index = [None for _ in parsed_obs]
             h_boundary_layer_height = [None for _ in parsed_obs]
 
-    peak_hours = []
-    if h_times and h_temps and om_today is not None:
-        for ts, tmp in zip(h_times, h_temps):
-            if ts.startswith(local_date_str) and abs(tmp - om_today) <= 0.2:
-                hr = int(ts.split("T")[1][:2])
-                if 8 <= hr <= 19:
-                    peak_hours.append(ts.split("T")[1][:5])
+    peak_source = raw
+    if deb_hourly_consensus:
+        peak_source = {
+            **raw,
+            "deb": {
+                **(raw.get("deb") or {}),
+                "hourly_consensus": deb_hourly_consensus,
+            },
+        }
+    peak_hours = _resolve_peak_hours(peak_source, local_date_str, h_times, h_temps, om_today)
 
     first_peak_h = int(peak_hours[0].split(":")[0]) if peak_hours else 13
     last_peak_h = int(peak_hours[-1].split(":")[0]) if peak_hours else 15
@@ -1246,6 +1330,8 @@ def _analyze(
             deb_bias_adjustment = sd.get("deb_bias_adjustment") or 0.0
             deb_bias_samples = sd.get("deb_bias_samples") or 0
             deb_weights = sd.get("deb_weights", "")
+        if deb_hourly_consensus is None and sd.get("deb_hourly_consensus"):
+            deb_hourly_consensus = sd.get("deb_hourly_consensus")
 
     except Exception as e:
         logger.warning(f"Structured analysis skipped for {city}: {e}")
@@ -1310,16 +1396,27 @@ def _analyze(
             deb_weights = f"{deb_weights or 'DEB'} + intraday_bias({deb_intraday_adjustment:+.1f})"
 
     deb_hourly_path = None
-    if deb_val is not None and today_hourly.get("times") and today_hourly.get("temps"):
+    deb_base_source = "hourly_plus_deb_offset"
+    deb_base_times = [str(item) for item in today_hourly.get("times") or []]
+    deb_base_temps = today_hourly.get("temps") or []
+    if isinstance(deb_hourly_consensus, dict):
+        consensus_times = deb_hourly_consensus.get("times") or []
+        consensus_temps = deb_hourly_consensus.get("temps") or []
+        if consensus_times and consensus_temps:
+            deb_base_source = "deb_hourly_consensus"
+            deb_base_times = [str(item) for item in consensus_times]
+            deb_base_temps = consensus_temps
+    if deb_val is not None and deb_base_times and deb_base_temps:
         try:
             deb_hourly_path = build_deb_hourly_path(
                 city=city,
-                hourly_times=[str(item) for item in today_hourly.get("times") or []],
-                hourly_temps=today_hourly.get("temps") or [],
+                hourly_times=deb_base_times,
+                hourly_temps=deb_base_temps,
                 deb_prediction=deb_val,
                 peak_first_h=first_peak_h,
                 peak_last_h=last_peak_h,
                 corrector=get_cached_hourly_peak_corrector(),
+                base_source=deb_base_source,
             )
         except Exception as exc:
             logger.debug(f"DEB hourly path correction skipped for {city}: {exc}")
@@ -1596,9 +1693,7 @@ def _analyze(
                 rw = r.get("runway")
                 if not rw:
                     continue
-                temp_val = r.get("target_runway_max")
-                if temp_val is None:
-                    temp_val = r.get("tdz_temp")
+                temp_val = _runway_history_temp_for_city(city, r)
                 if temp_val is not None:
                     temp_val = float(temp_val)
                     if is_f:
@@ -1745,6 +1840,7 @@ def _analyze(
             "bias_adjustment": deb_bias_adjustment,
             "bias_samples": deb_bias_samples,
             "intraday_adjustment": deb_intraday_adjustment,
+            "hourly_consensus": deb_hourly_consensus,
             "hourly_path": deb_hourly_path,
             "hourly_correction": (deb_hourly_path or {}).get("correction") if isinstance(deb_hourly_path, dict) else None,
         },
