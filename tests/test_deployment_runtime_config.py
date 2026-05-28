@@ -36,3 +36,44 @@ def test_scan_terminal_prewarm_is_lazy_by_default():
         "if _scan_terminal_prewarm_enabled():\n            start_scan_terminal_prewarm()",
         "",
     )
+
+
+def test_scan_terminal_backend_timeout_returns_before_next_proxy_abort():
+    import web.services.scan_terminal_config as scan_terminal_config
+
+    route_source = (
+        ROOT / "frontend" / "app" / "api" / "scan" / "terminal" / "route.ts"
+    ).read_text(encoding="utf-8")
+
+    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "40000"' in route_source
+    assert scan_terminal_config.SCAN_TERMINAL_BUILD_TIMEOUT_SEC <= 30
+
+
+def test_probability_engine_uses_enriched_multi_model_snapshot():
+    source = (ROOT / "web" / "analysis_service.py").read_text(encoding="utf-8")
+
+    assert 'raw["multi_model"] = mm' in source
+
+
+def test_city_detail_peak_window_uses_shared_multi_model_resolver():
+    source = (ROOT / "web" / "analysis_service.py").read_text(encoding="utf-8")
+
+    assert "from src.analysis.trend_engine import _resolve_peak_hours" in source
+    assert "peak_hours = _resolve_peak_hours(" in source
+
+
+def test_deploy_script_retries_image_pull_for_registry_propagation():
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "for pull_attempt in $(seq 1 6)" in script
+    assert "docker compose pull && pull_ok=1 && break" in script
+
+
+def test_city_detail_builds_deb_hourly_consensus_before_peak_window():
+    source = (ROOT / "web" / "analysis_service.py").read_text(encoding="utf-8")
+
+    assert "from src.analysis.deb_hourly_consensus import build_deb_hourly_consensus_path" in source
+    assert "deb_hourly_consensus = build_deb_hourly_consensus_path(" in source
+    assert '"hourly_consensus": deb_hourly_consensus' in source
+    assert 'deb_base_source = "deb_hourly_consensus"' in source
+    assert "base_source=deb_base_source" in source

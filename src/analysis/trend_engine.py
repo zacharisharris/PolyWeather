@@ -16,6 +16,7 @@ from src.analysis.deb_algorithm import (
     update_daily_record,
     _is_excluded_model_name,
 )
+from src.analysis.deb_hourly_consensus import build_deb_hourly_consensus_path
 from src.analysis.settlement_rounding import apply_city_settlement, is_exact_settlement_city
 from src.data_collection.city_registry import CITY_REGISTRY
 from src.data_collection.city_risk_profiles import get_city_risk_profile
@@ -46,6 +47,114 @@ def _sf(v):
         return float(v)
     except Exception:
         return None
+
+
+def _median(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2:
+        return sorted_values[mid]
+    return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+
+
+def _peak_hours_from_hourly_values(
+    hourly_values: List[Tuple[str, float]],
+    *,
+    tolerance: float = 0.3,
+) -> List[str]:
+    if not hourly_values:
+        return []
+    peak_value = max(value for _, value in hourly_values)
+    return [
+        time_part
+        for time_part, value in hourly_values
+        if abs(value - peak_value) <= tolerance
+    ]
+
+
+def _resolve_peak_hours(
+    weather_data: dict,
+    local_date_str: str,
+    open_meteo_times: Optional[List[Any]] = None,
+    open_meteo_temps: Optional[List[Any]] = None,
+    open_meteo_peak: Optional[Any] = None,
+) -> List[str]:
+    """Resolve the local high-temperature window, preferring multi-model hourly consensus."""
+    deb = weather_data.get("deb") if isinstance(weather_data, dict) else {}
+    if isinstance(deb, dict):
+        consensus = deb.get("hourly_consensus")
+        if isinstance(consensus, dict):
+            c_times = consensus.get("times") or []
+            c_temps = consensus.get("temps") or []
+            hourly_values: List[Tuple[str, float]] = []
+            for raw_time, raw_temp in zip(c_times, c_temps):
+                t_str = str(raw_time or "")
+                if "T" in t_str and not t_str.startswith(local_date_str):
+                    continue
+                time_part = t_str.split("T", 1)[1][:5] if "T" in t_str else t_str[:5]
+                try:
+                    hour = int(time_part[:2])
+                except Exception:
+                    continue
+                value = _sf(raw_temp)
+                if value is not None and 8 <= hour <= 19:
+                    hourly_values.append((time_part, value))
+            peak_hours = _peak_hours_from_hourly_values(hourly_values)
+            if peak_hours:
+                return peak_hours
+
+    multi_model = weather_data.get("multi_model") if isinstance(weather_data, dict) else {}
+    if isinstance(multi_model, dict):
+        hourly_times = multi_model.get("hourly_times") or []
+        hourly_forecasts = multi_model.get("hourly_forecasts") or {}
+        if isinstance(hourly_forecasts, dict) and hourly_times:
+            hourly_values: List[Tuple[str, float]] = []
+            for idx, raw_time in enumerate(hourly_times):
+                t_str = str(raw_time or "")
+                if not t_str.startswith(local_date_str) or "T" not in t_str:
+                    continue
+                time_part = t_str.split("T", 1)[1][:5]
+                try:
+                    hour = int(time_part[:2])
+                except Exception:
+                    continue
+                if not 8 <= hour <= 19:
+                    continue
+                values = []
+                for model_name, series in hourly_forecasts.items():
+                    if _is_excluded_model_name(model_name):
+                        continue
+                    if not isinstance(series, (list, tuple)) or idx >= len(series):
+                        continue
+                    value = _sf(series[idx])
+                    if value is not None:
+                        values.append(value)
+                median_value = _median(values)
+                if median_value is not None:
+                    hourly_values.append((time_part, median_value))
+            peak_hours = _peak_hours_from_hourly_values(hourly_values)
+            if peak_hours:
+                return peak_hours
+
+    om_peak = _sf(open_meteo_peak)
+    if open_meteo_times and open_meteo_temps and om_peak is not None:
+        peak_hours = []
+        for t_raw, temp_raw in zip(open_meteo_times, open_meteo_temps):
+            t_str = str(t_raw or "")
+            temp = _sf(temp_raw)
+            if temp is None or not t_str.startswith(local_date_str) or "T" not in t_str:
+                continue
+            time_part = t_str.split("T", 1)[1][:5]
+            try:
+                hour = int(time_part[:2])
+            except Exception:
+                continue
+            if 8 <= hour <= 19 and abs(temp - om_peak) <= 0.2:
+                peak_hours.append(time_part)
+        return peak_hours
+    return []
 
 
 def _resolve_settlement_source_label(city_name: Optional[str]) -> str:
@@ -312,9 +421,30 @@ def analyze_weather_trend(
             pass
     local_hour_frac = local_hour + local_minute / 60
 
+    daily_dates = daily.get("time", []) or []
+    daily_highs = daily.get("temperature_2m_max", []) or []
+    if local_date_str in daily_dates:
+        try:
+            local_day_idx = daily_dates.index(local_date_str)
+            local_day_high = _sf(
+                daily_highs[local_day_idx]
+                if local_day_idx < len(daily_highs)
+                else None
+            )
+            if local_day_high is not None:
+                current_forecasts["Open-Meteo"] = local_day_high
+        except Exception:
+            pass
+        forecast_highs = [h for h in current_forecasts.values() if h is not None]
+        forecast_high = max(forecast_highs) if forecast_highs else None
+        forecast_median = (
+            sorted(forecast_highs)[len(forecast_highs) // 2] if forecast_highs else None
+        )
+
     # === DEB ===
     deb_prediction = None
     deb_raw_prediction = None
+    deb_hourly_consensus = None
     deb_version = None
     deb_bias_adjustment = 0.0
     deb_bias_samples = 0
@@ -400,16 +530,36 @@ def analyze_weather_trend(
 
     is_cooling = trend_direction == "falling"
 
-    om_today = daily.get("temperature_2m_max", [None])[0]
+    om_today = _sf(current_forecasts.get("Open-Meteo"))
+    if city_name and deb_prediction is not None:
+        mm = weather_data.get("multi_model") or {}
+        if isinstance(mm, dict):
+            deb_hourly_consensus = build_deb_hourly_consensus_path(
+                city=city_name,
+                hourly_times=mm.get("hourly_times") or [],
+                hourly_forecasts=mm.get("hourly_forecasts") or {},
+                daily_forecasts=current_forecasts,
+                deb_prediction=deb_prediction,
+                local_date=local_date_str,
+            )
 
     # === Peak hours ===
-    peak_hours = []
-    if times and temps and om_today is not None:
-        for t_str, temp in zip(times, temps):
-            if t_str.startswith(local_date_str) and abs(temp - om_today) <= 0.2:
-                hour = int(t_str.split("T")[1][:2])
-                if 8 <= hour <= 19:
-                    peak_hours.append(t_str.split("T")[1][:5])
+    peak_weather_data = weather_data
+    if deb_hourly_consensus:
+        peak_weather_data = {
+            **weather_data,
+            "deb": {
+                **(weather_data.get("deb") or {}),
+                "hourly_consensus": deb_hourly_consensus,
+            },
+        }
+    peak_hours = _resolve_peak_hours(
+        peak_weather_data,
+        local_date_str,
+        times,
+        temps,
+        om_today,
+    )
     if peak_hours:
         first_peak_h = int(peak_hours[0].split(":")[0])
         last_peak_h = int(peak_hours[-1].split(":")[0])
@@ -837,6 +987,7 @@ def analyze_weather_trend(
         "peak_hours": peak_hours,
         "deb_prediction": deb_prediction,
         "deb_raw_prediction": deb_raw_prediction,
+        "deb_hourly_consensus": deb_hourly_consensus,
         "deb_version": deb_version,
         "deb_bias_adjustment": deb_bias_adjustment,
         "deb_bias_samples": deb_bias_samples,
