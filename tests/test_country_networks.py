@@ -1,12 +1,17 @@
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from src.data_collection.country_networks import build_country_network_snapshot
 from src.data_collection.city_registry import ALIASES, CITY_REGISTRY
 from src.data_collection.city_time import CITY_TIME_ZONES, get_city_utc_offset_seconds
 from src.data_collection import metar_sources
 from src.data_collection.metar_sources import MetarSourceMixin
-from web.analysis_service import _build_city_detail_payload, _build_intraday_meteorology
+from web.analysis_service import (
+    _build_city_detail_payload,
+    _build_intraday_meteorology,
+    _should_build_country_network_snapshot,
+)
 from web.core import CITIES
 
 
@@ -15,6 +20,14 @@ class _DummyMetarSource(MetarSourceMixin):
     CITY_TO_ICAO = {key: value["icao"] for key, value in CITY_REGISTRY.items() if value.get("icao")}
     metar_cache_ttl_sec = 600
     metar_fast_cache_ttl_sec = 60
+
+    def __init__(self):
+        self._metar_cache = {}
+        self._metar_cache_lock = threading.Lock()
+        self.metar_timeout_sec = 0.0
+        self.metar_latest_timeout_sec = 0.0
+        self.timeout = 0.0
+        self._http_get: Any = None
 
 
 def test_new_city_registry_entries_are_wired():
@@ -55,7 +68,9 @@ def test_paris_registry_uses_le_bourget_anchor():
     assert paris["icao"] == "LFPB"
     assert paris["settlement_source"] == "aeroweb"
     assert paris["settlement_station_code"] == "LFPB"
-    assert "bonneuil-en-france/LFPB" in paris["settlement_url"]
+    settlement_url = paris.get("settlement_url")
+    assert isinstance(settlement_url, str)
+    assert "bonneuil-en-france/LFPB" in settlement_url
     assert CITIES["paris"]["lat"] == paris["lat"]
     assert CITIES["paris"]["settlement_source"] == "aeroweb"
     assert _DummyMetarSource.CITY_TO_ICAO["paris"] == "LFPB"
@@ -72,12 +87,12 @@ def test_turkey_metar_uses_fast_cache_ttl():
 def test_metar_marks_previous_local_day_report_stale(monkeypatch):
     class FixedDateTime(datetime):
         @classmethod
-        def now(cls, tz=None):
+        def now(cls, tz=None):  # type: ignore
             value = datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
             return value if tz is None else value.astimezone(tz)
 
         @classmethod
-        def utcnow(cls):
+        def utcnow(cls):  # type: ignore
             return datetime(2026, 4, 21, 12, 0)
 
     class FakeResponse:
@@ -108,6 +123,7 @@ def test_metar_marks_previous_local_day_report_stale(monkeypatch):
 
     result = source.fetch_metar("karachi", utc_offset=18000)
 
+    assert result is not None
     assert result["stale_for_today"] is True
     assert result["observation_local_date"] == "2026-04-20"
     assert result["current_local_date"] == "2026-04-21"
@@ -144,6 +160,66 @@ def test_turkey_mgm_provider_returns_official_nearby_rows():
     assert snapshot["official_nearby"][0]["sync_status"] == "synced"
     assert snapshot["official_nearby"][0]["usable_for_intraday"] is True
     assert snapshot["official_network_status"]["usable_row_count"] == 1
+
+
+def test_turkey_mgm_primary_today_obs_uses_mgm_airport_history_not_metar():
+    raw = {
+        "metar": {
+            "observation_time": "2026-05-29T11:50:00Z",
+            "today_obs": [{"time": "14:50", "temp": 17.0}],
+            "current": {"temp": 17.0},
+        },
+        "mgm": {
+            "obs_time": "2026-05-29T11:56:00Z",
+            "current": {"temp": 17.3},
+        },
+        "mgm_today_obs": [{"time": "14:56", "temp": 17.3}],
+    }
+
+    snapshot = build_country_network_snapshot("ankara", raw)
+
+    assert snapshot["airport_primary_current"]["source_code"] == "mgm"
+    assert snapshot["airport_primary_today_obs"] == [{"time": "14:56", "temp": 17.3}]
+
+
+def test_panel_mode_still_builds_turkey_mgm_airport_snapshot():
+    raw = {
+        "mgm": {
+            "obs_time": "2026-05-29T11:56:00Z",
+            "current": {"temp": 17.3},
+        }
+    }
+
+    assert (
+        _should_build_country_network_snapshot(
+            "ankara", raw, is_panel_mode=True, is_market_mode=False
+        )
+        is True
+    )
+    assert (
+        _should_build_country_network_snapshot(
+            "istanbul", raw, is_panel_mode=True, is_market_mode=False
+        )
+        is True
+    )
+    assert (
+        _should_build_country_network_snapshot(
+            "guangzhou", raw, is_panel_mode=True, is_market_mode=False
+        )
+        is False
+    )
+    assert (
+        _should_build_country_network_snapshot(
+            "ankara", raw, is_panel_mode=False, is_market_mode=False
+        )
+        is True
+    )
+    assert (
+        _should_build_country_network_snapshot(
+            "ankara", raw, is_panel_mode=True, is_market_mode=True
+        )
+        is False
+    )
 
 
 def test_nearby_station_timing_marks_stale_rows_unusable_for_network_signal():

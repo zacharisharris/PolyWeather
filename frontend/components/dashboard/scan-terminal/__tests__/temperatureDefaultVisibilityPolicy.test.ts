@@ -193,7 +193,133 @@ export function runTests() {
   );
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "metar"),
-    "METAR observations should be visible by default",
+    "METAR observations should be visible by default outside Hong Kong and Shenzhen",
+  );
+  assert(
+    activeDefaultSeries.some((item) => item.key === "metar"),
+    "non-Hong Kong/Shenzhen airport METAR observations should be part of the active chart series by default",
+  );
+  assert(
+    !__getVisibleTemperatureSeriesForTest("guangzhou", series, { metar: false }).some(
+      (item) => item.key === "metar",
+    ),
+    "users should still be able to hide the airport METAR series from the legend",
+  );
+  assert(
+    !__isTemperatureSeriesVisibleByDefaultForTest("hong kong", "metar"),
+    "Hong Kong airport METAR observations should stay hidden by default because HKO is the primary local station",
+  );
+  assert(
+    !__isTemperatureSeriesVisibleByDefaultForTest("Lau Fau Shan", "metar"),
+    "Lau Fau Shan airport METAR observations should stay hidden by default because HKO is the primary local station",
+  );
+  assert(
+    !__isTemperatureSeriesVisibleByDefaultForTest("shenzhen", "metar"),
+    "Shenzhen airport METAR observations should stay hidden by default because HKO is the primary local station",
+  );
+  assert(
+    __isTemperatureSeriesVisibleByDefaultForTest("Lau Fau Shan", "madis"),
+    "Lau Fau Shan HKO observations should remain visible by default",
+  );
+  assert(
+    __isTemperatureSeriesVisibleByDefaultForTest("shenzhen", "madis"),
+    "Shenzhen HKO observations should remain visible by default",
+  );
+  assert(
+    __isTemperatureSeriesVisibleByDefaultForTest("new york", "madis"),
+    "airport-primary weather-station observations should be visible by default",
+  );
+
+  [
+    { city: "amsterdam", airport: "EHAM", sourceCode: "knmi", sourceLabel: "KNMI" },
+    { city: "tel aviv", airport: "LLBG", sourceCode: "ims", sourceLabel: "IMS Lod Airport" },
+    { city: "helsinki", airport: "EFHK", sourceCode: "fmi", sourceLabel: "FMI" },
+    { city: "tokyo", airport: "RJTT", sourceCode: "jma_amedas", sourceLabel: "JMA" },
+    { city: "singapore", airport: "WSSS", sourceCode: "singapore_mss", sourceLabel: "MSS" },
+    { city: "panama city", airport: "MPMG", sourceCode: "ncm", sourceLabel: "NCM" },
+    { city: "brussels", airport: "EBBR", sourceCode: "aeroweb", sourceLabel: "AeroWeb" },
+  ].forEach(({ city: stationCity, airport, sourceCode, sourceLabel }) => {
+    const stationChart = __buildTemperatureChartDataForTest(
+      {
+        city: stationCity,
+        local_date: "2026-05-29",
+        local_time: "17:03",
+        tz_offset_seconds: 2 * 60 * 60,
+        airport,
+      } as any,
+      {
+        localTime: "17:03",
+        times: ["00:00", "06:00", "12:00", "18:00"],
+        temps: [19, 18, 27, 20],
+        airportPrimary: {
+          source_code: sourceCode,
+          source_label: sourceLabel,
+          temp: 19.0,
+          obs_time: "2026-05-29T15:03:00Z",
+        },
+        airportPrimaryTodayObs: [
+          { time: "2026-05-29T13:00:00Z", temp: 26.2 },
+          { time: "2026-05-29T14:00:00Z", temp: 24.5 },
+          { time: "2026-05-29T15:00:00Z", temp: 19.9 },
+        ],
+      } as any,
+      "1D",
+    );
+    const stationDefaultSeries = __getActiveTemperatureSeriesForTest(
+      stationCity,
+      stationChart.series as any,
+      {},
+      true,
+    );
+    assert(
+      stationDefaultSeries.some((item: any) => item.key === "madis" && item.label === sourceLabel),
+      `${stationCity} ${sourceLabel} weather-station curve should be visible by default`,
+    );
+  });
+
+  const ankaraMgmWithMetarBackup = __buildTemperatureChartDataForTest(
+    {
+      city: "ankara",
+      local_date: "2026-05-29",
+      local_time: "17:28",
+      tz_offset_seconds: 3 * 60 * 60,
+      airport: "LTAC",
+      metar_today_obs: [
+        { time: "2026-05-29T12:00:00Z", temp: 15.0 },
+        { time: "2026-05-29T13:00:00Z", temp: 16.0 },
+        { time: "2026-05-29T14:00:00Z", temp: 17.0 },
+      ],
+    } as any,
+    {
+      localTime: "17:28",
+      times: ["00:00", "06:00", "12:00", "18:00"],
+      temps: [15, 14, 16, 15],
+      airportPrimary: {
+        source_code: "mgm",
+        source_label: "MGM",
+        temp: 14.0,
+        obs_time: "2026-05-29T14:28:00Z",
+      },
+      airportPrimaryTodayObs: [
+        { time: "2026-05-29T13:28:00Z", temp: 17.0 },
+        { time: "2026-05-29T14:28:00Z", temp: 14.0 },
+      ],
+    } as any,
+    "1D",
+  );
+  const ankaraDefaultSeries = __getActiveTemperatureSeriesForTest(
+    "ankara",
+    ankaraMgmWithMetarBackup.series as any,
+    {},
+    true,
+  );
+  assert(
+    ankaraDefaultSeries.some((item: any) => item.key === "madis" && item.label === "MGM"),
+    "Ankara MGM airport-primary weather-station curve should be visible by default",
+  );
+  assert(
+    ankaraDefaultSeries.some((item: any) => item.key === "metar"),
+    "Ankara local METAR backup curve should remain visible by default because MGM history can be incomplete",
   );
   assert(
     !__isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "model_curve_ECMWF"),
@@ -850,6 +976,64 @@ export function runTests() {
     "runway header should prefer runway-history current temp even when the latest detail payload lacks runway_obs snapshot",
   );
 
+  const wuhanRunwayChart = __buildTemperatureChartDataForTest(
+    {
+      city: "wuhan",
+      local_date: "2026-05-27",
+      local_time: "13:54",
+      tz_offset_seconds: 8 * 60 * 60,
+      temp_symbol: "°C",
+    } as any,
+    {
+      localTime: "13:54",
+      times: ["00:00", "12:00", "18:00", "23:00"],
+      temps: [22.0, 30.0, 29.0, 25.0],
+      runwayPlateHistory: {
+        "04/22": [
+          { time: "13:52", temp: 24.0 },
+          { time: "13:54", temp: 24.2 },
+        ],
+        "05L/23R": [
+          { time: "13:52", temp: 25.0 },
+          { time: "13:54", temp: 25.5 },
+        ],
+      },
+      runwayBandHistory: [
+        { time: "2026-05-27T13:52:00+08:00", low_temp: 24.0, high_temp: 25.0, avg_temp: 24.5 },
+        { time: "2026-05-27T13:54:00+08:00", low_temp: 24.2, high_temp: 25.5, avg_temp: 24.9 },
+      ],
+    } as any,
+    "1D",
+  );
+  const wuhanCollapsedRunwaySeries = __getActiveTemperatureSeriesForTest(
+    "wuhan",
+    wuhanRunwayChart.series,
+    {},
+    false,
+  );
+  assert(
+    wuhanCollapsedRunwaySeries.some((item: any) => item.key === runwayKey("04/22")),
+    "collapsed runway view should keep the settlement runway series",
+  );
+  assert(
+    !wuhanCollapsedRunwaySeries.some((item: any) => item.key === runwayKey("05L/23R")),
+    "collapsed runway view should hide auxiliary runway detail series",
+  );
+  assert(
+    !wuhanCollapsedRunwaySeries.some((item: any) => item.key === "runway_max"),
+    "collapsed runway view should not replace the settlement runway with runway max",
+  );
+  const wuhanCollapsedWithSettlementHidden = __getActiveTemperatureSeriesForTest(
+    "wuhan",
+    wuhanRunwayChart.series,
+    { [runwayKey("04/22")]: false },
+    false,
+  );
+  assert(
+    !wuhanCollapsedWithSettlementHidden.some((item: any) => item.key === "runway_max"),
+    "hiding the settlement runway should not reveal runway max in collapsed runway view",
+  );
+
   const newYorkMetrics = __getObservationDisplayMetricsForTest(
     {
       city: "new york",
@@ -1102,6 +1286,50 @@ export function runTests() {
       (item) => item.key === "current" && item.values.filter((value: number | null) => value !== null).length >= 2,
     ),
     "long-lived chart with only one fresh observation should keep a renderable current reference line instead of an invisible single-point series",
+  );
+
+  const istanbulMgmOnlySeries = __buildTemperatureChartDataForTest(
+    {
+      city: "istanbul",
+      local_date: "2026-05-29",
+      local_time: "15:10",
+      tz_offset_seconds: 3 * 60 * 60,
+      current_temp: 18,
+      current_max_so_far: 18,
+      airport: "LTFM",
+    } as any,
+    {
+      localTime: "15:10",
+      times: [],
+      temps: [],
+      airportPrimary: {
+        source_code: "mgm",
+        source_label: "MGM",
+        temp: 18.2,
+        obs_time: "2026-05-29T12:10:00Z",
+      },
+      airportCurrent: {
+        source_code: "metar",
+        source_label: "METAR",
+        temp: 17,
+        obs_time: "14:50",
+      },
+      airportPrimaryTodayObs: [
+        { time: "2026-05-29T12:00:00Z", temp: 18 },
+        { time: "2026-05-29T12:05:00Z", temp: 18.1 },
+      ],
+    } as any,
+    "1D",
+  );
+  const istanbulMgmSeries = seriesByKey(istanbulMgmOnlySeries.series as any, "madis") as any;
+  assert(istanbulMgmSeries?.label === "MGM", "Istanbul airport-primary series should be labeled MGM");
+  assert(
+    istanbulMgmSeries.values.some((value: number | null) => value === 18.2),
+    "MGM series should append the latest MGM airport-primary observation",
+  );
+  assert(
+    !istanbulMgmSeries.values.some((value: number | null) => value === 17),
+    "MGM series should not mix METAR airportCurrent points into the MGM airport-station line",
   );
 
   const chengduMergedHourly = __mergePatchIntoHourlyForTest(

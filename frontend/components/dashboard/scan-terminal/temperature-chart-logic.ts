@@ -86,6 +86,17 @@ function isTemperatureSeriesVisibleByDefault(city: string, seriesKey: string) {
   if (seriesKey.startsWith("model_curve_")) {
     return normalizeCityKey(city) === "paris" && seriesKey === "model_curve_AROME HD";
   }
+  if (seriesKey === "metar") {
+    const cityKey = normalizeCityKey(city);
+    return (
+      cityKey !== "hongkong" &&
+      cityKey !== "laufaushan" &&
+      cityKey !== "shenzhen"
+    );
+  }
+  if (seriesKey === "madis") {
+    return true;
+  }
   return true;
 }
 
@@ -115,26 +126,63 @@ function getVisibleTemperatureSeries(
   });
 }
 
-function getActiveTemperatureSeries(
+function isIndividualRunwaySeriesKey(seriesKey: string) {
+  return seriesKey.startsWith("runway_") && seriesKey !== "runway_max";
+}
+
+function isSettlementRunwaySeriesKey(city: string, seriesKey: string) {
+  if (!isIndividualRunwaySeriesKey(seriesKey)) return false;
+  const cityKey = normalizeCityKey(city);
+  const settlementPairs = SETTLEMENT_RUNWAY_PAIRS[cityKey] || [];
+  if (!settlementPairs.length) return false;
+  const normalized = seriesKey
+    .replace(/^runway_/, "")
+    .split("_")
+    .map(normalizeRunwayLabel)
+    .filter(Boolean)
+    .sort()
+    .join("/");
+  return settlementPairs.some((pair) => pairKey(pair) === normalized);
+}
+
+function getTemperatureSeriesForRunwayDetailsMode(
   city: string,
-  chartSeries: EvidenceSeries[],
-  userToggledKeys: Record<string, boolean>,
+  series: EvidenceSeries[],
   showRunwayDetails: boolean,
 ) {
-  const rawVisible = getVisibleTemperatureSeries(city, chartSeries, userToggledKeys);
-  const hasRunwayMax = rawVisible.some((item) => item.key === "runway_max");
+  const hasRunwayMax = series.some((item) => item.key === "runway_max");
+  const hasSettlementRunway = series.some((item) =>
+    isSettlementRunwaySeriesKey(city, item.key),
+  );
 
-  return rawVisible.filter((item) => {
-    const isIndividualRunway =
-      item.key.startsWith("runway_") && item.key !== "runway_max";
+  return series.filter((item) => {
+    const isIndividualRunway = isIndividualRunwaySeriesKey(item.key);
     if (showRunwayDetails) {
       return item.key !== "runway_max";
+    }
+    if (hasSettlementRunway) {
+      if (item.key === "runway_max") return false;
+      return !isIndividualRunway || isSettlementRunwaySeriesKey(city, item.key);
     }
     if (!hasRunwayMax) {
       return true;
     }
     return !isIndividualRunway;
   });
+}
+
+function getActiveTemperatureSeries(
+  city: string,
+  chartSeries: EvidenceSeries[],
+  userToggledKeys: Record<string, boolean>,
+  showRunwayDetails: boolean,
+) {
+  const modeSeries = getTemperatureSeriesForRunwayDetailsMode(
+    city,
+    chartSeries,
+    showRunwayDetails,
+  );
+  return getVisibleTemperatureSeries(city, modeSeries, userToggledKeys);
 }
 
 function buildRunwayPlates(
@@ -569,6 +617,24 @@ function appendLatestAirportObservation(
   return merged;
 }
 
+function isMgmAirportPrimary(hourly: HourlyForecast) {
+  const primary = hourly?.airportPrimary;
+  const sourceTokens = [
+    primary?.source_code,
+    primary?.source_label,
+    (primary as any)?.source,
+  ].map((value) => String(value || "").toLowerCase());
+  return sourceTokens.some((value) => value === "mgm" || value.includes("turkey_mgm"));
+}
+
+function airportPrimaryObservationPoints(hourly: HourlyForecast) {
+  return appendLatestAirportObservation(
+    hourly?.airportPrimaryTodayObs,
+    hourly?.airportPrimary,
+    ...(isMgmAirportPrimary(hourly) ? [] : [hourly?.airportCurrent]),
+  );
+}
+
 function seriesStats(values: Array<number | null>) {
   const nums = values.filter((v): v is number => validNumber(v) !== null);
   const latest = nums.length ? nums[nums.length - 1] : null;
@@ -643,7 +709,7 @@ function getObservationDisplayMetrics(
   const settlementObs = normObs(hourly?.settlementTodayObs || row?.settlement_today_obs || row?.metar_context?.settlement_today_obs, tzOffset, MAX_OBS_POINTS, localDateStr);
   const metarObs = normObs(hourly?.metarTodayObs || row?.metar_today_obs || row?.metar_context?.today_obs || row?.metar_recent_obs || row?.metar_context?.recent_obs, tzOffset, MAX_OBS_POINTS, localDateStr);
   const madisObs = normObs(
-    appendLatestAirportObservation(hourly?.airportPrimaryTodayObs, hourly?.airportPrimary, hourly?.airportCurrent),
+    airportPrimaryObservationPoints(hourly),
     tzOffset,
     MAX_OBS_POINTS,
     localDateStr,
@@ -1574,7 +1640,7 @@ function buildFullDayChartData(
   );
   const madisObs = filterTimelinePointsToLocalDay(
     normObs(
-      appendLatestAirportObservation(hourly?.airportPrimaryTodayObs, hourly?.airportPrimary, hourly?.airportCurrent),
+      airportPrimaryObservationPoints(hourly),
       tzOffset,
       MAX_OBS_POINTS,
       localDateStr,
@@ -2156,6 +2222,7 @@ export {
   buildRunwayPlates,
   fetchHourlyForecastForCity,
   getActiveTemperatureSeries,
+  getTemperatureSeriesForRunwayDetailsMode,
   getLiveObservationLabels,
   getObservationDisplayMetrics,
   getVisibleTemperatureSeries,

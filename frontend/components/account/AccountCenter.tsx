@@ -84,6 +84,8 @@ export function AccountCenter() {
   const [updatedAt, setUpdatedAt] = useState<string>("");
   const [user, setUser] = useState<User | null>(null);
   const [backend, setBackend] = useState<AuthMeResponse | null>(null);
+  const [referralCodeInput, setReferralCodeInput] = useState("");
+  const [referralApplying, setReferralApplying] = useState(false);
 
   const supabaseReady = hasSupabasePublicEnv();
   const walletConnectEnabled = Boolean(WALLETCONNECT_PROJECT_ID);
@@ -135,6 +137,7 @@ export function AccountCenter() {
     // Shared setters
     setSelectedTokenAddress,
     setSelectedPaymentChainId,
+    setSelectedPlanCode,
     setSelectedWallet,
     setSelectedInjectedProviderKey,
     setProviderMode,
@@ -299,8 +302,16 @@ export function AccountCenter() {
         backend.authenticated === false),
   );
   const isSubscribed = backend?.subscription_active === true;
+  const subscriptionSource = String(backend?.subscription_source || "").trim();
+  const isTrialSubscription = Boolean(
+    backend?.subscription_is_trial === true ||
+      String(backend?.subscription_plan_code || "").toLowerCase().includes("trial") ||
+      subscriptionSource.toLowerCase().includes("trial"),
+  );
   const subscriptionStatusLabel = isSubscribed
-    ? copy.proMember
+    ? isTrialSubscription
+      ? copy.trialBadge
+      : copy.proMember
     : isSubscriptionUnknown
       ? copy.subscriptionChecking
       : isEn
@@ -325,7 +336,8 @@ export function AccountCenter() {
   const hasQueuedExtension = Boolean(
     isSubscribed && queuedExtensionDays > 0,
   );
-  const canAccessPaidTelegramGroup = Boolean(isSubscribed);
+  const canAccessPaidTelegramGroup = Boolean(isSubscribed && !isTrialSubscription);
+  const hasTelegramPanel = Boolean(isTrialSubscription || canAccessPaidTelegramGroup);
   const telegramBound =
     Number(backend?.telegram_pricing?.telegram_id || 0) > 0;
   const displayExpiryRaw = isSubscribed
@@ -384,6 +396,21 @@ export function AccountCenter() {
   const expiryLabel = hasQueuedExtension
     ? copy.accessUntil
     : copy.renewalDate;
+  const displayPlanList = effectivePlanList.length
+    ? effectivePlanList
+    : [
+        { plan_code: "pro_monthly", plan_id: 101, amount_usdc: "29.9", duration_days: 30 },
+        { plan_code: "pro_quarterly", plan_id: 102, amount_usdc: "79.9", duration_days: 90 },
+      ];
+  const referral = backend?.referral;
+  const referralCode = String(referral?.code || "").trim();
+  const appliedReferralCode = String(referral?.applied_code || "").trim();
+  const canApplyReferralCode = Boolean(
+    isAuthenticated &&
+      !isSubscribed &&
+      !appliedReferralCode &&
+      referralCodeInput.trim(),
+  );
 
   // ── Payment overlay tracking effect ──────────────────────
   useEffect(() => {
@@ -431,6 +458,55 @@ export function AccountCenter() {
       window.setTimeout(() => setCopied(false), 2000);
     });
   };
+
+  const applyReferralCode = useCallback(async () => {
+    const code = referralCodeInput.trim();
+    if (!code || referralApplying) return;
+    setReferralApplying(true);
+    setPaymentError("");
+    setPaymentInfo("");
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (supabaseReady) {
+        const {
+          data: { session },
+        } = await getSupabaseBrowserClient().auth.getSession();
+        const token = String(session?.access_token || "").trim();
+        if (token) headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch("/api/auth/referral/apply", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) {
+        const raw = (await res.text()).slice(0, 240);
+        throw new Error(raw || copy.referralApplyFailed);
+      }
+      setPaymentInfo(copy.referralApplied);
+      setReferralCodeInput("");
+      await loadSnapshot();
+      await loadPaymentSnapshot();
+    } catch (error) {
+      setPaymentError(
+        error instanceof Error ? error.message : copy.referralApplyFailed,
+      );
+    } finally {
+      setReferralApplying(false);
+    }
+  }, [
+    copy.referralApplied,
+    copy.referralApplyFailed,
+    loadPaymentSnapshot,
+    loadSnapshot,
+    referralApplying,
+    referralCodeInput,
+    setPaymentError,
+    setPaymentInfo,
+    supabaseReady,
+  ]);
 
   // ── Render ────────────────────────────────────────────
 
@@ -825,9 +901,38 @@ export function AccountCenter() {
 
         {/* Telegram Bot Section & Payment Details */}
         {showSecondarySections ? (
-          <div className="lg:col-span-12 grid grid-cols-1 md:flex gap-6">
+          <div
+            className={`lg:col-span-12 grid grid-cols-1 items-start gap-6 ${
+              hasTelegramPanel ? "xl:grid-cols-[minmax(0,0.9fr)_minmax(620px,1.1fr)]" : ""
+            }`}
+          >
+            {isTrialSubscription && (
+              <section className="group relative min-w-0 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50 p-8 shadow-sm">
+                <Bot
+                  size={140}
+                  className="absolute -right-8 -bottom-8 -rotate-12 text-amber-100"
+                />
+                <div className="relative z-10">
+                  <h3 className="mb-2 flex items-center gap-2 text-lg font-bold text-amber-800">
+                    <Bot size={22} /> {copy.telegramBind}
+                  </h3>
+                  <p className="text-sm leading-6 text-amber-900">
+                    {copy.trialPaidGroupLocked}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowOverlay(true)}
+                    disabled={!canOpenCheckoutOverlay}
+                    className="mt-5 inline-flex items-center gap-2 rounded-xl border border-amber-700 bg-amber-600 px-4 py-3 text-xs font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Crown size={14} />
+                    {copy.upgradePro}
+                  </button>
+                </div>
+              </section>
+            )}
             {canAccessPaidTelegramGroup && (
-              <section className="group relative flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+              <section className="group relative min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
                 <Bot
                   size={140}
                   className="absolute -right-8 -bottom-8 -rotate-12 text-slate-100 transition-transform duration-1000 group-hover:rotate-0"
@@ -905,11 +1010,7 @@ export function AccountCenter() {
             )}
 
             {/* Payment Details / Wallet Management */}
-            <section
-              className={`flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-8 shadow-sm ${
-                canAccessPaidTelegramGroup ? "w-full md:w-96" : "w-full"
-              }`}
-            >
+            <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:p-7">
               <div>
                 <h3 className="mb-6 flex items-center gap-2 text-sm font-bold uppercase text-blue-700">
                   <Wallet size={18} /> {copy.paymentMgmt}
@@ -943,171 +1044,287 @@ export function AccountCenter() {
                     )}
                   </div>
                 ) : null}
-                <div className="mb-5 space-y-3">
-                  <InfoRow
-                    icon={Mail}
-                    label={copy.paymentAccount}
-                    value={email || "--"}
-                    isPrimary
-                  />
-                  <InfoRow
-                    icon={Wallet}
-                    label={copy.paymentWallet}
-                    value={shortAddress(paymentWalletLabel) || "--"}
-                  />
-                  <InfoRow
-                    icon={ShieldCheck}
-                    label={copy.paymentReceiver}
-                    value={shortAddress(paymentReceiverAddress) || "--"}
-                  />
-                  <InfoRow
-                    icon={ExternalLink}
-                    label={copy.paymentNetwork}
-                    value={
-                      selectedPaymentChain?.name ||
-                      chainIdToDisplayName(selectedPaymentChainId)
-                    }
-                  />
-                  <InfoRow
-                    icon={ExternalLink}
-                    label={copy.paymentHost}
-                    value={currentPaymentHost || "--"}
-                  />
-                  <p className="text-[11px] text-slate-500">
-                    {copy.paymentGuardHint}
-                  </p>
-                </div>
-                {availableChainList.length > 1 && (
-                  <div className="mb-5">
-                    <p className="mb-2 text-[11px] uppercase text-slate-500">
-                      {copy.paymentNetwork}
-                    </p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {availableChainList.map((chain) => {
-                        const active = chain.chain_id === selectedPaymentChainId;
-                        return (
-                          <button
-                            type="button"
-                            key={chain.chain_id}
-                            onClick={() => {
-                              setSelectedPaymentChainId(chain.chain_id);
-                              const nextToken =
-                                paymentConfig?.tokens?.find(
-                                  (token) =>
-                                    Number(token.chain_id || chain.chain_id) ===
-                                      chain.chain_id &&
-                                    token.is_default,
-                                ) ||
-                                paymentConfig?.tokens?.find(
-                                  (token) =>
-                                    Number(token.chain_id || chain.chain_id) ===
-                                    chain.chain_id,
-                                );
-                              if (nextToken?.address) {
-                                setSelectedTokenAddress(
-                                  String(nextToken.address).toLowerCase(),
-                                );
-                              }
-                            }}
-                            disabled={paymentBusy}
-                            className={`rounded-xl border px-3 py-2 text-left transition-all ${
-                              active
-                                ? "border-blue-300 bg-blue-50 text-blue-900"
-                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                            }`}
-                          >
-                            <div className="text-xs font-bold">
-                              {chain.name || chainIdToDisplayName(chain.chain_id)}
-                            </div>
-                            <div className="text-[10px] opacity-80">
-                              {chain.native_currency_symbol || "ETH"} gas
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                {availableTokenList.length > 0 && (
-                  <div className="mb-5">
-                    <p className="mb-2 text-[11px] uppercase text-slate-500">
-                      {copy.paymentToken}
-                    </p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {availableTokenList.map((token) => {
-                        const active =
-                          token.address ===
-                          (resolvedSelectedTokenAddress ||
-                            token.address);
-                        return (
-                          <button
-                            type="button"
-                            key={`${token.chain_id || selectedPaymentChainId}:${token.address}`}
-                            onClick={() =>
-                              setSelectedTokenAddress(
-                                token.address,
-                              )
-                            }
-                            disabled={paymentBusy}
-                            className={`rounded-xl border px-3 py-2 text-left transition-all ${
-                              active
-                                ? "border-blue-300 bg-blue-50 text-blue-900"
-                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                            }`}
-                          >
-                            <div className="text-xs font-bold">
-                              {token.symbol}
-                            </div>
-                            <div className="text-[10px] opacity-80 truncate">
-                              {token.name}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Payment Method Tabs */}
-                <div className="mt-6 border-t border-slate-200 pt-6">
-                  <p className="mb-3 text-[10px] font-semibold uppercase text-slate-500">
-                    {copy.paymentMethodLabel}
-                  </p>
-                  <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-100 p-1">
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethodTab("wallet")}
-                      className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                        paymentMethodTab === "wallet"
-                          ? "bg-white text-blue-700 shadow-sm"
-                          : "text-slate-500 hover:bg-white/70 hover:text-slate-900"
-                      }`}
-                    >
-                      <Wallet size={12} />
-                      {copy.paymentMethodWallet}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethodTab("manual")}
-                      className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                        paymentMethodTab === "manual"
-                          ? "bg-white text-emerald-700 shadow-sm"
-                          : "text-slate-500 hover:bg-white/70 hover:text-slate-900"
-                      }`}
-                    >
-                      <ExternalLink size={12} />
-                      {copy.paymentMethodManual}
-                    </button>
-                  </div>
-
-                  {paymentMethodTab === "wallet" ? (
-                    <div className="space-y-4">
-                      <p className="text-[11px] leading-relaxed text-slate-400">
-                        {copy.paymentWalletDesc}
+                <div
+                  data-testid="payment-management-grid"
+                  className={`grid gap-6 lg:items-start ${
+                    hasTelegramPanel ? "" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]"
+                  }`}
+                >
+                  <div className="space-y-5">
+                    <div>
+                      <p className="mb-2 text-[11px] uppercase text-slate-500">
+                        {copy.proPlan}
                       </p>
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-800">
-                        {copy.paymentGasWarning}
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {displayPlanList.map((plan) => {
+                          const code = String(plan.plan_code || "");
+                          const active = code === selectedPlanCode;
+                          const isQuarterly = code === "pro_quarterly";
+                          return (
+                            <button
+                              type="button"
+                              key={code}
+                              onClick={() => setSelectedPlanCode(code)}
+                              disabled={paymentBusy}
+                              className={`rounded-xl border px-3 py-3 text-left transition-all ${
+                                active
+                                  ? "border-blue-300 bg-blue-50 text-blue-900"
+                                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                                <span>
+                                  {isQuarterly ? copy.quarterlyPlan : copy.monthlyPlan}
+                                </span>
+                                <span>{plan.amount_usdc} USDC</span>
+                              </div>
+                              <div className="mt-1 text-[10px] opacity-80">
+                                {code} · {plan.duration_days} 天
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
+                      {appliedReferralCode && selectedPlanCode === "pro_monthly" ? (
+                        <p className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
+                          {copy.referralDiscountHint}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-xs font-bold uppercase text-slate-700">
+                          {copy.referralTitle}
+                        </p>
+                        <span className="text-[10px] text-slate-500">
+                          {copy.referralInviteLimit}
+                        </span>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                        <div>
+                          <p className="mb-1 text-[10px] uppercase text-slate-500">
+                            {copy.referralMyCode}
+                          </p>
+                          <div className="flex gap-2">
+                            <code className="min-w-0 flex-1 truncate rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-blue-700">
+                              {referralCode || "--"}
+                            </code>
+                            {referralCode ? (
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(referralCode)}
+                                className="rounded-xl border border-blue-700 bg-blue-600 px-3 text-xs font-bold text-white hover:bg-blue-700"
+                              >
+                                {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
+                              </button>
+                            ) : null}
+                          </div>
+                          <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                            {copy.referralRewardHint}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[10px] uppercase text-slate-500">
+                            {copy.referralApplyLabel}
+                          </p>
+                          {appliedReferralCode ? (
+                            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                              {appliedReferralCode}
+                            </div>
+                          ) : (
+                            <div className="flex gap-2">
+                              <input
+                                value={referralCodeInput}
+                                onChange={(event) => setReferralCodeInput(event.target.value)}
+                                placeholder={copy.referralApplyPlaceholder}
+                                className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void applyReferralCode()}
+                                disabled={!canApplyReferralCode || referralApplying}
+                                className="rounded-xl border border-slate-900 bg-slate-900 px-3 text-xs font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {referralApplying ? "..." : copy.referralApplyButton}
+                              </button>
+                            </div>
+                          )}
+                          <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                            {copy.referralDiscountHint}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      data-testid="payment-guard-grid"
+                      className={`grid gap-3 ${hasTelegramPanel ? "" : "sm:grid-cols-2"}`}
+                    >
+                      <InfoRow
+                        icon={Mail}
+                        label={copy.paymentAccount}
+                        value={email || "--"}
+                        isPrimary
+                      />
+                      <InfoRow
+                        icon={Wallet}
+                        label={copy.paymentWallet}
+                        value={shortAddress(paymentWalletLabel) || "--"}
+                      />
+                      <InfoRow
+                        icon={ShieldCheck}
+                        label={copy.paymentReceiver}
+                        value={shortAddress(paymentReceiverAddress) || "--"}
+                      />
+                      <InfoRow
+                        icon={ExternalLink}
+                        label={copy.paymentNetwork}
+                        value={
+                          selectedPaymentChain?.name ||
+                          chainIdToDisplayName(selectedPaymentChainId)
+                        }
+                      />
+                      <InfoRow
+                        icon={ExternalLink}
+                        label={copy.paymentHost}
+                        value={currentPaymentHost || "--"}
+                      />
+                      <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] leading-5 text-slate-500 sm:col-span-2">
+                        {copy.paymentGuardHint}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-5">
+                    {availableChainList.length > 1 && (
+                      <div>
+                        <p className="mb-2 text-[11px] uppercase text-slate-500">
+                          {copy.paymentNetwork}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {availableChainList.map((chain) => {
+                            const active = chain.chain_id === selectedPaymentChainId;
+                            return (
+                              <button
+                                type="button"
+                                key={chain.chain_id}
+                                onClick={() => {
+                                  setSelectedPaymentChainId(chain.chain_id);
+                                  const nextToken =
+                                    paymentConfig?.tokens?.find(
+                                      (token) =>
+                                        Number(token.chain_id || chain.chain_id) ===
+                                          chain.chain_id &&
+                                        token.is_default,
+                                    ) ||
+                                    paymentConfig?.tokens?.find(
+                                      (token) =>
+                                        Number(token.chain_id || chain.chain_id) ===
+                                        chain.chain_id,
+                                    );
+                                  if (nextToken?.address) {
+                                    setSelectedTokenAddress(
+                                      String(nextToken.address).toLowerCase(),
+                                    );
+                                  }
+                                }}
+                                disabled={paymentBusy}
+                                className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                                  active
+                                    ? "border-blue-300 bg-blue-50 text-blue-900"
+                                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                <div className="text-xs font-bold">
+                                  {chain.name || chainIdToDisplayName(chain.chain_id)}
+                                </div>
+                                <div className="text-[10px] opacity-80">
+                                  {chain.native_currency_symbol || "ETH"} gas
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {availableTokenList.length > 0 && (
+                      <div>
+                        <p className="mb-2 text-[11px] uppercase text-slate-500">
+                          {copy.paymentToken}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {availableTokenList.map((token) => {
+                            const active =
+                              token.address ===
+                              (resolvedSelectedTokenAddress ||
+                                token.address);
+                            return (
+                              <button
+                                type="button"
+                                key={`${token.chain_id || selectedPaymentChainId}:${token.address}`}
+                                onClick={() =>
+                                  setSelectedTokenAddress(
+                                    token.address,
+                                  )
+                                }
+                                disabled={paymentBusy}
+                                className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                                  active
+                                    ? "border-blue-300 bg-blue-50 text-blue-900"
+                                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                <div className="text-xs font-bold">
+                                  {token.symbol}
+                                </div>
+                                <div className="truncate text-[10px] opacity-80">
+                                  {token.name}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Payment Method Tabs */}
+                    <div className="border-t border-slate-200 pt-5">
+                      <p className="mb-3 text-[10px] font-semibold uppercase text-slate-500">
+                        {copy.paymentMethodLabel}
+                      </p>
+                      <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-100 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setPaymentMethodTab("wallet")}
+                          className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                            paymentMethodTab === "wallet"
+                              ? "bg-white text-blue-700 shadow-sm"
+                              : "text-slate-500 hover:bg-white/70 hover:text-slate-900"
+                          }`}
+                        >
+                          <Wallet size={12} />
+                          {copy.paymentMethodWallet}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPaymentMethodTab("manual")}
+                          className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                            paymentMethodTab === "manual"
+                              ? "bg-white text-emerald-700 shadow-sm"
+                              : "text-slate-500 hover:bg-white/70 hover:text-slate-900"
+                          }`}
+                        >
+                          <ExternalLink size={12} />
+                          {copy.paymentMethodManual}
+                        </button>
+                      </div>
+
+                      {paymentMethodTab === "wallet" ? (
+                        <div className="space-y-4">
+                          <p className="text-[11px] leading-relaxed text-slate-400">
+                            {copy.paymentWalletDesc}
+                          </p>
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-800">
+                            {copy.paymentGasWarning}
+                          </div>
 
                       {boundWallets.length ? (
                         <div className="space-y-3">
@@ -1370,6 +1587,8 @@ export function AccountCenter() {
                   )}
                 </div>
               </div>
+              </div>
+            </div>
             </section>
           </div>
         ) : (

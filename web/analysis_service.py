@@ -105,6 +105,29 @@ AMSC_SETTLEMENT_RUNWAY_TARGETS: Dict[str, str] = {
 }
 
 
+def _should_build_country_network_snapshot(
+    city: str,
+    raw: Dict[str, Any],
+    *,
+    is_panel_mode: bool,
+    is_market_mode: bool,
+) -> bool:
+    if is_market_mode:
+        return False
+    if not is_panel_mode:
+        return True
+
+    city_lower = (city or "").strip().lower()
+    if city_lower not in TURKISH_MGM_CITIES:
+        return False
+
+    return bool(
+        (raw or {}).get("mgm")
+        or (raw or {}).get("mgm_today_obs")
+        or (raw or {}).get("mgm_nearby")
+    )
+
+
 def _mgm_hourly_high(mgm: Dict[str, Any]) -> Optional[float]:
     hourly = mgm.get("hourly") if isinstance(mgm, dict) else []
     if not isinstance(hourly, list):
@@ -124,7 +147,7 @@ def _normalize_runway_label(value: Any) -> str:
 
 
 def _split_runway_pair_label(value: Any) -> tuple[str, str]:
-    parts = [_normalize_runway_label(part) for part in str(value or "").split("/") if str(part).strip()]
+    parts = [_normalize_runway_label(part) for part in str(value or "").split("/") if part.strip()]
     if len(parts) >= 2:
         return parts[0], parts[1]
     runway = _normalize_runway_label(value)
@@ -143,7 +166,10 @@ def _settlement_runway_endpoint_temp(city: str, row: Dict[str, Any]) -> Optional
         return None
 
     pair = _split_runway_pair_label(row.get("runway"))
-    configured = tuple(_normalize_runway_label(part) for part in configured_pair)
+    configured = (
+        _normalize_runway_label(configured_pair[0]),
+        _normalize_runway_label(configured_pair[1]),
+    )
     if not _runway_pair_matches(pair, configured):
         return None
 
@@ -492,6 +518,7 @@ def _build_intraday_meteorology(data: Dict[str, Any]) -> Dict[str, Any]:
         "medium",
         "high",
     }
+
     structural_cap = False
     if taf_signal.get("available") or taf_suppression:
         available_layers += 1
@@ -815,7 +842,12 @@ def _analyze(
     risk = CITY_RISK_PROFILES.get(city, {})
     network_snapshot = (
         build_country_network_snapshot(city, raw)
-        if not is_panel_mode and not is_market_mode
+        if _should_build_country_network_snapshot(
+            city,
+            raw,
+            is_panel_mode=is_panel_mode,
+            is_market_mode=is_market_mode,
+        )
         else {}
     )
 
@@ -1647,8 +1679,9 @@ def _analyze(
             if day_m:
                 try:
                     deb_result = calculate_deb_prediction(city, day_m)
-                    if deb_result.get("prediction") is not None:
-                        d_val = deb_result.get("prediction")
+                    d_prediction = _sf(deb_result.get("prediction"))
+                    if d_prediction is not None:
+                        d_val = d_prediction
                         d_raw_val = deb_result.get("raw_prediction")
                         d_version = deb_result.get("version")
                         d_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
@@ -1698,7 +1731,6 @@ def _analyze(
                     continue
                 temp_val = _runway_history_temp_for_city(city, r)
                 if temp_val is not None:
-                    temp_val = float(temp_val)
                     if is_f:
                         temp_val = round(temp_val * 9.0 / 5.0 + 32.0, 1)
                     else:
@@ -2298,4 +2330,3 @@ def _build_city_market_scan_payload(
         "selected_date": target_date or local_date,
         "fetched_at": data.get("updated_at"),
     }
-
