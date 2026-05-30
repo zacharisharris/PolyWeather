@@ -204,6 +204,27 @@ export function runTests() {
     "account center must emit signup_completed and dashboard_active so the ops funnel has top-of-funnel data",
   );
   assert(
+    appAnalyticsSource.includes('| "landing_view"') &&
+      appAnalyticsSource.includes('| "enter_terminal"') &&
+      appAnalyticsSource.includes('| "login_start"') &&
+      appAnalyticsSource.includes('| "signup_success"') &&
+      appAnalyticsSource.includes('| "trial_created"') &&
+      appAnalyticsSource.includes('| "payment_start"') &&
+      appAnalyticsSource.includes('| "payment_success"'),
+    "app analytics must expose the standard growth funnel event names",
+  );
+  assert(
+    accountCenterSource.includes('trackAppEvent("signup_success"') &&
+      accountCenterSource.includes('trackAppEvent("trial_created"') &&
+      accountCenterSource.includes("subscription_is_trial"),
+    "account center must emit signup_success and trial_created for the standard funnel",
+  );
+  assert(
+    paymentFlowSource.includes('trackAppEvent("payment_start"') &&
+      paymentFlowSource.includes('trackAppEvent("payment_success"'),
+    "payment flow must emit payment_start and payment_success alongside legacy checkout events",
+  );
+  assert(
     accountCenterSource.includes("isSubscriptionUnknown") &&
       accountCenterSource.includes("subscriptionStatusLabel") &&
       !accountCenterSource.includes(
@@ -261,11 +282,12 @@ export function runTests() {
     "ops subscription grant route must fall back to direct Supabase grant and resolve users via indexed profiles before Auth Admin",
   );
   assert(
-    authMeRouteSource.includes("if ((res.status === 401 || res.status === 403) && auth.authUserId)") &&
+    authMeRouteSource.includes("isSubscriptionRequiredBackendResponse(res.status, raw)") &&
+      authMeRouteSource.includes("subscriptionRequiredAuthProfileResponse") &&
       authMeRouteSource.includes("degradedAuthProfileResponse") &&
       authMeRouteSource.includes("reason: `backend_${res.status}`") &&
       authMeRouteSource.includes("subscription_active: null"),
-    "auth profile proxy must preserve authenticated identity with unknown subscription on backend 401/403 instead of forcing a false paywall",
+    "auth profile proxy must only convert explicit subscription-required 403 responses to inactive access while preserving unrelated backend 401/403 responses as unknown subscription",
   );
   assert(
     (authMeRouteSource.match(/buildBackendRequestHeaders\(req\)/g) || []).length === 1 &&
@@ -279,6 +301,12 @@ export function runTests() {
       authMeRouteSource.indexOf("authenticated: false") <
         authMeRouteSource.indexOf("await fetch(`${API_BASE}/api/auth/me`"),
     "auth profile proxy must return unauthenticated locally for no-session Supabase requests instead of forwarding the backend entitlement token",
+  );
+  assert(
+    authMeRouteSource.includes('reason: "prefer_snapshot_fast_path"') &&
+      authMeRouteSource.indexOf('reason: "prefer_snapshot_fast_path"') <
+        authMeRouteSource.indexOf("buildBackendRequestHeaders(req)"),
+    "auth profile proxy must return a valid entitlement snapshot before reading Supabase session cookies on terminal cold start",
   );
   assert(
     backendAuthSource.includes("if (incomingAuth) {") &&

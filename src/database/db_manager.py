@@ -428,6 +428,14 @@ class DBManager:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS runtime_secrets (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS city_summary_cache (
                     city TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
@@ -831,6 +839,107 @@ class DBManager:
             )
             conn.commit()
 
+    @staticmethod
+    def _mask_secret_value(value: str) -> str:
+        text = str(value or "")
+        if not text:
+            return ""
+        if len(text) <= 8:
+            return "***"
+        return f"{text[:4]}...{text[-4:]}"
+
+    def get_runtime_secret(self, key: str) -> Optional[str]:
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            return None
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT value
+                FROM runtime_secrets
+                WHERE key = ?
+                LIMIT 1
+                """,
+                (normalized_key,),
+            ).fetchone()
+        if not row:
+            return None
+        value = str(row["value"] or "")
+        return value if value else None
+
+    def get_runtime_secret_metadata(self, key: str) -> Dict[str, Any]:
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            return {
+                "key": "",
+                "configured": False,
+                "masked": "",
+                "updated_at": "",
+                "updated_by": "",
+                "source": "runtime_store",
+            }
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT key, value, updated_at, updated_by
+                FROM runtime_secrets
+                WHERE key = ?
+                LIMIT 1
+                """,
+                (normalized_key,),
+            ).fetchone()
+        if not row:
+            return {
+                "key": normalized_key,
+                "configured": False,
+                "masked": "",
+                "updated_at": "",
+                "updated_by": "",
+                "source": "runtime_store",
+            }
+        value = str(row["value"] or "")
+        return {
+            "key": normalized_key,
+            "configured": bool(value),
+            "masked": self._mask_secret_value(value),
+            "length": len(value),
+            "updated_at": str(row["updated_at"] or ""),
+            "updated_by": str(row["updated_by"] or ""),
+            "source": "runtime_store",
+        }
+
+    def set_runtime_secret(
+        self,
+        key: str,
+        value: str,
+        *,
+        updated_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_key = str(key or "").strip()
+        secret_value = str(value or "").strip()
+        if not normalized_key:
+            raise ValueError("runtime secret key is required")
+        if not secret_value:
+            raise ValueError("runtime secret value is required")
+        now = datetime.now().isoformat()
+        operator = str(updated_by or "").strip()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime_secrets (key, value, updated_at, updated_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by
+                """,
+                (normalized_key, secret_value, now, operator),
+            )
+            conn.commit()
+        return self.get_runtime_secret_metadata(normalized_key)
+
     def append_payment_audit_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         kind = str(event_type or "").strip().lower()
         if not kind:
@@ -942,13 +1051,28 @@ class DBManager:
         since_dt = datetime.now() - timedelta(days=safe_days)
         rows = self.list_app_analytics_events(limit=5000, since_iso=since_dt.isoformat())
         event_names = [
-            "signup_completed",
-            "dashboard_active",
-            "paywall_feature_clicked",
-            "paywall_viewed",
-            "checkout_started",
-            "checkout_succeeded",
+            "landing_view",
+            "enter_terminal",
+            "login_start",
+            "signup_success",
+            "trial_created",
+            "payment_start",
+            "payment_success",
         ]
+        event_aliases = {
+            "landing_view": ("landing_view",),
+            "enter_terminal": ("enter_terminal", "dashboard_active"),
+            "login_start": ("login_start",),
+            "signup_success": ("signup_success", "signup_completed"),
+            "trial_created": ("trial_created",),
+            "payment_start": ("payment_start", "checkout_started"),
+            "payment_success": ("payment_success", "checkout_succeeded"),
+        }
+        alias_to_event = {
+            alias: event_name
+            for event_name, aliases in event_aliases.items()
+            for alias in aliases
+        }
         summary: Dict[str, Dict[str, Any]] = {
             name: {
                 "total": 0,
@@ -961,8 +1085,9 @@ class DBManager:
         user_sets: Dict[str, set[str]] = {name: set() for name in event_names}
 
         for row in rows:
-            event_type = str(row.get("event_type") or "").strip().lower()
-            if event_type not in summary:
+            raw_event_type = str(row.get("event_type") or "").strip().lower()
+            event_type = alias_to_event.get(raw_event_type)
+            if not event_type:
                 continue
             summary[event_type]["total"] += 1
             user_id = str(row.get("user_id") or "").strip().lower()
@@ -996,11 +1121,12 @@ class DBManager:
             "since": since_dt.isoformat(),
             "events": summary,
             "rates": {
-                "login_active_rate": _rate("dashboard_active", "signup_completed"),
-                "paywall_click_rate": _rate("paywall_feature_clicked", "dashboard_active"),
-                "paywall_view_rate": _rate("paywall_viewed", "paywall_feature_clicked"),
-                "checkout_start_rate": _rate("checkout_started", "paywall_viewed"),
-                "checkout_success_rate": _rate("checkout_succeeded", "checkout_started"),
+                "enter_terminal_rate": _rate("enter_terminal", "landing_view"),
+                "login_start_rate": _rate("login_start", "enter_terminal"),
+                "signup_success_rate": _rate("signup_success", "login_start"),
+                "trial_created_rate": _rate("trial_created", "signup_success"),
+                "payment_start_rate": _rate("payment_start", "trial_created"),
+                "payment_success_rate": _rate("payment_success", "payment_start"),
             },
         }
 
@@ -1437,6 +1563,59 @@ class DBManager:
                 "telegram_id": telegram_id,
                 "username": str(row["username"] or ""),
                 "supabase_email": str(row["supabase_email"] or email),
+                "points_before": before,
+                "points_added": points,
+                "points_after": after,
+            }
+
+    def grant_points_by_supabase_user_id(
+        self,
+        supabase_user_id: str,
+        amount: int,
+    ) -> Dict[str, Any]:
+        key = str(supabase_user_id or "").strip().lower()
+        points = int(amount or 0)
+        if not key:
+            return {"ok": False, "reason": "invalid_supabase_user_id"}
+        if points <= 0:
+            return {"ok": False, "reason": "invalid_amount"}
+
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            telegram_id = self._find_telegram_id_by_supabase_user_id(conn, key)
+            if telegram_id is None:
+                return {"ok": False, "reason": "user_not_found", "supabase_user_id": key}
+            row = conn.execute(
+                """
+                SELECT telegram_id, username, points, supabase_email
+                FROM users
+                WHERE telegram_id = ?
+                LIMIT 1
+                """,
+                (int(telegram_id),),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "reason": "user_not_found", "supabase_user_id": key}
+
+            telegram_id = int(row["telegram_id"] or 0)
+            before = int(row["points"] or 0)
+            after = before + points
+            conn.execute(
+                """
+                UPDATE users
+                SET points = ?
+                WHERE telegram_id = ?
+                """,
+                (after, telegram_id),
+            )
+            conn.commit()
+            self._sync_points_to_supabase_user_metadata(telegram_id, force=True)
+            return {
+                "ok": True,
+                "telegram_id": telegram_id,
+                "username": str(row["username"] or ""),
+                "supabase_user_id": key,
+                "supabase_email": str(row["supabase_email"] or ""),
                 "points_before": before,
                 "points_added": points,
                 "points_after": after,

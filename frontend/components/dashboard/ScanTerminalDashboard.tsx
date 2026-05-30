@@ -14,7 +14,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { CityListItem, ProAccessState, ScanOpportunityRow } from "@/lib/dashboard-types";
 import { getInitialLocaleFromNavigator } from "@/lib/i18n";
 import { isBrowserLocalFullAccess } from "@/lib/local-dev-access";
@@ -60,6 +60,7 @@ import {
   cityListItemsToScanRows,
   mergeScanRowsWithCityFallbackRows,
 } from "@/components/dashboard/scan-terminal/city-fallback-rows";
+import { markAnalyticsOnce, trackAppEvent } from "@/lib/app-analytics";
 
 function createEmptyAccess(loading = true): ProAccessState {
   return {
@@ -91,7 +92,13 @@ function createLocalAccess(): ProAccessState {
   };
 }
 
-
+function createTransientAccess(error: unknown): ProAccessState {
+  return {
+    ...createEmptyAccess(true),
+    authenticated: true,
+    error: String(error),
+  };
+}
 
 const TERM = {
   cityThreshold: { en: "City / Threshold", zh: "城市 / 阈值" },
@@ -127,7 +134,7 @@ const TERM = {
   logIn: { en: "Log in", zh: "登录" },
   createAccount: { en: "Create an account", zh: "注册账号" },
   learnAbout: { en: "Learn about PolyWeather", zh: "了解 PolyWeather" },
-  proAccessRequired: { en: "Pro Access Required", zh: "需要付费订阅" },
+  proAccessRequired: { en: "Pro subscription required", zh: "需要开通 Pro" },
   proDesc: {
     en: "The PolyWeather terminal is a paid product. Subscribe to unlock real-time weather-signal intelligence.",
     zh: "PolyWeather 决策台为付费产品。订阅以解锁实时天气信号情报。",
@@ -137,7 +144,7 @@ const TERM = {
     zh: "按月计费，随时可取消。通过 Polygon 链 USDC 支付。",
   },
   month: { en: "/ month", zh: "/ 月" },
-  subscribeNow: { en: "Subscribe Now — $10/mo", zh: "立即订阅 — $10/月" },
+  subscribeNow: { en: "View Pro plans", zh: "查看订阅方案" },
   subscribePrompt: {
     en: "You need an active subscription to access the terminal.",
     zh: "你需要开通有效订阅才能访问决策台。",
@@ -931,19 +938,41 @@ function ScanTerminalScreen() {
   );
 
   const loadAuthProfile = useCallback(
-    async (accessToken?: string | null): Promise<AuthProfilePayload> => {
+    async (
+      accessToken?: string | null,
+      options?: { preferSnapshot?: boolean },
+    ): Promise<AuthProfilePayload> => {
       const headers: Record<string, string> = { Accept: "application/json" };
       const token = String(accessToken || "").trim();
       if (token) headers.Authorization = `Bearer ${token}`;
-      const response = await fetch("/api/auth/me", {
-        cache: "no-store",
-        headers,
-      });
+      const response = await fetch(
+        options?.preferSnapshot
+          ? "/api/auth/me?prefer_snapshot=1"
+          : "/api/auth/me",
+        {
+          cache: "no-store",
+          headers,
+        },
+      );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json() as Promise<AuthProfilePayload>;
     },
     [],
   );
+
+  const refreshLiveAuthProfile = useCallback(async () => {
+    const supabaseEnabled = hasSupabasePublicEnv();
+    const payload = await loadTerminalAuthProfile({
+      getSession: () =>
+        supabaseEnabled
+          ? getSupabaseBrowserClient().auth.getSession()
+          : Promise.resolve({ data: { session: null } }),
+      hasSupabasePublicEnv: supabaseEnabled,
+      loadAuthProfile: (accessToken) =>
+        loadAuthProfile(accessToken, { preferSnapshot: false }),
+    });
+    setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
+  }, [loadAuthProfile]);
 
   // Listen to Supabase auth events (e.g. token refreshed, signed out)
   useEffect(() => {
@@ -1064,19 +1093,80 @@ function ScanTerminalScreen() {
       .then((payload) => {
         if (cancelled) return;
         setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
+        if (payload.entitlement_snapshot === true) {
+          window.setTimeout(() => {
+            if (!cancelled) void refreshLiveAuthProfile();
+          }, 0);
+        }
       })
       .catch((error) => {
         if (cancelled) return;
         setProAccess((prev) => (
           prev.subscriptionActive
             ? { ...prev, loading: false, error: String(error) }
-            : { ...createEmptyAccess(false), error: String(error) }
+            : createTransientAccess(error)
         ));
       });
     return () => {
       cancelled = true;
     };
-  }, [loadAuthProfile]);
+  }, [loadAuthProfile, refreshLiveAuthProfile]);
+
+  useEffect(() => {
+    if (
+      !hydrated ||
+      canUseLocalFullAccess ||
+      !proAccess.authenticated ||
+      !proAccess.loading ||
+      proAccess.subscriptionActive ||
+      typeof fetch !== "function"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const supabaseEnabled = hasSupabasePublicEnv();
+    const retryAuthProfile = async () => {
+      try {
+        const payload = await loadTerminalAuthProfile({
+          getSession: () =>
+            supabaseEnabled
+              ? getSupabaseBrowserClient().auth.getSession()
+              : Promise.resolve({ data: { session: null } }),
+          hasSupabasePublicEnv: supabaseEnabled,
+          loadAuthProfile,
+        });
+        if (cancelled) return;
+        setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
+      } catch (error) {
+        if (cancelled) return;
+        setProAccess((prev) =>
+          prev.loading && prev.authenticated && !prev.subscriptionActive
+            ? { ...prev, error: String(error) }
+            : prev,
+        );
+      }
+    };
+
+    const firstRetry = window.setTimeout(() => {
+      void retryAuthProfile();
+    }, 1500);
+    const interval = window.setInterval(() => {
+      void retryAuthProfile();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(firstRetry);
+      window.clearInterval(interval);
+    };
+  }, [
+    canUseLocalFullAccess,
+    hydrated,
+    loadAuthProfile,
+    proAccess.authenticated,
+    proAccess.loading,
+    proAccess.subscriptionActive,
+  ]);
 
   useEffect(() => {
     setSelectedRegionKey("all");
@@ -1095,6 +1185,17 @@ function ScanTerminalScreen() {
       timezoneOffsetSeconds: useLocalTimezoneDefault ? localTimezoneOffsetSeconds : null,
       tradingRegion: selectedRegionKey,
     });
+
+  useEffect(() => {
+    if (!hydrated || !isAuthenticated || !isPro) return;
+    const actorKey = String(proAccess.userId || "local").toLowerCase();
+    if (markAnalyticsOnce(`enter_terminal:${actorKey}`, "session")) {
+      trackAppEvent("enter_terminal", {
+        entry: "terminal",
+        user_id: proAccess.userId || null,
+      });
+    }
+  }, [hydrated, isAuthenticated, isPro, proAccess.userId]);
   const handleRefresh = useCallback(() => {
     clearCityDetailCache();
     refreshScanTerminalManually();
@@ -1134,11 +1235,12 @@ function ScanTerminalScreen() {
     return () => controller.abort();
   }, [isPro]);
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filteredRows = useMemo(() => {
-    if (!searchQuery.trim()) return rows;
-    const q = searchQuery.toLowerCase().trim();
+    if (!deferredSearchQuery.trim()) return rows;
+    const q = deferredSearchQuery.toLowerCase().trim();
     return rows.filter((row) => {
       const haystack = [
         row.city,
@@ -1157,7 +1259,7 @@ function ScanTerminalScreen() {
         .map((v) => String(v).toLowerCase());
       return haystack.some((s) => s.includes(q));
     });
-  }, [rows, searchQuery]);
+  }, [rows, deferredSearchQuery]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
