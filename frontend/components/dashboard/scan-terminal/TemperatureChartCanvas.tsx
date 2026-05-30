@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   Area,
   CartesianGrid,
@@ -28,7 +28,74 @@ type CityThreshold = {
   kind: "gte" | "lte";
 };
 
-export function TemperatureChartCanvas({
+function isFiniteChartValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function hasDrawableTemperatureChartContent({
+  activeSeries,
+  probabilityOverlay,
+  zoomedData,
+}: {
+  activeSeries: EvidenceSeries[];
+  probabilityOverlay: ProbabilityOverlay | null;
+  zoomedData: Array<Record<string, any>>;
+}) {
+  if (probabilityOverlay?.muLine || probabilityOverlay?.bands.length) return true;
+  return activeSeries.some((series) =>
+    zoomedData.some((point, index) => {
+      const value = point?.[series.key] ?? series.values[index];
+      return isFiniteChartValue(value);
+    }),
+  );
+}
+
+function shouldKeepTemperatureChartLoading({
+  row,
+  isHourlyLoading,
+  activeSeries,
+  probabilityOverlay,
+  zoomedData,
+}: {
+  row: ScanOpportunityRow | null;
+  isHourlyLoading: boolean;
+  activeSeries: EvidenceSeries[];
+  probabilityOverlay: ProbabilityOverlay | null;
+  zoomedData: Array<Record<string, any>>;
+}) {
+  if (!row?.city) return false;
+  if (!isHourlyLoading) return false;
+  return !hasDrawableTemperatureChartContent({ activeSeries, probabilityOverlay, zoomedData });
+}
+
+function TemperatureChartSkeleton({ compact }: { compact: boolean }) {
+  const horizontalLines = compact ? 5 : 7;
+  const verticalLines = compact ? 5 : 8;
+
+  return (
+    <div className="absolute inset-0 overflow-hidden bg-white">
+      <div className="absolute inset-x-3 bottom-7 top-4 rounded-sm border border-slate-100">
+        {Array.from({ length: horizontalLines }).map((_, index) => (
+          <span
+            key={`h-${index}`}
+            className="absolute left-0 right-0 border-t border-dashed border-sky-100"
+            style={{ top: `${(index / Math.max(1, horizontalLines - 1)) * 100}%` }}
+          />
+        ))}
+        {Array.from({ length: verticalLines }).map((_, index) => (
+          <span
+            key={`v-${index}`}
+            className="absolute bottom-0 top-0 border-l border-dashed border-sky-100"
+            style={{ left: `${(index / Math.max(1, verticalLines - 1)) * 100}%` }}
+          />
+        ))}
+        <div className="absolute inset-x-10 top-1/3 h-10 rounded bg-slate-100/60" />
+      </div>
+    </div>
+  );
+}
+
+function TemperatureChartCanvasComponent({
   isEn,
   compact,
   timeframe,
@@ -133,6 +200,21 @@ export function TemperatureChartCanvas({
     hasRunwayData &&
     individualRunwaySeriesCount > 1 &&
     collapsedRunwaySeries.length < chartSeries.length;
+  const hasDrawableChartContent = hasDrawableTemperatureChartContent({
+    activeSeries,
+    probabilityOverlay,
+    zoomedData,
+  });
+  const shouldShowChartLoading = shouldKeepTemperatureChartLoading({
+    row,
+    isHourlyLoading,
+    activeSeries,
+    probabilityOverlay,
+    zoomedData,
+  });
+  const shouldRenderChart = canRenderChart && hasDrawableChartContent;
+  const shouldShowEmptyState = Boolean(row?.city) && !isHourlyLoading && !hasDrawableChartContent;
+  const shouldShowBackgroundRefresh = isHourlyLoading && hasDrawableChartContent;
 
   return (
     <div className={clsx("relative flex flex-1 flex-col p-2", compact ? "min-h-[120px]" : "min-h-[240px]")}>
@@ -195,7 +277,8 @@ export function TemperatureChartCanvas({
         )}
       </div>
       <div ref={chartHostRef} className={clsx("relative flex-1", compact ? "min-h-[120px]" : "min-h-[220px]")}>
-        {canRenderChart && (
+        {!shouldRenderChart && <TemperatureChartSkeleton compact={compact} />}
+        {shouldRenderChart && (
           <ReComposedChart
             width={chartWidth}
             height={chartHeight}
@@ -337,8 +420,21 @@ export function TemperatureChartCanvas({
             ))}
           </ReComposedChart>
         )}
+        {shouldShowEmptyState && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center px-4 text-center">
+            <div className="rounded border border-slate-200 bg-white/90 px-3 py-2 text-[11px] font-semibold text-slate-500 shadow-sm">
+              {isEn ? "No drawable chart data yet" : "暂无可绘制图表数据"}
+            </div>
+          </div>
+        )}
       </div>
-      {isHourlyLoading && (
+      {shouldShowBackgroundRefresh && (
+        <div className="pointer-events-none absolute right-3 top-12 z-10 inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-slate-500 shadow-sm backdrop-blur-[1px]">
+          <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-slate-200 border-t-blue-500" />
+          <span>{isEn ? "Updating" : "更新中"}</span>
+        </div>
+      )}
+      {shouldShowChartLoading && (
         <div className="pointer-events-none absolute inset-2 z-10 grid place-items-center bg-white/65 backdrop-blur-[1px]">
           <div className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 shadow-sm">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500" />
@@ -349,3 +445,6 @@ export function TemperatureChartCanvas({
     </div>
   );
 }
+
+export const TemperatureChartCanvas = memo(TemperatureChartCanvasComponent);
+export const __shouldKeepTemperatureChartLoadingForTest = shouldKeepTemperatureChartLoading;

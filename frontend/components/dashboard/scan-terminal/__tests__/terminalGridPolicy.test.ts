@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { __shouldKeepTemperatureChartLoadingForTest } from "@/components/dashboard/scan-terminal/TemperatureChartCanvas";
 
 function assert(condition: unknown, message: string) {
   if (!condition) throw new Error(message);
@@ -101,5 +102,89 @@ export function runTests() {
       dashboardSource.indexOf('event === "INITIAL_SESSION"') <
         dashboardSource.indexOf('event === "TOKEN_REFRESHED"'),
     "terminal auth listener must hydrate access from Supabase INITIAL_SESSION events during first navigation from the landing page",
+  );
+  assert(
+    dashboardSource.includes("useDeferredValue") &&
+      dashboardSource.includes("deferredSearchQuery") &&
+      dashboardSource.includes("[rows, deferredSearchQuery]"),
+    "terminal search must defer expensive row filtering so typing stays responsive",
+  );
+  assert(
+    dashboardSource.includes('trackAppEvent("enter_terminal"') &&
+      dashboardSource.includes('entry: "terminal"'),
+    "terminal must emit enter_terminal when an entitled user reaches the dashboard",
+  );
+  assert(
+    chartCanvasSource.includes("memo(") &&
+      chartCanvasSource.includes("TemperatureChartCanvasComponent"),
+    "temperature chart canvas must be memoized so unrelated terminal state does not remount Recharts",
+  );
+  assert(
+    __shouldKeepTemperatureChartLoadingForTest({
+      row: { city: "Moscow" } as any,
+      isHourlyLoading: true,
+      activeSeries: [],
+      probabilityOverlay: null,
+      zoomedData: [
+        { label: "00:00", ts: 1 },
+        { label: "05:00", ts: 2 },
+      ],
+    }),
+    "temperature chart should show the loading skeleton while the first detail fetch is in flight and no drawable data exists",
+  );
+  assert(
+    !__shouldKeepTemperatureChartLoadingForTest({
+      row: { city: "Moscow" } as any,
+      isHourlyLoading: false,
+      activeSeries: [],
+      probabilityOverlay: null,
+      zoomedData: [
+        { label: "00:00", ts: 1 },
+        { label: "05:00", ts: 2 },
+      ],
+    }),
+    "temperature chart must stop showing an indefinite loading overlay after the detail fetch finishes without drawable data",
+  );
+  assert(
+    !__shouldKeepTemperatureChartLoadingForTest({
+      row: { city: "Moscow" } as any,
+      isHourlyLoading: false,
+      activeSeries: [
+        {
+          key: "current",
+          label: "Current reference",
+          source: "Live",
+          color: "#009688",
+          values: [13, 13],
+        },
+      ] as any,
+      probabilityOverlay: null,
+      zoomedData: [
+        { label: "00:00", ts: 1, current: 13 },
+        { label: "05:00", ts: 2, current: 13 },
+      ],
+    }),
+    "temperature chart should render once a visible series has drawable values",
+  );
+  assert(
+    !__shouldKeepTemperatureChartLoadingForTest({
+      row: { city: "Moscow" } as any,
+      isHourlyLoading: true,
+      activeSeries: [
+        {
+          key: "current",
+          label: "Current reference",
+          source: "Live",
+          color: "#009688",
+          values: [13, 13],
+        },
+      ] as any,
+      probabilityOverlay: null,
+      zoomedData: [
+        { label: "00:00", ts: 1, current: 13 },
+        { label: "05:00", ts: 2, current: 13 },
+      ],
+    }),
+    "temperature chart must render seeded or cached data immediately while full detail continues loading in the background",
   );
 }

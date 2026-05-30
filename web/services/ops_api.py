@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 import requests as _requests
 
 from src.database.db_manager import DBManager
+from src.utils.runtime_secrets import get_runtime_secret, get_runtime_secret_status
 from web.core import GrantPointsRequest
 import web.routes as legacy_routes
 
@@ -481,6 +482,13 @@ _EDITABLE_CONFIG_KEYS: dict[str, str] = {
     "POLYWEATHER_PAYMENT_DIRECT_RECEIVER_ADDRESS": "手动转账收款钱包地址",
 }
 
+_SENSITIVE_CONFIG_KEYS: dict[str, dict[str, str]] = {
+    "POLYWEATHER_AMSC_SESSION_ID": {
+        "label": "AMSC AWOS sessionId",
+        "description": "中国跑道观测接口 sessionId，用于上海/北京/广州等 AMSC AWOS 数据源。",
+    },
+}
+
 
 def get_ops_config(request: Request) -> dict[str, Any]:
     _require_ops(request)
@@ -508,6 +516,159 @@ def update_ops_config(request: Request, key: str, value: str) -> dict[str, Any]:
         )
     os.environ[key] = str(value)
     return {"key": key, "value": value, "ok": True}
+
+
+def _sensitive_config_payload(key: str) -> dict[str, Any]:
+    definition = _SENSITIVE_CONFIG_KEYS.get(key) or {}
+    metadata = get_runtime_secret_status(key)
+    return {
+        "key": key,
+        "label": definition.get("label") or key,
+        "description": definition.get("description") or "",
+        "configured": bool(metadata.get("configured")),
+        "masked": str(metadata.get("masked") or ""),
+        "length": int(metadata.get("length") or 0),
+        "updated_at": str(metadata.get("updated_at") or ""),
+        "updated_by": str(metadata.get("updated_by") or ""),
+        "source": str(metadata.get("source") or "runtime_store"),
+    }
+
+
+def get_ops_sensitive_config(request: Request) -> dict[str, Any]:
+    _require_ops(request)
+    return {
+        "configs": [
+            _sensitive_config_payload(key)
+            for key in _SENSITIVE_CONFIG_KEYS
+        ]
+    }
+
+
+def update_ops_sensitive_config(
+    request: Request,
+    key: str,
+    value: str,
+) -> dict[str, Any]:
+    admin = _require_ops(request) or {}
+    normalized_key = str(key or "").strip()
+    if normalized_key not in _SENSITIVE_CONFIG_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sensitive config key '{normalized_key}' is not editable",
+        )
+    secret_value = str(value or "").strip()
+    if not 12 <= len(secret_value) <= 256 or any(ch.isspace() for ch in secret_value):
+        raise HTTPException(
+            status_code=400,
+            detail="sessionId must be 12-256 non-whitespace characters",
+        )
+
+    db = DBManager()
+    try:
+        config = db.set_runtime_secret(
+            normalized_key,
+            secret_value,
+            updated_by=str(admin.get("email") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    os.environ[normalized_key] = secret_value
+    response_config = _sensitive_config_payload(normalized_key)
+    response_config.update(
+        {
+            "configured": bool(config.get("configured")),
+            "masked": str(config.get("masked") or ""),
+            "length": int(config.get("length") or 0),
+            "updated_at": str(config.get("updated_at") or ""),
+            "updated_by": str(config.get("updated_by") or ""),
+            "source": str(config.get("source") or "runtime_store"),
+        }
+    )
+    health = (
+        _check_amsc_awos_health(timeout=8)
+        if normalized_key == "POLYWEATHER_AMSC_SESSION_ID"
+        else None
+    )
+    return {"ok": True, "config": response_config, "health": health}
+
+
+def _build_amsc_awos_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": os.getenv("AMSC_AWOS_REFERER", "https://www.amsc.net.cn/"),
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+        ),
+    }
+    cookie = get_runtime_secret("POLYWEATHER_AMSC_COOKIE")
+    session_id = get_runtime_secret("POLYWEATHER_AMSC_SESSION_ID")
+    if cookie:
+        headers["Cookie"] = cookie
+    elif session_id:
+        headers["sessionId"] = session_id
+        headers["app"] = "AMS"
+    return headers
+
+
+def _check_amsc_awos_health(timeout: int = 8) -> dict[str, Any]:
+    import time as _time
+
+    from src.data_collection.amsc_awos_sources import _amsc_parse_wind_plate_payload
+
+    amsc_base = str(os.getenv("AMSC_AWOS_BASE_URL") or "").strip()
+    if not amsc_base:
+        return {"ok": False, "error": "not configured"}
+
+    credential_configured = bool(
+        get_runtime_secret("POLYWEATHER_AMSC_COOKIE")
+        or get_runtime_secret("POLYWEATHER_AMSC_SESSION_ID")
+    )
+    try:
+        t0 = _time.perf_counter()
+        response = _requests.get(
+            f"{amsc_base}?cccc=ZSPD",
+            timeout=timeout,
+            verify=False,
+            headers=_build_amsc_awos_headers(),
+        )
+        latency_ms = round((_time.perf_counter() - t0) * 1000)
+        try:
+            payload = response.json() if response.content else {}
+        except ValueError:
+            payload = {}
+        parsed = _amsc_parse_wind_plate_payload(
+            payload if isinstance(payload, dict) else {},
+            city_key="shanghai",
+            icao="ZSPD",
+        )
+        points = (
+            ((parsed or {}).get("runway_obs") or {}).get("point_temperatures")
+            if isinstance(parsed, dict)
+            else []
+        )
+        point_count = len(points or [])
+        ok = bool(response.ok and parsed and point_count > 0)
+        result: dict[str, Any] = {
+            "ok": ok,
+            "status": response.status_code,
+            "latency_ms": latency_ms,
+            "credential_configured": credential_configured,
+            "points": point_count,
+        }
+        if isinstance(parsed, dict):
+            result["sample_city"] = "shanghai"
+            result["observation_time_local"] = parsed.get("observation_time_local")
+        if not ok:
+            result["error"] = "empty_or_unauthorized_response"
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "credential_configured": credential_configured,
+            "error": str(exc)[:100],
+        }
 
 
 # ── Subscriptions ───────────────────────────────────────────────────
@@ -1070,32 +1231,8 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
     except Exception as e:
         results["amos"] = {"ok": False, "error": str(e)[:100]}
 
-    # AMSC AWOS (China mainland airports) — matches actual source SSL + URL pattern
-    amsc_base = str(os.getenv("AMSC_AWOS_BASE_URL") or "").strip()
-    if amsc_base:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get(
-                f"{amsc_base}?cccc=ZSPD",
-                timeout=timeout,
-                verify=False,
-                headers={
-                    "Accept": "application/json, text/plain, */*",
-                    "Referer": os.getenv(
-                        "AMSC_AWOS_REFERER", "https://www.amsc.net.cn/"
-                    ),
-                    "User-Agent": "PolyWeather/1.0",
-                },
-            )
-            results["amsc_awos"] = {
-                "ok": r.ok,
-                "status": r.status_code,
-                "latency_ms": round((_time.perf_counter() - t0) * 1000),
-            }
-        except Exception as e:
-            results["amsc_awos"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["amsc_awos"] = {"ok": False, "error": "not configured"}
+    # AMSC AWOS (China mainland airports)
+    results["amsc_awos"] = _check_amsc_awos_health(timeout=timeout)
 
     # NOAA WRH (US settlement verification)
     try:
