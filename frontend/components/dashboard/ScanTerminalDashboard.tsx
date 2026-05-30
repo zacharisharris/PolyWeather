@@ -860,7 +860,7 @@ function PolyWeatherTerminal({
                                     setActiveSearchSlotIndex(null);
                                   }}
                                   onClose={() => setActiveSearchSlotIndex(null)}
-                                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[380px] bg-white border border-slate-200 rounded shadow-lg p-2"
+                                  className="absolute left-1/2 top-12 z-50 w-[380px] -translate-x-1/2 bg-white border border-slate-200 rounded shadow-lg p-2"
                                 />
                               )}
                             </div>
@@ -954,9 +954,26 @@ function ScanTerminalScreen() {
         data: { subscription },
       } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (event === "SIGNED_OUT") {
-          setProAccess(createEmptyAccess(false));
-        } else if (event === "TOKEN_REFRESHED" || event === "SIGNED_IN") {
           try {
+            const {
+              data: { session: currentSession },
+            } = await supabase.auth.getSession();
+            const accessToken =
+              currentSession?.access_token || session?.access_token || null;
+            if (accessToken) {
+              const payload = await loadAuthProfile(accessToken);
+              setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
+              return;
+            }
+          } catch {}
+          setProAccess(createEmptyAccess(false));
+        } else if (
+          event === "INITIAL_SESSION" ||
+          event === "TOKEN_REFRESHED" ||
+          event === "SIGNED_IN"
+        ) {
+          try {
+            if (!session?.access_token) return;
             const payload = await loadAuthProfile(session?.access_token);
             setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
           } catch {}

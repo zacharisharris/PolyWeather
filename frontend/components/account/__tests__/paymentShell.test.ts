@@ -58,6 +58,10 @@ export function runTests() {
   const hookSource = fs.existsSync(hookPath)
     ? fs.readFileSync(hookPath, "utf8")
     : "";
+  const paymentFlowSource = fs.readFileSync(
+    path.join(accountDir, "usePaymentFlow.ts"),
+    "utf8",
+  );
   assert(
     (accountCenterSource.includes('import { usePaymentState } from "./usePaymentState";') ||
       hookSource.includes('import { usePaymentState } from "./usePaymentState";')) &&
@@ -214,6 +218,13 @@ export function runTests() {
     "account snapshot loader must retry with a refreshed Supabase token when local user exists but /api/auth/me reports unauthenticated",
   );
   assert(
+    hookSource.includes("refreshEntitlementAfterPayment") &&
+      paymentFlowSource.includes("refreshEntitlementAfterPayment") &&
+      paymentFlowSource.includes("await refreshEntitlementAfterPayment();") &&
+      hookSource.includes("subscription_active === true"),
+    "successful payment flows must automatically poll /api/auth/me until the paid subscription is visible instead of requiring logout or manual refresh",
+  );
+  assert(
     !hookSource.includes(".auth.getUser()") &&
       hookSource.includes(".auth.getSession()"),
     "account snapshot loader must use the local Supabase session instead of calling getUser before /api/auth/me validates the bearer",
@@ -251,7 +262,8 @@ export function runTests() {
   );
   assert(
     authMeRouteSource.includes("if ((res.status === 401 || res.status === 403) && auth.authUserId)") &&
-      authMeRouteSource.includes("degraded_reason: `backend_${res.status}`") &&
+      authMeRouteSource.includes("degradedAuthProfileResponse") &&
+      authMeRouteSource.includes("reason: `backend_${res.status}`") &&
       authMeRouteSource.includes("subscription_active: null"),
     "auth profile proxy must preserve authenticated identity with unknown subscription on backend 401/403 instead of forcing a false paywall",
   );
@@ -326,5 +338,10 @@ export function runTests() {
   assert(
     paymentRuntimeRouteSource.includes("includeSupabaseIdentity: false"),
     "payment runtime proxy must not read Supabase session cookies because backend entitlement token already protects the runtime status payload",
+  );
+  assert(
+    (paymentFlowSource.match(/await buildAuthedHeaders\(true, true\);/g) || [])
+      .length >= 3,
+    "manual payment mutations must require a valid Supabase bearer token instead of forwarding unauthenticated requests that surface raw backend JSON",
   );
 }
