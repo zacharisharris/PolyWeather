@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import os
+import asyncio
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 
 import web.routes as legacy_routes
+
+_RECENT_DEB_CACHE: Optional[Dict[str, Dict[str, object]]] = None
+_RECENT_DEB_CACHE_TS = 0.0
+_RECENT_DEB_REFRESHING = False
+_RECENT_DEB_LOCK = threading.Lock()
+_RECENT_DEB_CACHE_TTL_SEC = max(
+    60,
+    int(os.getenv("POLYWEATHER_CITIES_DEB_RECENT_CACHE_TTL_SEC", "300") or "300"),
+)
 
 
 async def _overlay_cached_wunderground(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -19,13 +32,69 @@ async def _overlay_cached_wunderground(city: str, payload: Dict[str, Any]) -> Di
     )
 
 
-def _build_cities_payload() -> Dict[str, Any]:
+def _default_deb_recent() -> Dict[str, object]:
+    return {
+        "tier": "other",
+        "hit_rate": None,
+        "sample_count": 0,
+        "mae": None,
+        "last_date": None,
+    }
+
+
+def _refresh_recent_deb_cache() -> Dict[str, Dict[str, object]]:
+    global _RECENT_DEB_CACHE, _RECENT_DEB_CACHE_TS, _RECENT_DEB_REFRESHING
+
+    try:
+        index = legacy_routes._build_recent_deb_performance_index()
+        with _RECENT_DEB_LOCK:
+            _RECENT_DEB_CACHE = index
+            _RECENT_DEB_CACHE_TS = time.time()
+        return index
+    except Exception as exc:
+        logger.warning(f"Recent DEB performance cache refresh failed: {exc}")
+        with _RECENT_DEB_LOCK:
+            return _RECENT_DEB_CACHE or {}
+    finally:
+        with _RECENT_DEB_LOCK:
+            _RECENT_DEB_REFRESHING = False
+
+
+def _get_recent_deb_cache() -> Optional[Dict[str, Dict[str, object]]]:
+    with _RECENT_DEB_LOCK:
+        if (
+            _RECENT_DEB_CACHE is not None
+            and time.time() - _RECENT_DEB_CACHE_TS < _RECENT_DEB_CACHE_TTL_SEC
+        ):
+            return _RECENT_DEB_CACHE
+    return None
+
+
+def _start_recent_deb_refresh() -> None:
+    global _RECENT_DEB_REFRESHING
+
+    with _RECENT_DEB_LOCK:
+        if _RECENT_DEB_REFRESHING:
+            return
+        _RECENT_DEB_REFRESHING = True
+
+    thread = threading.Thread(
+        target=_refresh_recent_deb_cache,
+        name="cities-recent-deb-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _build_cities_payload(
+    deb_recent_index: Optional[Dict[str, Dict[str, object]]] = None,
+) -> Dict[str, Any]:
     out = []
-    deb_recent_index = legacy_routes._build_recent_deb_performance_index()
+    deb_recent_index = deb_recent_index or {}
     for name, info in legacy_routes.CITIES.items():
         risk = legacy_routes.CITY_RISK_PROFILES.get(name, {})
         city_meta = legacy_routes.CITY_REGISTRY.get(name, {}) or {}
-        deb_recent = deb_recent_index.get(name, {})
+        deb_recent = deb_recent_index.get(name, _default_deb_recent())
         settlement_source = str(info.get("settlement_source") or "metar").strip().lower() or "metar"
         provider = legacy_routes.get_country_network_provider(name)
         out.append(
@@ -60,9 +129,19 @@ def _build_cities_payload() -> Dict[str, Any]:
     return {"cities": out}
 
 
-async def list_cities_payload(_request: Request) -> Dict[str, Any]:
+async def list_cities_payload(request: Request) -> Dict[str, Any]:
     try:
-        return await run_in_threadpool(_build_cities_payload)
+        refresh_recent = str(
+            request.query_params.get("refresh_deb_recent") or "",
+        ).strip().lower() in {"1", "true", "yes"}
+        if refresh_recent:
+            deb_recent_index = await run_in_threadpool(_refresh_recent_deb_cache)
+        else:
+            deb_recent_index = _get_recent_deb_cache()
+            if deb_recent_index is None:
+                _start_recent_deb_refresh()
+                deb_recent_index = {}
+        return await run_in_threadpool(_build_cities_payload, deb_recent_index)
     except Exception as exc:
         logger.error(f"Error in list_cities: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -174,5 +253,96 @@ async def get_city_detail_aggregate_payload(
         resolution,
     )
 
+
+def _parse_batch_city_names(raw_cities: str, *, limit: int) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in str(raw_cities or "").split(","):
+        raw = item.strip()
+        if not raw:
+            continue
+        city = legacy_routes._normalize_city_or_404(raw)
+        if city in seen:
+            continue
+        seen.add(city)
+        out.append(city)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_city_detail_batch_item(
+    city: str,
+    *,
+    force_refresh: bool,
+    market_slug: Optional[str],
+    target_date: Optional[str],
+    resolution: Optional[str],
+) -> Tuple[str, Dict[str, Any]]:
+    if force_refresh:
+        data = legacy_routes._refresh_city_full_cache(city, True)
+    else:
+        cached_entry = legacy_routes._CACHE_DB.get_city_cache("full", city)
+        if cached_entry and legacy_routes._city_cache_is_fresh(
+            cached_entry,
+            legacy_routes.CITY_FULL_CACHE_TTL_SEC,
+        ):
+            data = legacy_routes._overlay_latest_wunderground_current(
+                city,
+                cached_entry.get("payload") or {},
+            )
+        else:
+            data = legacy_routes._refresh_city_full_cache(city, False)
+
+    detail = legacy_routes._build_city_detail_payload(
+        data,
+        market_slug,
+        target_date,
+        resolution,
+    )
+    return city, detail
+
+
+async def get_city_detail_batch_payload(
+    request: Request,
+    *,
+    cities: str,
+    force_refresh: bool = False,
+    market_slug: Optional[str] = None,
+    target_date: Optional[str] = None,
+    resolution: Optional[str] = "10m",
+    limit: int = 12,
+) -> Dict[str, Any]:
+    legacy_routes._assert_entitlement(request)
+    city_names = _parse_batch_city_names(cities, limit=max(1, min(24, int(limit or 12))))
+    if not city_names:
+        return {"cities": [], "details": {}, "errors": {}}
+
+    tasks = [
+        run_in_threadpool(
+            _build_city_detail_batch_item,
+            city,
+            force_refresh=force_refresh,
+            market_slug=market_slug,
+            target_date=target_date,
+            resolution=resolution,
+        )
+        for city in city_names
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    details: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+    for city, result in zip(city_names, results):
+        if isinstance(result, Exception):
+            errors[city] = str(result)
+            continue
+        result_city, payload = result
+        details[result_city] = payload
+
+    return {
+        "cities": city_names,
+        "details": details,
+        "errors": errors,
+    }
 
 
