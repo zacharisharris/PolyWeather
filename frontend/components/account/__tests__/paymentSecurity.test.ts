@@ -100,6 +100,11 @@ export function runTests() {
     backendAuthSource.includes("requireBackendAuthUser"),
     "backend auth helper must expose a real-user requirement for payment mutations",
   );
+  assert(
+    backendAuthSource.includes("requireBackendPaymentAuth") &&
+      backendAuthSource.includes("hasBearerAuth"),
+    "backend auth helper must allow bearer-backed payment mutations to reach the backend verifier",
+  );
 
   const middlewareSource = fs.readFileSync(middlewarePath, "utf8");
   assert(
@@ -119,9 +124,34 @@ export function runTests() {
         middlewareSource.indexOf("await refreshMiddlewareSession(request)"),
     "middleware must redirect no-cookie page requests without calling Supabase auth",
   );
+  const terminalGateSource = middlewareSource.slice(
+    middlewareSource.indexOf("async function handleTerminalGate"),
+    middlewareSource.indexOf("async function handleSupabaseAuthGate"),
+  );
+  assert(
+    terminalGateSource.includes("return response;") &&
+      !terminalGateSource.includes("return redirectToLogin(request, pathname);\n}"),
+    "terminal middleware must not navigate long-lived dashboards away when a session cookie exists but claims refresh is transiently unavailable",
+  );
   assert(
     middlewareSource.includes("unauthorizedSupabaseSessionResponse()"),
     "middleware must reject no-cookie protected API requests without calling Supabase auth",
+  );
+
+  const authMeRouteSource = fs.readFileSync(
+    path.join(projectRoot, "app", "api", "auth", "me", "route.ts"),
+    "utf8",
+  );
+  assert(
+    authMeRouteSource.includes("/auth/v1/user") &&
+      authMeRouteSource.includes("getVerifiedBearerIdentity") &&
+      authMeRouteSource.includes("degraded_auth_profile: true"),
+    "/api/auth/me must verify bearer tokens directly and return a degraded authenticated profile when the backend auth profile is transiently unavailable",
+  );
+  assert(
+    authMeRouteSource.indexOf("const bearerIdentity = await getVerifiedBearerIdentity(req)") <
+      authMeRouteSource.indexOf("return buildProxyExceptionResponse(error"),
+    "/api/auth/me must try bearer identity fallback before returning a proxy exception",
   );
   for (const route of [
     "app/api/ops/analytics/funnel/route.ts",
@@ -180,8 +210,9 @@ export function runTests() {
   for (const route of paymentRoutes) {
     const routeSource = fs.readFileSync(path.join(projectRoot, route), "utf8");
     assert(
-      routeSource.includes("requireBackendAuthUser"),
-      `${route} must reject payment mutations without a real Supabase user`,
+      routeSource.includes("requireBackendPaymentAuth") &&
+        !routeSource.includes("requireBackendAuthUser(auth)"),
+      `${route} must allow bearer-backed payment mutations while still rejecting requests with no auth context`,
     );
   }
 }
