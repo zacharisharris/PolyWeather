@@ -38,14 +38,40 @@ def test_scan_terminal_prewarm_is_lazy_by_default():
     )
 
 
+def test_scan_terminal_prewarm_only_runs_for_web_service(monkeypatch):
+    from web import app_factory
+
+    monkeypatch.setenv("POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED", "true")
+    monkeypatch.delenv("POLYWEATHER_SERVICE_ROLE", raising=False)
+    assert app_factory._scan_terminal_prewarm_enabled() is False
+
+    monkeypatch.setenv("POLYWEATHER_SERVICE_ROLE", "bot")
+    assert app_factory._scan_terminal_prewarm_enabled() is False
+
+    monkeypatch.setenv("POLYWEATHER_SERVICE_ROLE", "web")
+    assert app_factory._scan_terminal_prewarm_enabled() is True
+
+
+def test_docker_compose_isolates_scan_terminal_prewarm_to_web_service():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "POLYWEATHER_SERVICE_ROLE: web" in compose
+    assert "POLYWEATHER_SERVICE_ROLE: bot" in compose
+    assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in compose
+
+
 def test_scan_terminal_backend_timeout_returns_before_next_proxy_abort():
     import web.services.scan_terminal_config as scan_terminal_config
 
     route_source = (
         ROOT / "frontend" / "app" / "api" / "scan" / "terminal" / "route.ts"
     ).read_text(encoding="utf-8")
+    config_source = (
+        ROOT / "web" / "services" / "scan_terminal_config.py"
+    ).read_text(encoding="utf-8")
 
-    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "40000"' in route_source
+    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "18000"' in route_source
+    assert '"POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC",\n    10,' in config_source
     assert scan_terminal_config.SCAN_TERMINAL_BUILD_TIMEOUT_SEC <= 30
 
 
@@ -78,6 +104,15 @@ def test_deploy_script_retries_startup_smoke_checks():
     assert 'smoke_check "local cities" "http://127.0.0.1:8000/api/cities" 10 6 3' not in script
     assert 'smoke_check "frontend cities" "https://polyweather.top/api/cities" 20 5 5' in script
     assert 'smoke_check "frontend" "https://www.polyweather.top/" 15 3 5' in script
+
+
+def test_docker_compose_keeps_polyweather_ports_on_loopback():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "127.0.0.1:3001:3000" in compose
+    assert "127.0.0.1:8000:8000" in compose
+    assert "\n    - 3001:3000" not in compose
+    assert "\n    - 8000:8000" not in compose
 
 
 def test_city_detail_builds_deb_hourly_consensus_before_peak_window():

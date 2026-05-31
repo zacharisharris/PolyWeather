@@ -353,6 +353,7 @@ type LocalDayBounds = { start: number; end: number };
 
 const MAX_OBS_POINTS = 1440;
 const HOURLY_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.metar;
+const HOURLY_FORCE_REFRESH_DEDUP_MS = 60_000;
 const _hourlyCache = new Map<string, { ts: number; data: HourlyForecast }>();
 const _hourlyRequestCache = new Map<string, Promise<HourlyForecast>>();
 const MAX_HOURLY_DETAIL_CONCURRENT_REQUESTS = 3;
@@ -366,13 +367,16 @@ const SESSION_CACHE_TTL_MS = DASHBOARD_REFRESH_POLICY_MS.metar;
 
 type HourlyCacheEntry = { ts: number; data: HourlyForecast };
 
-function isFreshHourlyCacheEntry(entry: HourlyCacheEntry | null | undefined) {
-  return Boolean(entry && Date.now() - Number(entry.ts || 0) < SESSION_CACHE_TTL_MS);
+function isFreshHourlyCacheEntry(
+  entry: HourlyCacheEntry | null | undefined,
+  maxAgeMs = SESSION_CACHE_TTL_MS,
+) {
+  return Boolean(entry && Date.now() - Number(entry.ts || 0) < maxAgeMs);
 }
 
 function readSessionCache(
   city: string,
-  options: { allowStale?: boolean } = {},
+  options: { allowStale?: boolean; maxAgeMs?: number } = {},
 ): HourlyCacheEntry | null {
   if (typeof window === "undefined") return null;
   try {
@@ -382,7 +386,7 @@ function readSessionCache(
     if (
       item &&
       item.ts &&
-      (options.allowStale || Date.now() - item.ts < SESSION_CACHE_TTL_MS)
+      (options.allowStale || Date.now() - item.ts < (options.maxAgeMs ?? SESSION_CACHE_TTL_MS))
     ) {
       return item;
     }
@@ -392,10 +396,10 @@ function readSessionCache(
 
 function readHourlyCacheEntry(
   cacheKey: string,
-  options: { allowStale?: boolean } = {},
+  options: { allowStale?: boolean; maxAgeMs?: number } = {},
 ): HourlyCacheEntry | null {
   const cached = _hourlyCache.get(cacheKey);
-  if (cached && (options.allowStale || isFreshHourlyCacheEntry(cached))) {
+  if (cached && (options.allowStale || isFreshHourlyCacheEntry(cached, options.maxAgeMs))) {
     return cached;
   }
 
@@ -966,8 +970,11 @@ type HourlyForecastFetchOptions = {
 };
 
 type CityDetailBatchPayload = {
+  cities?: string[];
   details?: Record<string, CityDetail | null | undefined>;
   errors?: Record<string, string>;
+  missing?: string[];
+  partial?: boolean;
 };
 
 type CityDetailBatchWaiter = {
@@ -981,7 +988,7 @@ type CityDetailBatchQueue = {
   timer: ReturnType<typeof setTimeout> | null;
 };
 
-const CITY_DETAIL_BATCH_WINDOW_MS = 25;
+const CITY_DETAIL_BATCH_WINDOW_MS = 100;
 const CITY_DETAIL_BATCH_MAX_CITIES = 12;
 const _cityDetailBatchQueues = new Map<string, CityDetailBatchQueue>();
 
@@ -1073,6 +1080,30 @@ function rejectBatchWaiters(
   (waiters || []).forEach((waiter) => waiter.reject(reason));
 }
 
+function resolveCityDetailFromBatch(
+  details: Record<string, CityDetail | null | undefined> | undefined,
+  city: string,
+) {
+  if (!details) return undefined;
+  const trimmed = String(city || "").trim();
+  const direct =
+    details[city] ||
+    details[trimmed] ||
+    details[trimmed.toLowerCase()] ||
+    details[normalizeCityKey(trimmed)];
+  if (direct) return direct;
+
+  const requestedKey = normalizeCityKey(trimmed);
+  if (!requestedKey) return undefined;
+  for (const [key, detail] of Object.entries(details)) {
+    if (!detail) continue;
+    if (normalizeCityKey(key) === requestedKey) return detail;
+    const detailCity = (detail as any).city || detail.name || detail.display_name;
+    if (normalizeCityKey(detailCity) === requestedKey) return detail;
+  }
+  return undefined;
+}
+
 async function flushCityDetailBatch(resolution: string) {
   const queue = _cityDetailBatchQueues.get(resolution);
   if (!queue) return;
@@ -1087,35 +1118,56 @@ async function flushCityDetailBatch(resolution: string) {
 
   try {
     const payload = await fetchCityDetailBatchWithTimeout(cities, resolution);
+    if (!payload) {
+      await resolveCityDetailBatchWithSingleFallback(cities, queue, resolution);
+      return;
+    }
+
     const details = payload?.details || {};
+    const partialMissingCities =
+      payload?.partial === true
+        ? new Set((payload.missing || []).map((city) => normalizeCityKey(city)))
+        : new Set<string>();
     await Promise.all(
       cities.map(async (city) => {
         const waiters = queue.waiters.get(city);
-        const detail = details[city];
+        const detail = resolveCityDetailFromBatch(details, city);
         const data = primeCityDetailCache(city, resolution, detail);
         if (data) {
           resolveBatchWaiters(waiters, data);
           return;
         }
-        try {
-          resolveBatchWaiters(waiters, await fetchSingleHourlyForecastForCity(city, resolution));
-        } catch (error) {
-          rejectBatchWaiters(waiters, error);
+        if (partialMissingCities.has(normalizeCityKey(city))) {
+          resolveBatchWaiters(waiters, null);
+          return;
         }
+        resolveBatchWaiters(waiters, null);
       }),
     );
   } catch (error) {
-    await Promise.all(
-      cities.map(async (city) => {
-        const waiters = queue.waiters.get(city);
-        try {
-          resolveBatchWaiters(waiters, await fetchSingleHourlyForecastForCity(city, resolution));
-        } catch (fallbackError) {
-          rejectBatchWaiters(waiters, fallbackError || error);
-        }
-      }),
-    );
+    await resolveCityDetailBatchWithSingleFallback(cities, queue, resolution, error);
   }
+}
+
+async function resolveCityDetailBatchWithSingleFallback(
+  cities: string[],
+  queue: CityDetailBatchQueue,
+  resolution: string,
+  reason?: unknown,
+) {
+  await Promise.all(
+    cities.map(async (city) => {
+      const waiters = queue.waiters.get(city);
+      try {
+        resolveBatchWaiters(
+          waiters,
+          await runQueuedHourlyDetailRequest(() => fetchSingleHourlyForecastForCity(city, resolution)),
+        );
+      } catch (fallbackError) {
+        rejectBatchWaiters(waiters, fallbackError || reason);
+      }
+    }),
+  );
 }
 
 function fetchCityDetailBatchWithTimeout(cities: string[], resolution: string) {
@@ -1152,17 +1204,20 @@ async function fetchHourlyForecastForCity(
     if (cached) {
       return cached.data;
     }
+  } else {
+    const recentlyRefreshed = readHourlyCacheEntry(cacheKey, {
+      maxAgeMs: HOURLY_FORCE_REFRESH_DEDUP_MS,
+    });
+    if (recentlyRefreshed) {
+      return recentlyRefreshed.data;
+    }
   }
 
   const requestKey = options.ignoreCache ? `${city}:${resParam}:live` : `${city}:${resParam}`;
   const pending = _hourlyRequestCache.get(requestKey);
   if (pending) return pending;
 
-  const request = (
-    options.ignoreCache
-      ? runQueuedHourlyDetailRequest(() => fetchSingleHourlyForecastForCity(city, resParam))
-      : queueCityDetailBatch(city, resParam)
-  )
+  const request = queueCityDetailBatch(city, resParam)
     .finally(() => {
       _hourlyRequestCache.delete(requestKey);
     });
@@ -2422,8 +2477,10 @@ export {
   MAX_HOURLY_DETAIL_CONCURRENT_REQUESTS,
   HOURLY_DETAIL_REQUEST_TIMEOUT_MS,
   HOURLY_CACHE_TTL_MS,
+  HOURLY_FORCE_REFRESH_DEDUP_MS,
   _hourlyCache,
   __readHourlyCacheEntryForTest,
+  resolveCityDetailFromBatch as __resolveCityDetailFromBatchForTest,
   __resetHourlyDetailRequestQueueForTest,
   __runQueuedHourlyDetailRequestForTest,
   buildChartDomain,

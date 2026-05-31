@@ -28,6 +28,8 @@ services:
     env_file: &id001
     - .env
     environment:
+      POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'
+      POLYWEATHER_SERVICE_ROLE: bot
       TELEGRAM_AIRPORT_PUSH_INTERVAL_SEC: ${POLYWEATHER_BOT_AIRPORT_PUSH_INTERVAL_SEC:-180}
       TELEGRAM_AIRPORT_PUSH_MAX_WORKERS: ${POLYWEATHER_BOT_AIRPORT_PUSH_MAX_WORKERS:-1}
     healthcheck:
@@ -79,7 +81,7 @@ services:
       timeout: 5s
     image: ghcr.io/yangyuan-zhen/polyweather-frontend:${IMAGE_TAG:-latest}
     ports:
-    - 3001:3000
+    - "127.0.0.1:3001:3000"
     restart: unless-stopped
   polyweather_web:
     command: python web/app.py
@@ -93,6 +95,8 @@ services:
         max-file: "3"
     container_name: polyweather_web
     env_file: *id001
+    environment:
+      POLYWEATHER_SERVICE_ROLE: web
     healthcheck:
       interval: 30s
       retries: 3
@@ -104,7 +108,7 @@ services:
       timeout: 5s
     image: ghcr.io/yangyuan-zhen/polyweather-backend:${IMAGE_TAG:-latest}
     ports:
-    - 8000:8000
+    - "127.0.0.1:8000:8000"
     restart: unless-stopped
     user: ${UID:-1000}:${GID:-1000}
     volumes:

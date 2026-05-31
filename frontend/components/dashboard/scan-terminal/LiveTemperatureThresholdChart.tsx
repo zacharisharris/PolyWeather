@@ -56,6 +56,8 @@ const PEAK_GLOW_BADGE_CLASS = {
 } as const;
 
 const PROBABILITY_REFRESH_AFTER_PATCH_MS = 60_000;
+const FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS = 90_000;
+const DETAIL_LOAD_BATCH_DELAY_MS = 0;
 
 const TemperatureChartCanvas = dynamic(
   () =>
@@ -101,6 +103,10 @@ function formatCityLocalDate(tzOffsetSeconds: number | null | undefined) {
   return `${y}-${m}-${d}`;
 }
 
+function getLiveTempFromHourly(data: HourlyForecast) {
+  return validNumber(data?.airportCurrent?.temp) ?? validNumber(data?.airportPrimary?.temp) ?? null;
+}
+
 function getWundergroundDailyHigh(hourly: HourlyForecast) {
   return validNumber(hourly?.wundergroundCurrent?.max_so_far) ?? null;
 }
@@ -130,7 +136,6 @@ export function LiveTemperatureThresholdChart({
   isMaximized = false,
   disableClose = false,
   isActive = !compact,
-  slotIndex = 0,
 }: {
   isEn: boolean;
   row: ScanOpportunityRow | null;
@@ -161,6 +166,7 @@ export function LiveTemperatureThresholdChart({
   const lastPatchAtRef = useRef<number>(Date.now());
   const lastAppliedPatchRevisionRef = useRef<number>(0);
   const lastProbabilityRefreshAtRef = useRef<number>(0);
+  const lastForegroundRefreshAtRef = useRef<number>(0);
   const localDayRolloverFetchDateRef = useRef<string>("");
   const [isChartVisible, setIsChartVisible] = useState(
     () => typeof IntersectionObserver === "undefined",
@@ -193,6 +199,7 @@ export function LiveTemperatureThresholdChart({
     lastPatchAtRef.current = Date.now();
     lastAppliedPatchRevisionRef.current = 0;
     lastProbabilityRefreshAtRef.current = 0;
+    lastForegroundRefreshAtRef.current = 0;
     localDayRolloverFetchDateRef.current = "";
     setCurrentCityLocalDate(formatCityLocalDate(row?.tz_offset_seconds));
   }, [city]);
@@ -270,9 +277,6 @@ export function LiveTemperatureThresholdChart({
     setIsHourlyLoading(true);
     let cancelled = false;
 
-    // Prioritize active slots, stagger/delay background slots to optimize load performance
-    const delay = isActive ? 0 : (slotIndex ? 300 + slotIndex * 250 : 350);
-
     const timer = setTimeout(() => {
       fetchHourlyForecastForCity(city, { resolution: targetResolution })
         .then((data) => {
@@ -292,13 +296,13 @@ export function LiveTemperatureThresholdChart({
         .finally(() => {
           if (!cancelled) setIsHourlyLoading(false);
         });
-    }, delay);
+    }, DETAIL_LOAD_BATCH_DELAY_MS);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [city, row, isActive, slotIndex, targetResolution, isChartVisible, detailRetryNonce, isEn]);
+  }, [city, row, targetResolution, isChartVisible, detailRetryNonce, isEn]);
 
   useEffect(() => {
     if (!latestPatch || latestPatch.revision <= lastAppliedPatchRevisionRef.current) return;
@@ -365,6 +369,8 @@ export function LiveTemperatureThresholdChart({
         .then((data) => {
           if (cancelled || !data) return;
           hasLoadedHourlyDetailRef.current = true;
+          const temp = getLiveTempFromHourly(data);
+          if (temp !== null) setLiveTemp(temp);
           setHourly(data);
         })
         .catch(() => {})
@@ -376,15 +382,6 @@ export function LiveTemperatureThresholdChart({
     const checkFallback = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (Date.now() - lastPatchAtRef.current < 2 * 60_000) return;
-
-      fetch(`/api/city/${encodeURIComponent(city)}/summary`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((payload) => {
-          if (cancelled || !payload) return;
-          const temp = validNumber(payload?.current?.temp);
-          if (temp !== null) setLiveTemp(temp);
-        })
-        .catch(() => {});
 
       refreshFullDetail();
     };
@@ -401,21 +398,26 @@ export function LiveTemperatureThresholdChart({
     let cancelled = false;
 
     const refreshForegroundFullDetail = () => {
-      lastPatchAtRef.current = Date.now();
+      const now = Date.now();
+      const cacheKey = `${city}:${targetResolution}`;
+      const cached = _hourlyCache.get(cacheKey);
+      const cacheAge = cached ? now - Number(cached.ts || 0) : Number.POSITIVE_INFINITY;
+      if (
+        now - lastForegroundRefreshAtRef.current < FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS ||
+        (cacheAge >= 0 && cacheAge < FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS)
+      ) {
+        return;
+      }
 
-      fetch(`/api/city/${encodeURIComponent(city)}/summary`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((payload) => {
-          if (cancelled || !payload) return;
-          const temp = validNumber(payload?.current?.temp);
-          if (temp !== null) setLiveTemp(temp);
-        })
-        .catch(() => {});
+      lastForegroundRefreshAtRef.current = now;
+      lastPatchAtRef.current = now;
 
       fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
         .then((data) => {
           if (cancelled || !data) return;
           hasLoadedHourlyDetailRef.current = true;
+          const temp = getLiveTempFromHourly(data);
+          if (temp !== null) setLiveTemp(temp);
           setHourly(data);
         })
         .catch(() => {});

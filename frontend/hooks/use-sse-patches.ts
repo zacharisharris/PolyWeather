@@ -4,6 +4,10 @@ import { useEffect, useSyncExternalStore } from "react";
 import { resolveBackendApiUrl } from "@/lib/backend-api";
 
 const V1_EVENT_TYPE = "city_observation_patch.v1";
+const SSE_SUBSCRIPTION_RECONNECT_DELAY_MS = 150;
+const SSE_REPLAY_BASE_LIMIT = 60;
+const SSE_REPLAY_EVENTS_PER_CITY = 24;
+const SSE_REPLAY_MAX_LIMIT = 240;
 
 export type CityPatch = {
   type?: string;
@@ -38,6 +42,7 @@ const subscribedCities = new Map<string, number>();
 
 let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let subscriptionReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let patchVersion = 0;
 let resyncVersion = 0;
@@ -74,6 +79,12 @@ function clearReconnectTimer() {
   reconnectTimer = null;
 }
 
+function clearSubscriptionReconnectTimer() {
+  if (!subscriptionReconnectTimer) return;
+  clearTimeout(subscriptionReconnectTimer);
+  subscriptionReconnectTimer = null;
+}
+
 function buildSseUrl(baseUrl: string) {
   const params = new URLSearchParams();
   const cities = subscribedCityList();
@@ -83,10 +94,15 @@ function buildSseUrl(baseUrl: string) {
   if (lastRevision > 0) {
     params.set("since_revision", String(lastRevision));
   }
-  params.set("replay_limit", "500");
+  params.set("replay_limit", String(resolveSseReplayLimit(cities.length)));
 
   const query = params.toString();
   return query ? `${baseUrl}?${query}` : baseUrl;
+}
+
+function resolveSseReplayLimit(cityCount: number) {
+  const requested = Math.max(1, cityCount) * SSE_REPLAY_EVENTS_PER_CITY;
+  return Math.max(SSE_REPLAY_BASE_LIMIT, Math.min(SSE_REPLAY_MAX_LIMIT, requested));
 }
 
 function currentConnectionKey() {
@@ -113,6 +129,7 @@ function closeEventSource() {
 function reconnectNow() {
   if (typeof window === "undefined") return;
   clearReconnectTimer();
+  clearSubscriptionReconnectTimer();
   closeEventSource();
   connectSsePatches();
 }
@@ -159,12 +176,26 @@ function connectSsePatches() {
 
 function ensureSsePatchConnection() {
   if (subscribedCities.size === 0) {
+    clearSubscriptionReconnectTimer();
     closeEventSource();
     clearReconnectTimer();
     return;
   }
   if (eventSource && activeConnectionKey === currentConnectionKey()) return;
   reconnectNow();
+}
+
+function scheduleSubscriptionReconnect() {
+  if (typeof window === "undefined") return;
+  if (subscribedCities.size === 0) {
+    ensureSsePatchConnection();
+    return;
+  }
+  clearSubscriptionReconnectTimer();
+  subscriptionReconnectTimer = setTimeout(() => {
+    subscriptionReconnectTimer = null;
+    ensureSsePatchConnection();
+  }, SSE_SUBSCRIPTION_RECONNECT_DELAY_MS);
 }
 
 function registerCitySubscription(city: string) {
@@ -174,7 +205,7 @@ function registerCitySubscription(city: string) {
   const previousCount = subscribedCities.get(cityKey) ?? 0;
   subscribedCities.set(cityKey, previousCount + 1);
   if (previousCount === 0) {
-    ensureSsePatchConnection();
+    scheduleSubscriptionReconnect();
   }
 
   return () => {
@@ -184,7 +215,7 @@ function registerCitySubscription(city: string) {
     } else {
       subscribedCities.set(cityKey, nextCount);
     }
-    ensureSsePatchConnection();
+    scheduleSubscriptionReconnect();
   };
 }
 
