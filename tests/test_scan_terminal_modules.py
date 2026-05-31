@@ -1,4 +1,5 @@
 from web.scan_terminal_filters import normalize_scan_terminal_filters
+from web import scan_terminal_cache
 from web.scan_terminal_metar_gate import _apply_metar_gate_to_row
 from web.scan_terminal_payloads import (
     build_failed_scan_terminal_payload,
@@ -6,7 +7,75 @@ from web.scan_terminal_payloads import (
     build_stale_scan_terminal_payload,
 )
 from web.scan_terminal_ranker import build_ranked_scan_terminal_result
+from web.scan_terminal_city_row import _build_quick_row
 from web.routers.scan import router as scan_router
+from web.scan_terminal_service import _scan_terminal_prewarm_filters
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def setex(self, key, _ttl, value):
+        self.data[key] = value
+
+
+def test_scan_terminal_cache_hydrates_success_payload_from_redis(monkeypatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setenv("POLYWEATHER_SCAN_TERMINAL_REDIS_CACHE_ENABLED", "true")
+    monkeypatch.setattr(scan_terminal_cache, "_get_redis_client", lambda: fake_redis)
+    scan_terminal_cache._SCAN_TERMINAL_CACHE.clear()
+
+    filters = {"scan_mode": "tradable", "limit": 9}
+    payload = {
+        "generated_at": "2026-06-01T00:00:00Z",
+        "rows": [{"id": "row-1"}],
+        "summary": {"candidate_total": 1},
+    }
+
+    scan_terminal_cache.set_cached_scan_terminal_payload(filters, payload)
+    scan_terminal_cache._SCAN_TERMINAL_CACHE.clear()
+
+    entry = scan_terminal_cache.get_scan_terminal_cache_entry(filters)
+    cached = scan_terminal_cache.get_cached_scan_terminal_payload(filters, ttl_sec=3600)
+
+    assert entry["success_payload"]["rows"] == [{"id": "row-1"}]
+    assert cached["summary"]["candidate_total"] == 1
+
+
+def test_scan_terminal_failure_state_preserves_redis_success_payload(monkeypatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setenv("POLYWEATHER_SCAN_TERMINAL_REDIS_CACHE_ENABLED", "true")
+    monkeypatch.setattr(scan_terminal_cache, "_get_redis_client", lambda: fake_redis)
+    scan_terminal_cache._SCAN_TERMINAL_CACHE.clear()
+
+    filters = {"scan_mode": "tradable", "limit": 9}
+    scan_terminal_cache.set_cached_scan_terminal_payload(
+        filters,
+        {
+            "generated_at": "2026-06-01T00:00:00Z",
+            "rows": [{"id": "row-1"}],
+        },
+    )
+    scan_terminal_cache._SCAN_TERMINAL_CACHE.clear()
+
+    scan_terminal_cache.set_scan_terminal_failure_state(filters, error_message="timeout")
+    scan_terminal_cache._SCAN_TERMINAL_CACHE.clear()
+
+    entry = scan_terminal_cache.get_scan_terminal_cache_entry(filters)
+
+    assert entry["success_payload"]["rows"] == [{"id": "row-1"}]
+    assert entry["last_error"] == "timeout"
+
+
+def test_scan_terminal_prewarm_covers_default_api_limit():
+    limits = {filters["limit"] for filters in _scan_terminal_prewarm_filters()}
+
+    assert 25 in limits
+    assert 180 in limits
 
 
 def test_scan_router_does_not_expose_terminal_ai_endpoint():
@@ -137,6 +206,41 @@ def test_scan_terminal_snapshot_id_is_stable_for_same_ranked_inputs():
     assert first.startswith("scan-")
 
 
+def test_scan_terminal_quick_row_compacts_runway_history_for_list_payload():
+    raw_history = {
+        "35R": [
+            {"time": "2026-05-31T00:00:00+00:00", "temp": 22.11},
+            {"time": "2026-05-31T00:01:00+00:00", "temp": 22.22},
+            {"time": "2026-05-31T00:02:00+00:00", "temp": 22.33},
+            {"time": "2026-05-31T00:10:00+00:00", "temp": 23.44},
+            {"time": "2026-05-31T00:11:00+00:00", "temp": 23.55},
+        ]
+    }
+
+    row = _build_quick_row(
+        city="shanghai",
+        data={
+            "display_name": "Shanghai",
+            "local_date": "2026-05-31",
+            "local_time": "2026-05-31T08:11:00+08:00",
+            "temp_symbol": "°C",
+            "current": {"temp": 22.3, "max_so_far": 23.0},
+            "risk": {"airport": "Shanghai Pudong", "level": "medium"},
+            "deb": {"prediction": 24.0},
+            "probabilities": {"distribution": []},
+            "multi_model": {},
+            "runway_plate_history": raw_history,
+        },
+    )
+
+    compact_history = row["runway_plate_history"]["35R"]
+
+    assert len(compact_history) == 2
+    assert compact_history[0]["temp"] == 22.3
+    assert compact_history[1]["temp"] == 23.6
+    assert len(str(row["runway_plate_history"])) < len(str(raw_history))
+
+
 def test_metar_gate_vetoes_yes_when_observed_breaks_above_bucket():
     row = {
         "id": "yes-row",
@@ -158,4 +262,3 @@ def test_metar_gate_vetoes_yes_when_observed_breaks_above_bucket():
     assert row["v4_metar_decision"] == "veto"
     assert row["ai_decision"] == "veto"
     assert "越过目标桶上沿" in row["ai_reason_zh"]
-
