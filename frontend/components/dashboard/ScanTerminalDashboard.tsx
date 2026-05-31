@@ -55,7 +55,10 @@ import {
   mergeAccessStateWithAuthPayload,
   type AuthProfilePayload,
 } from "@/components/dashboard/scan-terminal/terminal-access-state";
-import { loadTerminalAuthProfile } from "@/components/dashboard/scan-terminal/terminal-auth-bootstrap";
+import {
+  createAuthProfileRequestCache,
+  loadTerminalAuthProfile,
+} from "@/components/dashboard/scan-terminal/terminal-auth-bootstrap";
 import {
   cityListItemsToScanRows,
   mergeScanRowsWithCityFallbackRows,
@@ -76,6 +79,8 @@ const TrainingDashboard = dynamic(
     ),
   },
 );
+
+const ONLINE_USERS_REFRESH_MS = 5 * 60_000;
 
 function createEmptyAccess(loading = true): ProAccessState {
   return {
@@ -425,14 +430,22 @@ function PolyWeatherTerminal({
 
   useEffect(() => {
     const fetchOnline = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       fetch("/api/ops/online-users", { headers: { Accept: "application/json" } })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d?.online != null) setOnlineCount(d.online); })
         .catch(() => {});
     };
     fetchOnline();
-    const id = setInterval(fetchOnline, 60_000);
-    return () => clearInterval(id);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") fetchOnline();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    const id = setInterval(fetchOnline, ONLINE_USERS_REFRESH_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      clearInterval(id);
+    };
   }, []);
 
   const [gridCols, setGridCols] = useState<number>(() => {
@@ -952,7 +965,7 @@ function ScanTerminalScreen() {
     createEmptyAccess(true),
   );
 
-  const loadAuthProfile = useCallback(
+  const rawLoadAuthProfile = useCallback(
     async (
       accessToken?: string | null,
       options?: { preferSnapshot?: boolean },
@@ -973,6 +986,28 @@ function ScanTerminalScreen() {
       return response.json() as Promise<AuthProfilePayload>;
     },
     [],
+  );
+  const authProfileRequestCacheRef = useRef<{
+    load: typeof rawLoadAuthProfile;
+    cached: ReturnType<typeof createAuthProfileRequestCache>;
+  } | null>(null);
+  const loadAuthProfile = useCallback(
+    (
+      accessToken?: string | null,
+      options?: { preferSnapshot?: boolean },
+    ): Promise<AuthProfilePayload> => {
+      const current = authProfileRequestCacheRef.current;
+      if (current?.load === rawLoadAuthProfile) {
+        return current.cached(accessToken, options);
+      }
+      const next = {
+        load: rawLoadAuthProfile,
+        cached: createAuthProfileRequestCache(rawLoadAuthProfile),
+      };
+      authProfileRequestCacheRef.current = next;
+      return next.cached(accessToken, options);
+    },
+    [rawLoadAuthProfile],
   );
 
   const refreshLiveAuthProfile = useCallback(async () => {

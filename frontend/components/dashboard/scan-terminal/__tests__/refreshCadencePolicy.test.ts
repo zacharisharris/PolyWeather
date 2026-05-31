@@ -12,6 +12,7 @@ import {
 import {
   MAX_HOURLY_DETAIL_CONCURRENT_REQUESTS,
   HOURLY_CACHE_TTL_MS,
+  __resolveCityDetailFromBatchForTest,
   __readHourlyCacheEntryForTest,
   __resetHourlyDetailRequestQueueForTest,
   __runQueuedHourlyDetailRequestForTest,
@@ -49,6 +50,10 @@ export async function runTests() {
     path.join(projectRoot, "components", "dashboard", "scan-terminal", "temperature-chart-logic.ts"),
     "utf8",
   );
+  const dashboardSource = fs.readFileSync(
+    path.join(projectRoot, "components", "dashboard", "ScanTerminalDashboard.tsx"),
+    "utf8",
+  );
 
   assert(
     querySource.includes("useSsePatchVersion") &&
@@ -72,6 +77,12 @@ export async function runTests() {
     "visible chart fallback must refresh the full city detail payload at the current chart resolution when SSE patches stop",
   );
   assert(
+    chartLogicSource.includes("HOURLY_FORCE_REFRESH_DEDUP_MS") &&
+      chartLogicSource.includes("maxAgeMs: HOURLY_FORCE_REFRESH_DEDUP_MS") &&
+      chartLogicSource.includes("recentlyRefreshed.data"),
+    "forced chart detail refreshes should reuse a very recent full-detail payload instead of refetching repeatedly",
+  );
+  assert(
     __shouldPollLiveChartForTest({ city: "shanghai", compact: true, isActive: false, isMaximized: false }) === true,
     "compact grid slots are visible charts and should run the no-patch fallback guard",
   );
@@ -92,15 +103,48 @@ export async function runTests() {
     "visible terminal chart detail fetches should be coalesced into one batch request and prime the shared chart cache",
   );
   assert(
-    chartLogicSource.includes("options.ignoreCache\n      ? runQueuedHourlyDetailRequest") &&
-      chartLogicSource.includes(": queueCityDetailBatch(city, resParam)"),
-    "normal first-paint city detail requests should enter the batch queue before single-request concurrency limiting",
+    chartLogicSource.includes("CITY_DETAIL_BATCH_WINDOW_MS = 100"),
+    "visible terminal chart detail fetches should use a wide enough batch window to coalesce cards mounted across adjacent frames",
+  );
+  assert(
+    chartLogicSource.includes("partial?: boolean") &&
+      chartLogicSource.includes("missing?: string[]"),
+    "frontend city detail batch payload should understand partial responses and missing city markers",
+  );
+  const flushCityDetailBatchBlock = chartLogicSource.match(/async function flushCityDetailBatch[\s\S]*?\r?\n}\r?\n\r?\nfunction fetchCityDetailBatchWithTimeout/)?.[0] || "";
+  assert(
+    flushCityDetailBatchBlock.includes("partialMissingCities") &&
+      flushCityDetailBatchBlock.includes("resolveBatchWaiters(waiters, null)") &&
+      flushCityDetailBatchBlock.includes("payload?.partial === true"),
+    "partial detail-batch misses should resolve without immediately issuing single-city fallback requests",
+  );
+  assert(
+    flushCityDetailBatchBlock.includes("if (!payload)") &&
+      flushCityDetailBatchBlock.includes("resolveCityDetailBatchWithSingleFallback") &&
+      flushCityDetailBatchBlock.includes("resolveBatchWaiters(waiters, null)"),
+    "single-city detail fallback should be reserved for whole-batch failures rather than successful batch misses",
+  );
+  const fetchHourlyBlock = chartLogicSource.match(/async function fetchHourlyForecastForCity[\s\S]*?\r?\n}\r?\n\r?\nfunction fetchCityDetailWithTimeout/)?.[0] || "";
+  assert(
+    fetchHourlyBlock.includes("queueCityDetailBatch(city, resParam)") &&
+      !fetchHourlyBlock.includes("runQueuedHourlyDetailRequest"),
+    "first-paint and background city detail refreshes should both enter the batch queue before falling back to single requests",
+  );
+  assert(
+    dashboardSource.includes("ONLINE_USERS_REFRESH_MS = 5 * 60_000") &&
+      dashboardSource.includes('document.visibilityState === "hidden"'),
+    "terminal online-user presence should refresh slowly and pause while the browser tab is hidden",
   );
   assert(
     chartSource.includes("IntersectionObserver") &&
       chartSource.includes("shouldFetchCityDetailForChart") &&
       chartSource.includes("isChartVisible"),
     "city detail prefetch should be gated to visible chart cards instead of every mounted slot",
+  );
+  assert(
+    chartSource.includes("DETAIL_LOAD_BATCH_DELAY_MS") &&
+      !chartSource.includes("slotIndex ? 300 + slotIndex * 250"),
+    "visible chart detail loads should enter the batch queue together instead of being staggered into single-city requests",
   );
   assert(
     chartSource.includes("allowStale: true") &&
@@ -119,6 +163,19 @@ export async function runTests() {
   assert(
     __shouldFetchCityDetailForChartForTest({ city: "paris", documentHidden: true, isChartVisible: true }) === false,
     "hidden browser tabs should not prefetch city detail",
+  );
+  const normalizedBatchDetail = __resolveCityDetailFromBatchForTest(
+      {
+        "hong kong": {
+          city: "hong kong",
+          timeseries: { hourly: { times: ["00:00"], temps: [32] } },
+        },
+      } as any,
+      "Hong Kong",
+    ) as any;
+  assert(
+    normalizedBatchDetail?.city === "hong kong",
+    "frontend detail batch lookup should accept backend-normalized city keys before falling back to single-city requests",
   );
 
   __resetHourlyDetailRequestQueueForTest();

@@ -94,11 +94,30 @@ export function runTests() {
   assert(hook.includes("subscribedCities"), "frontend patch hook must track the visible city subscription set");
   assert(hook.includes("since_revision"), "frontend patch hook must reconnect with since_revision");
   assert(hook.includes("resync_required"), "frontend patch hook must react to server resync_required events");
+  assert(
+    hook.includes("SSE_REPLAY_EVENTS_PER_CITY") &&
+      hook.includes("resolveSseReplayLimit") &&
+      hook.includes('params.set("replay_limit", String(resolveSseReplayLimit(cities.length)))') &&
+      !hook.includes('params.set("replay_limit", "500")'),
+    "frontend patch hook should size SSE replay_limit by visible city count instead of always asking for 500 events",
+  );
   assert(hook.includes("lastRevision"), "frontend patch hook must track the global last processed revision");
   assert(hook.includes("Map<"), "frontend patch hook must keep latest patches in a Map");
   assert(hook.includes("useLatestPatch"), "frontend patch hook must export useLatestPatch(city)");
   assert(hook.includes("revision"), "frontend patch hook must track revisions and skip stale patches");
   assert(hook.includes("setTimeout"), "frontend patch hook must implement explicit reconnect backoff");
+  assert(
+    hook.includes("SSE_SUBSCRIPTION_RECONNECT_DELAY_MS") &&
+      hook.includes("scheduleSubscriptionReconnect") &&
+      hook.includes("clearSubscriptionReconnectTimer"),
+    "frontend patch hook must debounce visible-city subscription changes before reopening SSE",
+  );
+  const subscriptionBlock = hook.match(/function registerCitySubscription[\s\S]*?\n}\r?\n\r?\nfunction normalizeLegacyPatch/)?.[0] || "";
+  assert(
+    subscriptionBlock.includes("scheduleSubscriptionReconnect()") &&
+      !subscriptionBlock.includes("ensureSsePatchConnection();"),
+    "city subscription mount/unmount should schedule one coalesced SSE reconnect instead of reconnecting per chart",
+  );
 
   const bffEventsRoute = readFrontendFile("app", "api", "events", "route.ts");
   assert(bffEventsRoute.includes("searchParams"), "Next.js SSE proxy must forward query parameters to FastAPI");
@@ -179,8 +198,13 @@ export function runTests() {
   assert(
     foregroundRefreshBlock.includes("ignoreCache: true") &&
       foregroundRefreshBlock.includes("fetchHourlyForecastForCity") &&
+      foregroundRefreshBlock.includes("FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS") &&
       !foregroundRefreshBlock.includes("setIsHourlyLoading(true)"),
-    "foreground resume refresh should update full detail immediately in the background without showing the loading overlay",
+    "foreground resume refresh should update full detail in the background without showing the loading overlay or refetching fresh detail",
+  );
+  assert(
+    !chart.includes("/api/city/${encodeURIComponent(city)}/summary"),
+    "visible chart fallback and foreground refresh should not issue a separate summary request after requesting full detail",
   );
   assert(chart.includes("viewMode"), "temperature chart must expose a view mode for DEB-peak auto view versus full-day view");
   assert(chart.includes('useState<"auto" | "full">("full")'), "temperature chart must default every city panel to the all-day view");

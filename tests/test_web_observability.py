@@ -316,6 +316,15 @@ def test_ops_billing_risk_surfaces_trial_payment_referral_and_points(monkeypatch
         "list_app_analytics_events",
         lambda self, limit=20000, since_iso=None: [
             {
+                "id": 10,
+                "event_type": "login_start",
+                "user_id": None,
+                "client_id": "c1",
+                "session_id": "session-gap",
+                "created_at": recent,
+                "payload": {"mode": "signup"},
+            },
+            {
                 "id": 11,
                 "event_type": "signup_success",
                 "user_id": "user-trial-gap",
@@ -405,6 +414,108 @@ def test_ops_billing_risk_does_not_flag_signup_when_backend_trial_exists(monkeyp
                 "created_at": recent,
                 "payload": {"user_id": "user-with-trial"},
             }
+        ],
+    )
+    monkeypatch.setattr(
+        DBManager,
+        "list_payment_audit_events",
+        lambda self, limit=50, event_type=None: [],
+    )
+
+    payload = ops_api.get_ops_billing_risk(None, days=30, limit=20)
+
+    assert payload["summary"]["trial_gaps"] == 0
+    assert not any(issue["category"] == "signup_trial" for issue in payload["issues"])
+
+
+def test_ops_billing_risk_ignores_account_visit_without_signup_intent(monkeypatch):
+    from src.database.db_manager import DBManager
+
+    recent = datetime.now(timezone.utc).isoformat()
+
+    monkeypatch.setattr(ops_api.legacy_routes, "_require_ops_admin", lambda request: {"email": "ops@example.com"})
+    monkeypatch.setattr(ops_api, "_supabase_rest_rows", lambda table, params, *, timeout=10: [])
+    monkeypatch.setattr(
+        DBManager,
+        "list_app_analytics_events",
+        lambda self, limit=20000, since_iso=None: [
+            {
+                "id": 61,
+                "event_type": "signup_success",
+                "user_id": "returning-no-trial-user",
+                "client_id": "client-return",
+                "session_id": "session-return",
+                "created_at": recent,
+                "payload": {
+                    "entry": "account_center",
+                    "user_id": "returning-no-trial-user",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        DBManager,
+        "list_payment_audit_events",
+        lambda self, limit=50, event_type=None: [],
+    )
+
+    payload = ops_api.get_ops_billing_risk(None, days=30, limit=20)
+
+    assert payload["summary"]["trial_gaps"] == 0
+    assert not any(issue["category"] == "signup_trial" for issue in payload["issues"])
+
+
+def test_ops_billing_risk_treats_expired_signup_trial_subscription_as_backend_evidence(monkeypatch):
+    from src.database.db_manager import DBManager
+
+    now = datetime.now(timezone.utc)
+    recent = now.isoformat()
+    expired = (now - timedelta(days=2)).isoformat()
+
+    def fake_supabase_rows(table, params, *, timeout=10):
+        if table == "subscriptions" and params.get("or") == "(source.eq.signup_trial,plan_code.eq.signup_trial_3d)":
+            return [
+                {
+                    "id": 81,
+                    "user_id": "expired-trial-user",
+                    "plan_code": "signup_trial_3d",
+                    "source": "signup_trial",
+                    "status": "expired",
+                    "starts_at": (now - timedelta(days=5)).isoformat(),
+                    "expires_at": expired,
+                    "created_at": (now - timedelta(days=5)).isoformat(),
+                    "updated_at": expired,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(ops_api.legacy_routes, "_require_ops_admin", lambda request: {"email": "ops@example.com"})
+    monkeypatch.setattr(ops_api, "_supabase_rest_rows", fake_supabase_rows)
+    monkeypatch.setattr(
+        DBManager,
+        "list_app_analytics_events",
+        lambda self, limit=20000, since_iso=None: [
+            {
+                "id": 80,
+                "event_type": "login_start",
+                "user_id": None,
+                "client_id": "client-expired",
+                "session_id": "session-expired",
+                "created_at": recent,
+                "payload": {"mode": "signup"},
+            },
+            {
+                "id": 82,
+                "event_type": "signup_success",
+                "user_id": "expired-trial-user",
+                "client_id": "client-expired",
+                "session_id": "session-expired",
+                "created_at": recent,
+                "payload": {
+                    "entry": "account_center",
+                    "user_id": "expired-trial-user",
+                },
+            },
         ],
     )
     monkeypatch.setattr(
@@ -564,7 +675,388 @@ def test_city_detail_batch_endpoint_builds_multiple_cached_details(monkeypatch):
     assert sorted(payload["details"]) == ["paris", "shanghai"]
     assert payload["details"]["shanghai"]["resolution"] == "10m"
     assert payload["details"]["paris"]["overlay_city"] == "paris"
-    assert calls == [("shanghai", "10m"), ("paris", "10m")]
+    assert sorted(calls) == [("paris", "10m"), ("shanghai", "10m")]
+
+
+def test_city_detail_batch_endpoint_limits_backend_concurrency(monkeypatch):
+    import asyncio
+
+    active = 0
+    max_active = 0
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.01)
+            return fn(*args, **kwargs)
+        finally:
+            active -= 1
+
+    monkeypatch.setenv("POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY", "2")
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api.legacy_routes, "_city_cache_is_fresh", lambda entry, ttl: False)
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            return None
+
+    def refresh_full(city, force_refresh):
+        return {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+        }
+
+    def build_detail(data, market_slug, target_date, resolution):
+        return {
+            "city": data["city"],
+            "hourly": data["hourly"],
+            "resolution": resolution,
+        }
+
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(city_api.legacy_routes, "_refresh_city_full_cache", refresh_full)
+    monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
+
+    response = client.get("/api/cities/detail-batch?cities=a,b,c,d,e&resolution=10m&limit=5")
+
+    assert response.status_code == 200
+    assert response.json()["cities"] == ["a", "b", "c", "d", "e"]
+    assert max_active <= 2
+
+
+def test_city_detail_batch_returns_completed_details_when_one_city_is_slow(monkeypatch):
+    import asyncio
+
+    completed = []
+
+    async def build_batch_item(city, **kwargs):
+        if city == "slow":
+            await asyncio.sleep(0.08)
+        completed.append(city)
+        return city, {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+            "resolution": kwargs.get("resolution"),
+        }
+
+    monkeypatch.setenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", "20")
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api, "_build_city_detail_batch_item_async", build_batch_item)
+
+    payload = asyncio.run(
+        city_api.get_city_detail_batch_payload(
+            object(),
+            cities="fast,slow,other",
+            resolution="10m",
+            limit=3,
+        )
+    )
+
+    assert payload["cities"] == ["fast", "slow", "other"]
+    assert sorted(payload["details"]) == ["fast", "other"]
+    assert payload["details"]["fast"]["resolution"] == "10m"
+    assert payload["partial"] is True
+    assert payload["missing"] == ["slow"]
+    assert payload["errors"] == {}
+    assert "slow" not in completed
+
+
+def test_city_detail_batch_response_cache_keeps_entitlement_check(monkeypatch):
+    import asyncio
+
+    entitlement_calls = 0
+    build_calls = 0
+
+    async def build_batch_item(city, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        return city, {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+            "resolution": kwargs.get("resolution"),
+        }
+
+    def assert_entitlement(request):
+        nonlocal entitlement_calls
+        entitlement_calls += 1
+
+    city_api._CITY_DETAIL_BATCH_RESPONSE_CACHE.clear()
+    city_api._CITY_DETAIL_BATCH_RESPONSE_CACHE_TS.clear()
+    city_api._CITY_DETAIL_BATCH_RESPONSE_INFLIGHT.clear()
+
+    monkeypatch.setenv("POLYWEATHER_CITY_DETAIL_BATCH_RESPONSE_CACHE_TTL_SEC", "20")
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", assert_entitlement)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api, "_build_city_detail_batch_item_async", build_batch_item)
+
+    first = asyncio.run(
+        city_api.get_city_detail_batch_payload(
+            object(),
+            cities="Paris",
+            resolution="10m",
+            limit=12,
+        )
+    )
+    second = asyncio.run(
+        city_api.get_city_detail_batch_payload(
+            object(),
+            cities="Paris",
+            resolution="10m",
+            limit=12,
+        )
+    )
+
+    assert first == second
+    assert first["details"]["paris"]["resolution"] == "10m"
+    assert entitlement_calls == 2
+    assert build_calls == 1
+
+
+def test_concurrent_city_detail_batch_requests_share_inflight_response(monkeypatch):
+    import asyncio
+
+    entitlement_calls = 0
+    build_calls = 0
+
+    async def build_batch_item(city, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        await asyncio.sleep(0.02)
+        return city, {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+            "resolution": kwargs.get("resolution"),
+        }
+
+    def assert_entitlement(request):
+        nonlocal entitlement_calls
+        entitlement_calls += 1
+
+    city_api._CITY_DETAIL_BATCH_RESPONSE_CACHE.clear()
+    city_api._CITY_DETAIL_BATCH_RESPONSE_CACHE_TS.clear()
+    city_api._CITY_DETAIL_BATCH_RESPONSE_INFLIGHT.clear()
+
+    monkeypatch.setenv("POLYWEATHER_CITY_DETAIL_BATCH_RESPONSE_CACHE_TTL_SEC", "20")
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", assert_entitlement)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api, "_build_city_detail_batch_item_async", build_batch_item)
+
+    async def run_requests():
+        return await asyncio.gather(
+            city_api.get_city_detail_batch_payload(
+                object(),
+                cities="Paris",
+                resolution="10m",
+                limit=12,
+            ),
+            city_api.get_city_detail_batch_payload(
+                object(),
+                cities="Paris",
+                resolution="10m",
+                limit=12,
+            ),
+        )
+
+    first, second = asyncio.run(run_requests())
+
+    assert first == second
+    assert entitlement_calls == 2
+    assert build_calls == 1
+
+
+def test_concurrent_city_detail_requests_share_same_full_cache_refresh(monkeypatch):
+    import asyncio
+
+    refresh_calls = 0
+    build_calls = 0
+
+    class FakeCache:
+        payload = None
+
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            if self.payload is None:
+                return None
+            return {"payload": self.payload}
+
+    fake_cache = FakeCache()
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        if fn is city_api.legacy_routes._refresh_city_full_cache:
+            await asyncio.sleep(0.02)
+        return fn(*args, **kwargs)
+
+    def refresh_full(city, force_refresh):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        fake_cache.payload = {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+        }
+        return fake_cache.payload
+
+    def build_detail(data, market_slug, target_date, resolution):
+        nonlocal build_calls
+        build_calls += 1
+        return {
+            "city": data["city"],
+            "hourly": data["hourly"],
+            "resolution": resolution,
+        }
+
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", fake_cache)
+    monkeypatch.setattr(city_api.legacy_routes, "_refresh_city_full_cache", refresh_full)
+    monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
+
+    async def run_two_requests():
+        return await asyncio.gather(
+            city_api.get_city_detail_aggregate_payload(object(), "Paris", resolution="10m"),
+            city_api.get_city_detail_aggregate_payload(object(), "Paris", resolution="10m"),
+        )
+
+    results = asyncio.run(run_two_requests())
+
+    assert [item["city"] for item in results] == ["paris", "paris"]
+    assert refresh_calls == 1
+    assert build_calls == 1
+
+
+def test_stale_city_detail_uses_cached_full_payload_while_refreshing(monkeypatch):
+    import asyncio
+
+    refresh_calls = 0
+    build_inputs = []
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            assert city == "paris"
+            return {
+                "payload": {
+                    "city": "paris",
+                    "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+                },
+            }
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        if fn is city_api.legacy_routes._refresh_city_full_cache:
+            await asyncio.sleep(0.01)
+        return fn(*args, **kwargs)
+
+    def refresh_full(city, force_refresh):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return {
+            "city": city,
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [21.0]},
+        }
+
+    def build_detail(data, market_slug, target_date, resolution):
+        build_inputs.append(data["hourly"]["temps"][0])
+        return {
+            "city": data["city"],
+            "live_temp": data["hourly"]["temps"][0],
+            "resolution": resolution,
+        }
+
+    city_api._CITY_FULL_REFRESH_INFLIGHT.clear()
+    city_api._CITY_DETAIL_PAYLOAD_CACHE.clear()
+    city_api._CITY_DETAIL_PAYLOAD_CACHE_TS.clear()
+    city_api._CITY_DETAIL_PAYLOAD_INFLIGHT.clear()
+
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(city_api.legacy_routes, "_city_cache_is_fresh", lambda entry, ttl: False)
+    monkeypatch.setattr(city_api.legacy_routes, "_overlay_latest_wunderground_current", lambda city, payload: payload)
+    monkeypatch.setattr(city_api.legacy_routes, "_refresh_city_full_cache", refresh_full)
+    monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
+
+    async def run_request():
+        payload = await city_api.get_city_detail_aggregate_payload(object(), "Paris", resolution="10m")
+        await asyncio.sleep(0.03)
+        return payload
+
+    result = asyncio.run(run_request())
+
+    assert result["live_temp"] == 20.0
+    assert build_inputs == [20.0]
+    assert refresh_calls == 1
+
+
+def test_force_refresh_invalidates_short_city_detail_payload_cache(monkeypatch):
+    import asyncio
+
+    build_calls = 0
+    refreshed_payloads = [
+        {
+            "city": "paris",
+            "local_date": "2026-05-30",
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+        },
+        {
+            "city": "paris",
+            "local_date": "2026-05-30",
+            "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [21.0]},
+        },
+    ]
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            return None
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def refresh_full(city, force_refresh):
+        assert city == "paris"
+        assert refreshed_payloads
+        return refreshed_payloads.pop(0)
+
+    def build_detail(data, market_slug, target_date, resolution):
+        nonlocal build_calls
+        build_calls += 1
+        return {
+            "city": data["city"],
+            "live_temp": data["hourly"]["temps"][0],
+            "resolution": resolution,
+        }
+
+    city_api._CITY_DETAIL_PAYLOAD_CACHE.clear()
+    city_api._CITY_DETAIL_PAYLOAD_CACHE_TS.clear()
+    city_api._CITY_DETAIL_PAYLOAD_INFLIGHT.clear()
+
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(city_api.legacy_routes, "_refresh_city_full_cache", refresh_full)
+    monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
+
+    first = asyncio.run(city_api.get_city_detail_aggregate_payload(object(), "Paris", resolution="10m"))
+    second = asyncio.run(
+        city_api.get_city_detail_aggregate_payload(
+            object(),
+            "Paris",
+            resolution="10m",
+            force_refresh=True,
+        ),
+    )
+
+    assert first["live_temp"] == 20.0
+    assert second["live_temp"] == 21.0
+    assert build_calls == 2
 
 
 def test_payment_runtime_endpoint_returns_shape():

@@ -19,6 +19,10 @@ router = APIRouter(tags=["events"])
 event_store = create_realtime_event_store()
 _live_subscription_lock = threading.Lock()
 _live_subscription_started = False
+SSE_REPLAY_BASE_LIMIT = 60
+SSE_REPLAY_EVENTS_PER_CITY = 24
+SSE_REPLAY_MAX_LIMIT = 240
+SSE_REPLAY_DIRECT_RESYNC_FACTOR = 3
 
 
 def _parse_cities_param(cities: str) -> Set[str]:
@@ -29,12 +33,33 @@ def _parse_cities_param(cities: str) -> Set[str]:
     }
 
 
-def _bounded_replay_limit(value: int) -> int:
+def _recommended_replay_limit(city_count: int) -> int:
+    requested = max(1, int(city_count or 0)) * SSE_REPLAY_EVENTS_PER_CITY
+    return max(SSE_REPLAY_BASE_LIMIT, min(SSE_REPLAY_MAX_LIMIT, requested))
+
+
+def _bounded_replay_limit(value: int, *, city_count: int = 0) -> int:
     try:
         limit = int(value)
     except (TypeError, ValueError):
-        limit = 500
-    return max(1, min(MAX_REPLAY_LIMIT, limit))
+        limit = _recommended_replay_limit(city_count)
+    route_limit = _recommended_replay_limit(city_count)
+    return max(1, min(MAX_REPLAY_LIMIT, route_limit, limit))
+
+
+def _should_direct_resync(
+    *,
+    since_revision: int,
+    latest_revision: int,
+    limit: int,
+) -> bool:
+    since = max(0, int(since_revision or 0))
+    latest = max(0, int(latest_revision or 0))
+    if since <= 0 or latest <= since:
+        return False
+    gap = latest - since
+    threshold = max(SSE_REPLAY_MAX_LIMIT, max(1, int(limit or 1)) * SSE_REPLAY_DIRECT_RESYNC_FACTOR)
+    return gap > threshold
 
 
 def _ensure_live_subscription() -> None:
@@ -65,7 +90,7 @@ async def sse_events(
     origin = request.headers.get("origin", "")
     allowed = origin in {"https://polyweather.top", "https://www.polyweather.top", "http://localhost:3000"}
     city_set = _parse_cities_param(cities)
-    limit = _bounded_replay_limit(replay_limit)
+    limit = _bounded_replay_limit(replay_limit, city_count=len(city_set))
     _ensure_live_subscription()
     latest_revision = event_store.latest_revision()
     replay_events = []
@@ -73,23 +98,36 @@ async def sse_events(
 
     if since_revision is not None:
         try:
-            replay_events = event_store.replay_events(
-                cities=city_set,
-                since_revision=max(0, int(since_revision)),
-                limit=limit,
-            )
-            if event_store.replay_requires_resync(
-                cities=city_set,
-                since_revision=max(0, int(since_revision)),
-                replay_count=len(replay_events),
+            since = max(0, int(since_revision))
+            if _should_direct_resync(
+                since_revision=since,
+                latest_revision=latest_revision,
                 limit=limit,
             ):
                 resync_event = {
                     "type": "resync_required",
-                    "reason": "replay_window_exceeded",
+                    "reason": "replay_gap_too_large",
                     "latest_revision": latest_revision,
                     "ts": int(time.time() * 1000),
                 }
+            else:
+                replay_events = event_store.replay_events(
+                    cities=city_set,
+                    since_revision=since,
+                    limit=limit,
+                )
+                if event_store.replay_requires_resync(
+                    cities=city_set,
+                    since_revision=since,
+                    replay_count=len(replay_events),
+                    limit=limit,
+                ):
+                    resync_event = {
+                        "type": "resync_required",
+                        "reason": "replay_window_exceeded",
+                        "latest_revision": latest_revision,
+                        "ts": int(time.time() * 1000),
+                    }
         except Exception:
             resync_event = {
                 "type": "resync_required",
