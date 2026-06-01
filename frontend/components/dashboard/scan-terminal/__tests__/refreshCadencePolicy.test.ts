@@ -73,6 +73,22 @@ export async function runTests() {
     "selected city chart should consume SSE patches and use a 2-minute no-patch fallback",
   );
   assert(
+    chartSource.includes("preloadTemperatureChartCanvas"),
+    "terminal chart canvas should expose a preload hook for first-paint optimization",
+  );
+  assert(
+    chartSource.includes('from "@/components/dashboard/scan-terminal/TemperatureChartCanvas"') &&
+      !chartSource.includes("next/dynamic") &&
+      !chartSource.includes("TemperatureChartCanvasFallback"),
+    "terminal chart canvas should be loaded with the terminal route instead of showing a second-stage dynamic chunk fallback",
+  );
+  assert(
+    dashboardSource.includes("preloadTemperatureChartCanvas") &&
+      dashboardSource.includes("void preloadTemperatureChartCanvas()") &&
+      dashboardSource.includes('activeNavKey !== "thresholds"'),
+    "terminal screen should preload the chart chunk once access is confirmed on the chart tab",
+  );
+  assert(
     chartSource.includes("fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })") &&
       chartSource.includes("setHourly(data)"),
     "visible chart fallback must refresh the full city detail payload at the current chart resolution when SSE patches stop",
@@ -102,6 +118,11 @@ export async function runTests() {
       chartLogicSource.includes("flushCityDetailBatch") &&
       chartLogicSource.includes("primeCityDetailCache"),
     "visible terminal chart detail fetches should be coalesced into one batch request and prime the shared chart cache",
+  );
+  assert(
+    chartLogicSource.includes('scope: "chart"') &&
+      chartLogicSource.includes("params.toString()"),
+    "terminal chart detail batches should request the slim chart scope instead of the full city detail payload",
   );
   assert(
     chartLogicSource.includes("CITY_DETAIL_BATCH_WINDOW_MS = 100"),

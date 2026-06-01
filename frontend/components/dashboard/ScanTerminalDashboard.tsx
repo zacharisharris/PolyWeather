@@ -46,7 +46,11 @@ import { scanRootClass } from "@/components/dashboard/scan-root-styles";
 import { useRelativeTime } from "@/hooks/useRelativeTime";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { UsageGuideDashboard } from "@/components/dashboard/scan-terminal/UsageGuideDashboard";
-import { LiveTemperatureThresholdChart, clearCityDetailCache } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
+import {
+  LiveTemperatureThresholdChart,
+  clearCityDetailCache,
+  preloadTemperatureChartCanvas,
+} from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
 import { KoyfinRowsTable } from "@/components/dashboard/scan-terminal/KoyfinRowsTable";
 import { rowName, pct, money, temp, edgeClass } from "@/components/dashboard/scan-terminal/utils";
 import { CitySelectorDropdown } from "@/components/dashboard/scan-terminal/CitySelectorDropdown";
@@ -62,6 +66,8 @@ import {
 import {
   cityListItemsToScanRows,
   mergeScanRowsWithCityFallbackRows,
+  readCachedCityList,
+  writeCachedCityList,
 } from "@/components/dashboard/scan-terminal/city-fallback-rows";
 import { markAnalyticsOnce, trackAppEvent } from "@/lib/app-analytics";
 import { STATIC_CITY_LIST } from "@/lib/static-cities";
@@ -427,6 +433,11 @@ function PolyWeatherTerminal({
   const [navExpanded, setNavExpanded] = useState(false);
   const [activeNavKey, setActiveNavKey] = useState<string>("thresholds");
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (activeNavKey !== "thresholds") return;
+    void preloadTemperatureChartCanvas();
+  }, [activeNavKey]);
 
   useEffect(() => {
     const fetchOnline = () => {
@@ -1255,7 +1266,7 @@ function ScanTerminalScreen() {
   }, [refreshScanTerminalManually]);
 
   const [cityFallbackRows, setCityFallbackRows] = useState<ScanOpportunityRow[]>(() =>
-    cityListItemsToScanRows(STATIC_CITY_LIST),
+    cityListItemsToScanRows(readCachedCityList() || STATIC_CITY_LIST),
   );
   const rows = useMemo(
     () => {
@@ -1271,9 +1282,15 @@ function ScanTerminalScreen() {
   useEffect(() => {
     if (!isPro || typeof fetch !== "function") return;
     if (fallbackFetchedRef.current) return;
+    const cachedCities = readCachedCityList();
+    if (cachedCities) {
+      fallbackFetchedRef.current = true;
+      setCityFallbackRows(cityListItemsToScanRows(cachedCities));
+      return;
+    }
     const controller = new AbortController();
     fetch("/api/cities", {
-      cache: "no-store",
+      cache: "default",
       headers: { Accept: "application/json" },
       signal: controller.signal,
     })
@@ -1284,6 +1301,7 @@ function ScanTerminalScreen() {
       .then((payload) => {
         if (!payload || !Array.isArray(payload.cities)) return;
         fallbackFetchedRef.current = true;
+        writeCachedCityList(payload.cities);
         setCityFallbackRows(cityListItemsToScanRows(payload.cities));
       })
       .catch(() => {});
