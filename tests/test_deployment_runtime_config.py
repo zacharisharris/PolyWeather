@@ -114,6 +114,32 @@ def test_deploy_script_retries_startup_smoke_checks():
     assert 'smoke_check "frontend" "https://www.polyweather.top/" 15 3 5' in script
 
 
+def test_deploy_script_retries_compose_recreate_races():
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "compose_up_retry()" in script
+    assert "removal of container .* is already in progress" in script
+    assert 'compose_up_retry "backend services" -d --no-deps polyweather_web polyweather' in script
+    assert 'compose_up_retry "frontend" -d --no-deps polyweather_frontend' in script
+
+
+def test_deploy_token_is_passed_over_stdin_not_process_args():
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'NEW_TAG="${1:-latest}"' in script
+    assert 'GHCR_PAT="$1"' not in script
+    assert "read -r GHCR_PAT" in script
+    assert 'printf \'%s\' "$GHCR_PAT" | docker login' in script
+
+    assert "GHCR_PAT: ${{ secrets.GHCR_PAT }}" in workflow
+    assert 'printf \'%s\\n\' "$GHCR_PAT" | ssh' in workflow
+    assert "bash /tmp/deploy.sh '${{ github.sha }}'" in workflow
+    assert "bash /tmp/deploy.sh '${{ secrets.GHCR_PAT }}'" not in workflow
+
+
 def test_docker_compose_keeps_polyweather_ports_on_loopback():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
