@@ -27,12 +27,16 @@ _CITY_FULL_REFRESH_INFLIGHT: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
 _CITY_FULL_STALE_REFRESH_TASKS: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
 _CITY_FULL_REFRESH_LOCK = asyncio.Lock()
 CityDetailPayloadCacheKey = Tuple[str, str, str, str, str, int]
+CityChartDetailPayloadCacheKey = Tuple[str, str, str, int]
 CityDetailBatchResponseCacheKey = Tuple[Tuple[str, ...], bool, str, str, str, str]
 _CITY_DETAIL_PAYLOAD_CACHE: Dict[CityDetailPayloadCacheKey, Dict[str, Any]] = {}
 _CITY_DETAIL_PAYLOAD_CACHE_TS: Dict[CityDetailPayloadCacheKey, float] = {}
 _CITY_DETAIL_PAYLOAD_INFLIGHT: Dict[CityDetailPayloadCacheKey, "asyncio.Task[Dict[str, Any]]"] = {}
 _CITY_DETAIL_PAYLOAD_EPOCH: Dict[str, int] = {}
 _CITY_DETAIL_PAYLOAD_LOCK = asyncio.Lock()
+_CITY_CHART_DETAIL_PAYLOAD_CACHE: Dict[CityChartDetailPayloadCacheKey, Dict[str, Any]] = {}
+_CITY_CHART_DETAIL_PAYLOAD_CACHE_TS: Dict[CityChartDetailPayloadCacheKey, float] = {}
+_CITY_CHART_DETAIL_PAYLOAD_LOCK = asyncio.Lock()
 _CITY_DETAIL_BATCH_RESPONSE_CACHE: Dict[CityDetailBatchResponseCacheKey, Dict[str, Any]] = {}
 _CITY_DETAIL_BATCH_RESPONSE_CACHE_TS: Dict[CityDetailBatchResponseCacheKey, float] = {}
 _CITY_DETAIL_BATCH_RESPONSE_INFLIGHT: Dict[CityDetailBatchResponseCacheKey, "asyncio.Task[Dict[str, Any]]"] = {}
@@ -102,6 +106,11 @@ async def _invalidate_city_detail_payload_cache(city: str) -> None:
         for key in old_keys:
             _CITY_DETAIL_PAYLOAD_CACHE.pop(key, None)
             _CITY_DETAIL_PAYLOAD_CACHE_TS.pop(key, None)
+    async with _CITY_CHART_DETAIL_PAYLOAD_LOCK:
+        old_chart_keys = [key for key in _CITY_CHART_DETAIL_PAYLOAD_CACHE if key[0] == normalized]
+        for key in old_chart_keys:
+            _CITY_CHART_DETAIL_PAYLOAD_CACHE.pop(key, None)
+            _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.pop(key, None)
 
 
 async def _refresh_city_full_data(city: str, force_refresh: bool) -> Dict[str, Any]:
@@ -146,6 +155,24 @@ async def _get_city_full_data(city: str, *, force_refresh: bool) -> Dict[str, An
     return await _refresh_city_full_data(city, False)
 
 
+async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, Any]:
+    if force_refresh:
+        return await _get_city_full_data(city, force_refresh=True)
+
+    cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "full", city)
+    if cached_entry:
+        payload = cached_entry.get("payload") or {}
+        if payload:
+            if not legacy_routes._city_cache_is_fresh(cached_entry, legacy_routes.CITY_FULL_CACHE_TTL_SEC):
+                _start_city_full_stale_refresh(city)
+            return await _overlay_cached_wunderground(city, payload)
+
+    return {
+        "name": city,
+        "display_name": str((legacy_routes.CITY_REGISTRY.get(city, {}) or {}).get("display_name") or city.title()),
+    }
+
+
 def _city_detail_payload_cache_key(
     data: Dict[str, Any],
     market_slug: Optional[str],
@@ -166,6 +193,27 @@ def _city_detail_payload_cache_key(
         str(resolution or "10m"),
         str(market_slug or ""),
         str(target_date or ""),
+        fingerprint,
+        generation,
+    )
+
+
+def _city_chart_detail_payload_cache_key(
+    data: Dict[str, Any],
+    resolution: Optional[str],
+) -> CityChartDetailPayloadCacheKey:
+    city = str(data.get("city") or data.get("name") or "").strip().lower()
+    fingerprint = str(
+        data.get("updated_at_ts")
+        or data.get("updated_at")
+        or data.get("local_time")
+        or data.get("local_date")
+        or id(data)
+    )
+    generation = _CITY_DETAIL_PAYLOAD_EPOCH.get(city, 0)
+    return (
+        city,
+        str(resolution or "10m"),
         fingerprint,
         generation,
     )
@@ -226,6 +274,47 @@ async def _build_city_detail_payload_cached(
                 _CITY_DETAIL_PAYLOAD_CACHE.pop(old_key, None)
                 _CITY_DETAIL_PAYLOAD_CACHE_TS.pop(old_key, None)
     return payload
+
+
+async def _build_city_chart_detail_payload(
+    data: Dict[str, Any],
+    resolution: Optional[str],
+) -> Dict[str, Any]:
+    ttl = _city_detail_payload_cache_ttl()
+    if ttl <= 0:
+        return await run_in_threadpool(
+            legacy_routes._build_city_chart_detail_payload,
+            data,
+            resolution,
+        )
+
+    key = _city_chart_detail_payload_cache_key(data, resolution)
+    now_ts = time.time()
+    async with _CITY_CHART_DETAIL_PAYLOAD_LOCK:
+        cached = _CITY_CHART_DETAIL_PAYLOAD_CACHE.get(key)
+        cached_ts = _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.get(key, 0.0)
+        if cached is not None and now_ts - cached_ts < ttl:
+            return cached
+
+    payload = await run_in_threadpool(
+        legacy_routes._build_city_chart_detail_payload,
+        data,
+        resolution,
+    )
+
+    async with _CITY_CHART_DETAIL_PAYLOAD_LOCK:
+        _CITY_CHART_DETAIL_PAYLOAD_CACHE[key] = payload
+        _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS[key] = time.time()
+        if len(_CITY_CHART_DETAIL_PAYLOAD_CACHE) > 256:
+            oldest_keys = sorted(
+                _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS,
+                key=lambda item: _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.get(item, 0.0),
+            )[:64]
+            for old_key in oldest_keys:
+                _CITY_CHART_DETAIL_PAYLOAD_CACHE.pop(old_key, None)
+                _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.pop(old_key, None)
+    return payload
+
 
 
 def _default_deb_recent() -> Dict[str, object]:
@@ -577,6 +666,21 @@ async def _build_city_detail_batch_item_async(
     detail_scope: str = "full",
     timing_recorder: Optional[ServerTimingRecorder] = None,
 ) -> Tuple[str, Dict[str, Any]]:
+    if detail_scope == "chart":
+        if timing_recorder is not None:
+            data = await timing_recorder.measure_async(
+                f"chart_data_{city}",
+                lambda: _get_city_chart_data(city, force_refresh=force_refresh),
+            )
+            detail = await timing_recorder.measure_async(
+                f"chart_payload_{city}",
+                lambda: _build_city_chart_detail_payload(data, resolution),
+            )
+        else:
+            data = await _get_city_chart_data(city, force_refresh=force_refresh)
+            detail = await _build_city_chart_detail_payload(data, resolution)
+        return city, detail
+
     if timing_recorder is not None:
         data = await timing_recorder.measure_async(
             f"full_data_{city}",
@@ -613,11 +717,11 @@ def _city_detail_batch_concurrency() -> int:
 def _city_detail_batch_partial_timeout_seconds() -> Optional[float]:
     try:
         timeout_ms = int(
-            os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", "8500")
-            or "8500"
+            os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", "6000")
+            or "6000"
         )
     except ValueError:
-        timeout_ms = 8500
+        timeout_ms = 6000
     if timeout_ms <= 0:
         return None
     return max(0.001, min(60.0, timeout_ms / 1000.0))

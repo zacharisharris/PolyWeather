@@ -31,6 +31,27 @@ def test_healthz_returns_ok_shape():
     assert 'cities_count' in payload
 
 
+def test_healthz_keeps_liveness_200_when_db_health_is_degraded(monkeypatch):
+    from web.services import system_api
+
+    monkeypatch.setattr(
+        system_api,
+        "build_health_payload",
+        lambda: {
+            "status": "degraded",
+            "time_utc": "2026-05-30T00:00:00+00:00",
+            "db": {"ok": False, "error": "database is locked"},
+            "state_storage_mode": "sqlite",
+            "cities_count": 50,
+        },
+    )
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+
+
 def test_system_status_returns_summary_shape():
     response = client.get('/api/system/status')
     assert response.status_code == 200
@@ -578,6 +599,84 @@ def test_ops_payment_incidents_expose_top_level_reason_and_filters_resolved(monk
     assert incident["resolved"] is False
 
 
+def test_ops_payment_incidents_group_duplicate_failures(monkeypatch):
+    from src.database.db_manager import DBManager
+
+    older = "2026-05-25T12:26:44"
+    newer = "2026-05-25T12:29:51"
+
+    monkeypatch.setattr(ops_api.legacy_routes, "_require_ops_admin", lambda request: {"email": "ops@example.com"})
+    monkeypatch.setattr(
+        DBManager,
+        "list_payment_audit_events",
+        lambda self, limit=50, event_type=None: [
+            {
+                "id": 275751,
+                "event_type": "payment_intent_failed",
+                "created_at": newer,
+                "payload": {
+                    "reason": "event_mismatch",
+                    "detail": "OrderPaid event mismatch",
+                    "intent_id": "intent-1",
+                    "user_id": "user-1",
+                    "tx_hash": "0x" + "1" * 64,
+                },
+            },
+            {
+                "id": 275730,
+                "event_type": "payment_intent_failed",
+                "created_at": older,
+                "payload": {
+                    "reason": "event_mismatch",
+                    "detail": "OrderPaid event mismatch",
+                    "intent_id": "intent-1",
+                    "user_id": "user-1",
+                    "tx_hash": "0x" + "1" * 64,
+                },
+            },
+        ],
+    )
+
+    payload = ops_api.list_ops_payment_incidents(None, limit=20)
+
+    assert payload["total"] == 1
+    assert payload["raw_total"] == 2
+    incident = payload["incidents"][0]
+    assert incident["id"] == 275751
+    assert incident["occurrence_count"] == 2
+    assert incident["event_ids"] == [275751, 275730]
+    assert incident["first_seen_at"] == older
+    assert incident["last_seen_at"] == newer
+
+
+def test_ops_resolve_payment_incident_marks_duplicate_group(monkeypatch):
+    from src.database.db_manager import DBManager
+
+    called = {}
+
+    monkeypatch.setattr(ops_api.legacy_routes, "_require_ops_admin", lambda request: {"email": "ops@example.com"})
+
+    def mark_related(self, event_id, resolved_by):
+        called["event_id"] = event_id
+        called["resolved_by"] = resolved_by
+        return [
+            {"id": 275751, "payload": {"resolved_at": "now"}},
+            {"id": 275730, "payload": {"resolved_at": "now"}},
+        ]
+
+    monkeypatch.setattr(
+        DBManager,
+        "mark_related_payment_audit_events_resolved",
+        mark_related,
+        raising=False,
+    )
+
+    payload = ops_api.resolve_ops_payment_incident(None, 275751)
+
+    assert called == {"event_id": 275751, "resolved_by": "ops@example.com"}
+    assert payload["resolved_count"] == 2
+
+
 def test_cities_endpoint_uses_denver_display_name_for_aurora_market():
     response = client.get("/api/cities")
     assert response.status_code == 200
@@ -697,41 +796,45 @@ def test_city_detail_batch_chart_scope_returns_only_chart_fields(monkeypatch):
             assert kind == "full"
             return {
                 "payload": {
-                    "city": city,
+                    "name": city,
+                    "display_name": city.title(),
+                    "local_date": "2026-05-30",
+                    "local_time": "15:20",
+                    "temp_symbol": "°C",
+                    "current": {
+                        "temp": 20.0,
+                        "settlement_source": "metar",
+                        "settlement_source_label": "METAR",
+                    },
                     "hourly": {"times": ["2026-05-30T00:00:00Z"], "temps": [20.0]},
+                    "forecast": {
+                        "today_high": 22.0,
+                        "daily": [{"date": "2026-05-30", "max_temp": 22.0}],
+                    },
+                    "multi_model": {
+                        "hourly_times": ["15:00"],
+                        "hourly_forecasts": {"ECMWF": [21.0]},
+                    },
+                    "deb": {"prediction": 21.5, "hourly_path": {"times": ["15:00"], "temps": [21.5]}},
+                    "probabilities": {"mu": 21.4, "distribution": [{"value": 21, "probability": 0.4}]},
+                    "runway_plate_history": {"01/19": [{"time": "2026-05-30T15:20:00Z", "temp": 20.1}]},
+                    "airport_current": {"temp": 20.0},
+                    "airport_primary": {"temp": 20.0},
+                    "airport_primary_today_obs": [["15:20", 20.0]],
+                    "wunderground_current": {"max_so_far": 20.5},
+                    "settlement_station": {"settlement_station_label": "Station"},
+                    "amos": {"runway_obs": {"point_temperatures": []}},
+                    "metar_today_obs": [{"time": "15:20", "temp": 20.0}],
+                    "settlement_today_obs": [],
+                    "dynamic_commentary": {"summary": "large text"},
+                    "official_nearby": [{"name": "unused"}],
+                    "taf": {"raw": "unused"},
+                    "ai_analysis": "unused",
                 }
             }
 
-    def build_detail(data, market_slug, target_date, resolution):
-        return {
-            "city": data["city"],
-            "overview": {
-                "local_date": "2026-05-30",
-                "local_time": "15:20",
-                "deb_prediction": 21.5,
-                "airport_primary_today_obs": [["15:20", 20.0]],
-            },
-            "timeseries": {
-                "hourly": data["hourly"],
-                "metar_today_obs": [{"time": "15:20", "temp": 20.0}],
-                "settlement_today_obs": [],
-                "forecast_daily": [{"date": "2026-05-30", "max_temp": 22.0}],
-            },
-            "models_hourly": {"times": ["15:00"], "curves": {"ECMWF": [21.0]}},
-            "deb": {"prediction": 21.5, "hourly_path": {"times": ["15:00"], "temps": [21.5]}},
-            "probabilities": {"mu": 21.4, "distribution": [{"value": 21, "probability": 0.4}]},
-            "runway_plate_history": {"01/19": [{"timestamp": "15:20", "temp_c": 20.1}]},
-            "runway_band_history": [{"time": "2026-05-30T15:20:00Z", "high_temp": 20.1}],
-            "airport_current": {"temp": 20.0},
-            "airport_primary": {"temp": 20.0},
-            "wunderground_current": {"max_so_far": 20.5},
-            "settlement_station": {"settlement_station_label": "Station"},
-            "amos": {"runway_obs": {"point_temperatures": []}},
-            "dynamic_commentary": {"summary": "large text"},
-            "official_nearby": [{"name": "unused"}],
-            "taf": {"raw": "unused"},
-            "ai_analysis": "unused",
-        }
+    def build_detail(_data, _market_slug, _target_date, _resolution):
+        raise AssertionError("chart scope must not build the full city detail payload")
 
     monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
     monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
@@ -748,6 +851,53 @@ def test_city_detail_batch_chart_scope_returns_only_chart_fields(monkeypatch):
     assert "official_nearby" not in detail
     assert "taf" not in detail
     assert "ai_analysis" not in detail
+
+
+def test_chart_detail_payload_uses_threadpool_and_reuses_short_cache(monkeypatch):
+    import asyncio
+
+    build_calls = 0
+    threadpool_calls = 0
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        nonlocal threadpool_calls
+        threadpool_calls += 1
+        await asyncio.sleep(0)
+        return fn(*args, **kwargs)
+
+    def build_chart_detail(data, resolution):
+        nonlocal build_calls
+        build_calls += 1
+        return {
+            "city": data["city"],
+            "resolution": resolution,
+            "hourly": data["hourly"],
+        }
+
+    city_api._CITY_CHART_DETAIL_PAYLOAD_CACHE.clear()
+    city_api._CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.clear()
+    monkeypatch.setenv("POLYWEATHER_CITY_DETAIL_PAYLOAD_CACHE_TTL_SEC", "20")
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_build_city_chart_detail_payload", build_chart_detail)
+
+    data = {
+        "city": "paris",
+        "updated_at": "2026-05-30T15:00:00Z",
+        "hourly": {"times": ["2026-05-30T15:00:00Z"], "temps": [20.0]},
+    }
+
+    first = asyncio.run(city_api._build_city_chart_detail_payload(data, "10m"))
+    second = asyncio.run(city_api._build_city_chart_detail_payload(data, "10m"))
+
+    assert first == second
+    assert first["resolution"] == "10m"
+    assert build_calls == 1
+    assert threadpool_calls == 1
+
+
+def test_city_detail_batch_partial_timeout_default_stays_below_proxy_budget(monkeypatch):
+    monkeypatch.delenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", raising=False)
+    assert city_api._city_detail_batch_partial_timeout_seconds() == 6.0
 
 
 def test_city_detail_batch_endpoint_limits_backend_concurrency(monkeypatch):
@@ -1139,6 +1289,47 @@ def test_payment_runtime_endpoint_returns_shape():
     assert 'rpc' in payload
     assert 'event_loop_state' in payload
     assert 'recent_audit_events' in payload
+
+
+def test_payment_runtime_endpoint_returns_ops_summary_fields(monkeypatch):
+    from src.database.db_manager import DBManager
+
+    monkeypatch.setattr(
+        routes.PAYMENT_CHECKOUT,
+        "get_config_payload",
+        lambda: {
+            "enabled": True,
+            "chain_id": 137,
+            "receiver_contract": "0x351a1bca5f49dd0046a7cf0bafa7e12fa6441c3a",
+        },
+    )
+    monkeypatch.setattr(
+        routes.PAYMENT_CHECKOUT,
+        "get_rpc_runtime_status",
+        lambda: {"connected": True, "chain_id": 137},
+    )
+    monkeypatch.setattr(
+        DBManager,
+        "get_payment_runtime_state",
+        lambda self, key: {"last_scanned_block": 123456},
+    )
+    monkeypatch.setattr(
+        DBManager,
+        "list_payment_audit_events",
+        lambda self, limit=20, event_type=None: [
+            {"id": 1, "event_type": "event_loop_cycle", "payload": {}, "created_at": "now"},
+            {"id": 2, "event_type": "payment_intent_failed", "payload": {}, "created_at": "now"},
+        ],
+    )
+
+    response = client.get("/api/payments/runtime")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["chain_id"] == 137
+    assert payload["receiver_contract"] == "0x351a1bca5f49dd0046a7cf0bafa7e12fa6441c3a"
+    assert payload["last_scanned_block"] == 123456
+    assert payload["audit_events_count"] == 2
 
 
 def test_payment_config_does_not_require_entitlement(monkeypatch):

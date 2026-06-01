@@ -15,7 +15,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { CityListItem, ProAccessState, ScanOpportunityRow } from "@/lib/dashboard-types";
 import { getInitialLocaleFromNavigator } from "@/lib/i18n";
 import { isBrowserLocalFullAccess } from "@/lib/local-dev-access";
@@ -87,6 +87,15 @@ const TrainingDashboard = dynamic(
 );
 
 const ONLINE_USERS_REFRESH_MS = 5 * 60_000;
+const TERMINAL_NAV_ITEMS = [
+  { key: "thresholds", Icon: Activity, labelEn: "Decision", labelZh: "天气决策" },
+  { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
+  { key: "guide", Icon: BookOpenCheck, labelEn: "Guide", labelZh: "使用指南" },
+] as const;
+const AUTH_PROFILE_REQUEST_TIMEOUT_MS = 4500;
+const AUTH_DECISION_RECOVERY_MS = 10_000;
+const ACTIVE_ACCESS_CACHE_KEY = "polyweather_terminal_active_access_v1";
+const ACTIVE_ACCESS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 function createEmptyAccess(loading = true): ProAccessState {
   return {
@@ -116,6 +125,67 @@ function createLocalAccess(): ProAccessState {
     points: 999_999,
     error: null,
   };
+}
+
+function isFutureAccessExpiry(value: string | null | undefined, now = Date.now()) {
+  if (!value) return true;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) && ts > now;
+}
+
+function readCachedActiveAccess(now = Date.now()): ProAccessState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_ACCESS_CACHE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    const access = cached?.access as Partial<ProAccessState> | undefined;
+    const ts = Number(cached?.ts || 0);
+    if (!access?.authenticated || !access.subscriptionActive) return null;
+    if (!ts || now - ts < 0 || now - ts > ACTIVE_ACCESS_CACHE_TTL_MS) return null;
+    if (!isFutureAccessExpiry(access.subscriptionTotalExpiresAt || access.subscriptionExpiresAt, now)) {
+      return null;
+    }
+    return {
+      loading: false,
+      authenticated: true,
+      userId: access.userId ?? null,
+      subscriptionActive: true,
+      subscriptionPlanCode: access.subscriptionPlanCode ?? null,
+      subscriptionExpiresAt: access.subscriptionExpiresAt ?? null,
+      subscriptionTotalExpiresAt:
+        access.subscriptionTotalExpiresAt ?? access.subscriptionExpiresAt ?? null,
+      subscriptionQueuedDays: Number(access.subscriptionQueuedDays ?? 0),
+      points: Number(access.points ?? 0),
+      error: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedActiveAccess(access: ProAccessState) {
+  if (typeof window === "undefined") return;
+  if (!access.authenticated || !access.subscriptionActive) return;
+  if (!isFutureAccessExpiry(access.subscriptionTotalExpiresAt || access.subscriptionExpiresAt)) return;
+  try {
+    window.localStorage.setItem(
+      ACTIVE_ACCESS_CACHE_KEY,
+      JSON.stringify({
+        ts: Date.now(),
+        access: {
+          authenticated: access.authenticated,
+          userId: access.userId,
+          subscriptionActive: access.subscriptionActive,
+          subscriptionPlanCode: access.subscriptionPlanCode,
+          subscriptionExpiresAt: access.subscriptionExpiresAt,
+          subscriptionTotalExpiresAt: access.subscriptionTotalExpiresAt,
+          subscriptionQueuedDays: access.subscriptionQueuedDays,
+          points: access.points,
+        },
+      }),
+    );
+  } catch {}
 }
 
 function createTransientAccess(error: unknown): ProAccessState {
@@ -368,6 +438,99 @@ function EmptySlotCard({
   );
 }
 
+const TerminalSidebar = memo(function TerminalSidebar({
+  activeNavKey,
+  isEn,
+  onSelectNav,
+}: {
+  activeNavKey: string;
+  isEn: boolean;
+  onSelectNav: (key: string) => void;
+}) {
+  const [navExpanded, setNavExpanded] = useState(false);
+
+  return (
+    <aside
+      className={clsx(
+        "flex shrink-0 flex-col bg-white border-r border-[#d2d9e2] py-3 text-slate-500 transition-colors duration-150",
+        navExpanded ? "w-[172px] items-start px-3" : "w-[52px] items-center gap-2",
+      )}
+    >
+      <div className={clsx(
+        "flex items-center w-full",
+        navExpanded ? "gap-3 mb-3 px-1" : "justify-center mb-2",
+      )}>
+        <Link
+          href="/"
+          className="block h-7 w-7 shrink-0 overflow-hidden rounded transition hover:opacity-90"
+          title="PolyWeather"
+        >
+          <img src="/apple-touch-icon.png" alt="PolyWeather" className="h-full w-full object-cover" />
+        </Link>
+        {navExpanded && (
+          <span className="text-sm font-black text-slate-800 tracking-tight truncate">
+            PolyWeather
+          </span>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setNavExpanded((prev) => !prev)}
+        className={clsx(
+          "flex items-center gap-3 transition-colors hover:text-slate-800",
+          navExpanded
+            ? "w-full h-8 px-1 mb-2"
+            : "grid h-9 w-full place-items-center mb-2",
+        )}
+      >
+        {navExpanded ? (
+          <>
+            <ChevronLeft size={14} />
+            <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+              {isEn ? "Collapse" : "收起"}
+            </span>
+          </>
+        ) : (
+          <Menu size={18} />
+        )}
+      </button>
+
+      {TERMINAL_NAV_ITEMS.map(({ key, Icon, labelEn, labelZh }) => {
+        const isActive = activeNavKey === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelectNav(key)}
+            className={clsx(
+              "flex items-center gap-3 transition-colors rounded",
+              navExpanded
+                ? "w-full h-9 px-2 text-left"
+                : "grid h-9 w-full place-items-center border-l-4",
+              isActive
+                ? navExpanded
+                  ? "bg-blue-50 text-blue-600 font-bold"
+                  : "border-blue-500 bg-blue-50/50 text-blue-600"
+                : navExpanded
+                  ? "hover:bg-slate-50 hover:text-slate-900"
+                  : "border-transparent hover:bg-slate-50 hover:text-slate-700",
+            )}
+            title={isEn ? labelEn : labelZh}
+          >
+            <Icon size={16} className="shrink-0" />
+            {navExpanded && (
+              <span className="text-xs font-semibold whitespace-nowrap">
+                {isEn ? labelEn : labelZh}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </aside>
+  );
+});
+
 function PolyWeatherTerminal({
   generatedText,
   isEn,
@@ -430,9 +593,11 @@ function PolyWeatherTerminal({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [searchInputRef, setSearchQuery]);
-  const [navExpanded, setNavExpanded] = useState(false);
   const [activeNavKey, setActiveNavKey] = useState<string>("thresholds");
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
+  const handleSelectNav = useCallback((key: string) => {
+    setActiveNavKey(key);
+  }, []);
 
   useEffect(() => {
     if (activeNavKey !== "thresholds") return;
@@ -511,12 +676,6 @@ function PolyWeatherTerminal({
       setActiveSearchSlotIndex(null);
     }
   };
-
-  const NAV_ITEMS = [
-    { key: "thresholds", Icon: Activity, labelEn: "Decision", labelZh: "天气决策" },
-    { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
-    { key: "guide", Icon: BookOpenCheck, labelEn: "Guide", labelZh: "使用指南" },
-  ];
 
   useEffect(() => {
     setSelectedCity(null);
@@ -641,87 +800,7 @@ function PolyWeatherTerminal({
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#e9edf3] text-[#202833]">
-      <aside
-        className={clsx(
-          "flex shrink-0 flex-col bg-white border-r border-[#d2d9e2] py-3 text-slate-500 transition-all duration-200",
-          navExpanded ? "w-[172px] items-start px-3" : "w-[52px] items-center gap-2",
-        )}
-      >
-        {/* Logo row */}
-        <div className={clsx(
-          "flex items-center w-full",
-          navExpanded ? "gap-3 mb-3 px-1" : "justify-center mb-2",
-        )}>
-          <Link
-            href="/"
-            className="block h-7 w-7 shrink-0 overflow-hidden rounded transition hover:opacity-90"
-            title="PolyWeather"
-          >
-            <img src="/apple-touch-icon.png" alt="PolyWeather" className="h-full w-full object-cover" />
-          </Link>
-          {navExpanded && (
-            <span className="text-sm font-black text-slate-800 tracking-tight truncate">
-              PolyWeather
-            </span>
-          )}
-        </div>
-
-        {/* Toggle button */}
-        <button
-          type="button"
-          onClick={() => setNavExpanded((prev) => !prev)}
-          className={clsx(
-            "flex items-center gap-3 transition-colors hover:text-slate-800",
-            navExpanded
-              ? "w-full h-8 px-1 mb-2"
-              : "grid h-9 w-full place-items-center mb-2",
-          )}
-        >
-          {navExpanded ? (
-            <>
-              <ChevronLeft size={14} />
-              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
-                {isEn ? "Collapse" : "收起"}
-              </span>
-            </>
-          ) : (
-            <Menu size={18} />
-          )}
-        </button>
-
-        {/* Nav items */}
-        {NAV_ITEMS.map(({ key, Icon, labelEn, labelZh }) => {
-          const isActive = activeNavKey === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => { setActiveNavKey(key); }}
-              className={clsx(
-                "flex items-center gap-3 transition-colors rounded",
-                navExpanded
-                  ? "w-full h-9 px-2 text-left"
-                  : "grid h-9 w-full place-items-center border-l-4",
-                isActive
-                  ? navExpanded
-                    ? "bg-blue-50 text-blue-600 font-bold"
-                    : "border-blue-500 bg-blue-50/50 text-blue-600"
-                  : navExpanded
-                    ? "hover:bg-slate-50 hover:text-slate-900"
-                    : "border-transparent hover:bg-slate-50 hover:text-slate-700",
-              )}
-              title={isEn ? labelEn : labelZh}
-            >
-              <Icon size={16} className="shrink-0" />
-              {navExpanded && (
-                <span className="text-xs font-semibold whitespace-nowrap">
-                  {isEn ? labelEn : labelZh}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </aside>
+      <TerminalSidebar activeNavKey={activeNavKey} isEn={isEn} onSelectNav={handleSelectNav} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#d2d9e2] bg-white px-4 text-slate-800">
@@ -971,6 +1050,73 @@ function PolyWeatherTerminal({
   );
 }
 
+function AuthSyncRecoveryScreen({
+  isEn,
+  onRetry,
+  rootClassName,
+  retrying,
+  themeMode,
+  userLocalTime,
+}: {
+  isEn: boolean;
+  onRetry: () => void;
+  rootClassName: string;
+  retrying: boolean;
+  themeMode: "dark" | "light";
+  userLocalTime: string;
+}) {
+  return (
+    <div className={rootClassName}>
+      <div className={clsx("flex h-screen w-full bg-[#e9edf3] text-slate-950", themeMode === "light" && "light")}>
+        <aside className="w-[52px] bg-[#171d24]" />
+        <main className="flex flex-1 flex-col">
+          <header className="flex h-[52px] items-center justify-between border-b border-slate-200 bg-white px-4">
+            <Link href="/" className="flex items-center gap-2 hover:opacity-90">
+              <img src="/logo.png" alt="PolyWeather" className="h-7 w-auto object-contain" />
+              <span className="text-sm font-semibold tracking-tight text-slate-900">Terminal</span>
+            </Link>
+            <div className="font-mono text-sm text-slate-500">{userLocalTime}</div>
+          </header>
+          <section className="grid flex-1 place-items-center p-6">
+            <div className="w-full max-w-md rounded-[6px] border border-amber-200 bg-white p-6 shadow-sm">
+              <div className="mb-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">
+                {isEn ? "Access sync timeout" : "权限同步超时"}
+              </div>
+              <h1 className="text-xl font-black text-slate-950">
+                {isEn ? "We could not confirm your subscription yet" : "暂时未能确认你的订阅状态"}
+              </h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600">
+                {isEn
+                  ? "The session or entitlement service is taking too long. Retry access sync; if you just paid, wait a few seconds and try again."
+                  : "当前会话或会员服务响应过慢。请先重新同步权限；如果刚完成支付，等待几秒后再试。"}
+              </p>
+              <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  disabled={retrying}
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-[4px] bg-blue-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-blue-700 disabled:cursor-wait disabled:opacity-70"
+                >
+                  {retrying && (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent" />
+                  )}
+                  {isEn ? "Retry access sync" : "重新同步权限"}
+                </button>
+                <Link
+                  href="/account"
+                  className="inline-flex flex-1 items-center justify-center rounded-[4px] border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                >
+                  {isEn ? "Open account" : "打开账户页"}
+                </Link>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 function ScanTerminalScreen() {
   const [proAccess, setProAccess] = useState<ProAccessState>(() =>
     createEmptyAccess(true),
@@ -984,17 +1130,26 @@ function ScanTerminalScreen() {
       const headers: Record<string, string> = { Accept: "application/json" };
       const token = String(accessToken || "").trim();
       if (token) headers.Authorization = `Bearer ${token}`;
-      const response = await fetch(
-        options?.preferSnapshot
-          ? "/api/auth/me?prefer_snapshot=1"
-          : "/api/auth/me",
-        {
-          cache: "no-store",
-          headers,
-        },
-      );
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json() as Promise<AuthProfilePayload>;
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller
+        ? globalThis.setTimeout(() => controller.abort(), AUTH_PROFILE_REQUEST_TIMEOUT_MS)
+        : null;
+      try {
+        const response = await fetch(
+          options?.preferSnapshot
+            ? "/api/auth/me?prefer_snapshot=1"
+            : "/api/auth/me",
+          {
+            cache: "no-store",
+            headers,
+            signal: controller?.signal,
+          },
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<AuthProfilePayload>;
+      } finally {
+        if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+      }
     },
     [],
   );
@@ -1031,6 +1186,7 @@ function ScanTerminalScreen() {
       hasSupabasePublicEnv: supabaseEnabled,
       loadAuthProfile: (accessToken) =>
         loadAuthProfile(accessToken, { preferSnapshot: false }),
+      timeoutMs: AUTH_PROFILE_REQUEST_TIMEOUT_MS + 2000,
     });
     setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
   }, [loadAuthProfile]);
@@ -1093,13 +1249,17 @@ function ScanTerminalScreen() {
     setLocale((prev) => (prev === "zh-CN" ? "en-US" : "zh-CN"));
   const [hydrated, setHydrated] = useState(false);
   const [localFullAccess, setLocalFullAccess] = useState(false);
+  const [authWaitExpired, setAuthWaitExpired] = useState(false);
+  const [authRetrying, setAuthRetrying] = useState(false);
   const canUseLocalFullAccess = hydrated && localFullAccess;
   const isAuthenticated =
     hydrated && (proAccess.authenticated || canUseLocalFullAccess);
   const isPro =
     hydrated && (proAccess.subscriptionActive || canUseLocalFullAccess);
   const accessDecisionPending =
-    !hydrated || (proAccess.loading && !canUseLocalFullAccess);
+    !hydrated || (proAccess.loading && !canUseLocalFullAccess && !authWaitExpired);
+  const authSyncRecoveryNeeded =
+    hydrated && proAccess.loading && !canUseLocalFullAccess && authWaitExpired;
   const shouldShowPaywall = !accessDecisionPending && (!isAuthenticated || !isPro);
   const userLocalTime = useUserLocalClock();
   const { themeMode } = useScanTerminalTheme();
@@ -1139,6 +1299,10 @@ function ScanTerminalScreen() {
         cancelled = true;
       };
     }
+    const cachedActiveAccess = readCachedActiveAccess();
+    if (cachedActiveAccess) {
+      setProAccess(cachedActiveAccess);
+    }
     if (typeof fetch !== "function") {
       setProAccess(createEmptyAccess(false));
       return () => {
@@ -1153,6 +1317,7 @@ function ScanTerminalScreen() {
           : Promise.resolve({ data: { session: null } }),
       hasSupabasePublicEnv: supabaseEnabled,
       loadAuthProfile,
+      timeoutMs: AUTH_PROFILE_REQUEST_TIMEOUT_MS + 2000,
     })
       .then((payload) => {
         if (cancelled) return;
@@ -1177,6 +1342,23 @@ function ScanTerminalScreen() {
   }, [loadAuthProfile, refreshLiveAuthProfile]);
 
   useEffect(() => {
+    if (!hydrated || !proAccess.loading || canUseLocalFullAccess) {
+      setAuthWaitExpired(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setAuthWaitExpired(true);
+    }, AUTH_DECISION_RECOVERY_MS);
+    return () => window.clearTimeout(timer);
+  }, [canUseLocalFullAccess, hydrated, proAccess.loading]);
+
+  useEffect(() => {
+    if (hydrated && proAccess.authenticated && proAccess.subscriptionActive) {
+      writeCachedActiveAccess(proAccess);
+    }
+  }, [hydrated, proAccess]);
+
+  useEffect(() => {
     if (
       !hydrated ||
       canUseLocalFullAccess ||
@@ -1199,6 +1381,7 @@ function ScanTerminalScreen() {
               : Promise.resolve({ data: { session: null } }),
           hasSupabasePublicEnv: supabaseEnabled,
           loadAuthProfile,
+          timeoutMs: AUTH_PROFILE_REQUEST_TIMEOUT_MS + 2000,
         });
         if (cancelled) return;
         setProAccess((prev) => mergeAccessStateWithAuthPayload(prev, payload));
@@ -1264,6 +1447,17 @@ function ScanTerminalScreen() {
     clearCityDetailCache();
     refreshScanTerminalManually();
   }, [refreshScanTerminalManually]);
+  const handleRetryAuthSync = useCallback(() => {
+    setAuthRetrying(true);
+    setAuthWaitExpired(false);
+    void refreshLiveAuthProfile()
+      .catch((error) => {
+        setProAccess((prev) => ({ ...prev, error: String(error) }));
+      })
+      .finally(() => {
+        setAuthRetrying(false);
+      });
+  }, [refreshLiveAuthProfile]);
 
   const [cityFallbackRows, setCityFallbackRows] = useState<ScanOpportunityRow[]>(() =>
     cityListItemsToScanRows(readCachedCityList() || STATIC_CITY_LIST),
@@ -1350,6 +1544,19 @@ function ScanTerminalScreen() {
       <ScanTerminalLoadingScreen
         isEn={isEn}
         rootClassName={scanRootClass}
+        themeMode={themeMode}
+        userLocalTime={userLocalTime}
+      />
+    );
+  }
+
+  if (authSyncRecoveryNeeded) {
+    return (
+      <AuthSyncRecoveryScreen
+        isEn={isEn}
+        onRetry={handleRetryAuthSync}
+        rootClassName={scanRootClass}
+        retrying={authRetrying}
         themeMode={themeMode}
         userLocalTime={userLocalTime}
       />
