@@ -70,7 +70,7 @@ def test_scan_terminal_backend_timeout_returns_before_next_proxy_abort():
         ROOT / "web" / "services" / "scan_terminal_config.py"
     ).read_text(encoding="utf-8")
 
-    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "18000"' in route_source
+    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "35000"' in route_source
     assert '"POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC",\n    10,' in config_source
     assert (
         '"POLYWEATHER_SCAN_TERMINAL_PREWARM_PAYLOAD_TIMEOUT_SEC",\n    30,'
@@ -158,6 +158,25 @@ def test_docker_compose_keeps_polyweather_ports_on_loopback():
     assert "127.0.0.1:8000:8000" in compose
     assert "\n    - 3001:3000" not in compose
     assert "\n    - 8000:8000" not in compose
+
+
+def test_frontend_proxy_uses_internal_backend_url_not_public_site():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    frontend_block = compose.split("  polyweather_frontend:", 1)[1].split(
+        "\n  polyweather_web:",
+        1,
+    )[0]
+
+    assert "POLYWEATHER_API_BASE_URL: http://polyweather_web:8000" in frontend_block
+    assert (
+        "POLYWEATHER_API_BASE_URL: ${POLYWEATHER_API_BASE_URL:-http://polyweather_web:8000}"
+        not in frontend_block
+    )
+    assert 'export POLYWEATHER_API_BASE_URL="${POLYWEATHER_FRONTEND_INTERNAL_API_BASE_URL:-http://polyweather_web:8000}"' in script
+    assert script.index("export POLYWEATHER_API_BASE_URL=") < script.rindex(
+        "validate_frontend_api_base_url"
+    )
 
 
 def test_web_container_raises_open_file_limit_for_sse_and_proxy_load():
