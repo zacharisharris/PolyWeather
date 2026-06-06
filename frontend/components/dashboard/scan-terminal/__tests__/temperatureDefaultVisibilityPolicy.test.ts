@@ -9,6 +9,7 @@ import {
   __getVisibleTemperatureSeriesForTest,
   __isTemperatureSeriesVisibleByDefaultForTest,
   __mergePatchIntoHourlyForTest,
+  __selectCompactSecondaryTempForTest,
   __selectDisplayRunwayTempForTest,
 } from "@/components/dashboard/scan-terminal/LiveTemperatureThresholdChart";
 import { __buildTemperatureTooltipRowsForTest } from "@/components/dashboard/scan-terminal/TemperatureTooltipContent";
@@ -976,6 +977,68 @@ export function runTests() {
     "runway header should prefer runway-history current temp even when the latest detail payload lacks runway_obs snapshot",
   );
 
+  const hongKongMetrics = __getObservationDisplayMetricsForTest(
+    {
+      city: "hong kong",
+      local_date: "2026-06-06",
+      local_time: "16:48",
+      tz_offset_seconds: 8 * 60 * 60,
+      current_temp: 30.4,
+      current_max_so_far: 30.4,
+      temp_symbol: "°C",
+    } as any,
+    {
+      localTime: "16:48",
+      times: ["00:00", "12:00", "18:00", "23:00"],
+      temps: [28.0, 31.0, 29.0, 28.0],
+      settlementTodayObs: [
+        { time: "14:00", temp: 30.4 },
+        { time: "16:40", temp: 28.1 },
+      ],
+      airportPrimary: {
+        temp: 28.7,
+        obs_time: "2026-06-06T16:48:00+08:00",
+        source_code: "cowin_obs",
+        source_label: "CoWIN 6087",
+      },
+      airportPrimaryTodayObs: [
+        { time: "16:47", temp: 28.6 },
+        { time: "16:48", temp: 28.7 },
+      ],
+    } as any,
+    null,
+  );
+  assert(
+    hongKongMetrics.currentRunwayTemp === 28.7,
+    "Hong Kong primary compact stat should stay on the latest CoWIN reference-station point",
+  );
+  assert(
+    (hongKongMetrics as any).currentMetarTemp === 28.1,
+    "Hong Kong secondary compact stat should have the latest HKO point separate from the HKO daily high",
+  );
+  assert(
+    hongKongMetrics.observedHighMetar === 30.4,
+    "Hong Kong HKO daily high should still be available for expanded daily-high summaries",
+  );
+  assert(
+    __selectCompactSecondaryTempForTest({
+      isHKO: true,
+      isShenzhen: false,
+      displayMetarTemp: (hongKongMetrics as any).currentMetarTemp,
+      observedHighMetar: hongKongMetrics.observedHighMetar,
+    }) === 28.1,
+    "Hong Kong compact HKO stat should render the latest HKO point, not the HKO daily high",
+  );
+  assert(
+    __selectCompactSecondaryTempForTest({
+      isHKO: false,
+      isShenzhen: false,
+      displayMetarTemp: 72.0,
+      observedHighMetar: 73.9,
+    }) === 73.9,
+    "non-HKO compact secondary stat should keep the existing daily-high behavior",
+  );
+
   const wuhanRunwayChart = __buildTemperatureChartDataForTest(
     {
       city: "wuhan",
@@ -1574,7 +1637,7 @@ export function runTests() {
   const firstBand = bandPoints[0].runway_band;
   assert(Array.isArray(firstBand) && firstBand[0] === 24.0 && firstBand[1] === 26.0, "runway_band tuple values should match input limits");
 
-  // ── Legacy Gaussian probability overlay test ──
+  // ── Legacy Gaussian probability data should not render as a visible chart overlay ──
   const gaussianOverlayChart = __buildTemperatureChartDataForTest(
     {
       city: "toronto",
@@ -1602,14 +1665,7 @@ export function runTests() {
   ) as any;
 
   const gaussianOverlay = gaussianOverlayChart.probabilityOverlay;
-  assert(gaussianOverlay, "legacy Gaussian probabilities should be exposed as a chart overlay");
-  assert(gaussianOverlay.muLine?.value === 27.4, "legacy Gaussian μ should become a reference line");
-  assert(
-    gaussianOverlay.bands.some(
-      (band: any) => band.value === 27 && band.lower === 26.5 && band.upper === 27.5 && band.probability === 0.42,
-    ),
-    "legacy Gaussian buckets should become horizontal probability temperature bands",
-  );
+  assert(gaussianOverlay === null, "legacy Gaussian probabilities should not create visible chart overlays");
   assert(
     !gaussianOverlayChart.series.some((series: any) => String(series.key || "").includes("probability")),
     "legacy Gaussian probability distribution should not be rendered as a time-series line",
