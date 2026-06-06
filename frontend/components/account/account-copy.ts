@@ -15,12 +15,16 @@ export function createAccountCopy(isEn: boolean): Record<string, string> {
       weeklyRewards: isEn ? "Referral Rewards" : "邀请奖励",
       membershipDetails: isEn ? "Membership Details" : "会员权限详情",
       identityStatus: isEn ? "Identity Status" : "身份状态",
+      accountFeedbackTitle: isEn ? "My Feedback" : "我的反馈",
+      accountFeedbackDescription: isEn
+        ? "Recent reports you submitted and their current handling status."
+        : "你最近提交过的反馈及当前处理状态。",
       authMode: isEn ? "Auth Mode" : "鉴权模式",
       weatherEngine: isEn ? "Weather Engine" : "气象引擎",
       intradayAnalysis: isEn ? "Intraday Analysis" : "今日内分析",
       historyFuture: isEn
-        ? "Future-date + Decision Card Analysis"
-        : "未来日期分析 + 城市决策卡",
+        ? "Future-date + Multi-city Chart Monitoring"
+        : "未来日期分析 + 多城市图表巡检",
       smartPush: isEn
         ? "Cross-platform Smart Weather Push"
         : "全平台智能气象查询",

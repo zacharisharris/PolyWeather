@@ -7,6 +7,11 @@ import {
   getAnalyticsClientId,
   getAnalyticsSessionId,
 } from "@/lib/app-analytics";
+import {
+  getSupabaseBrowserClient,
+  hasSupabasePublicEnv,
+} from "@/lib/supabase/client";
+import type { UserFeedbackEntry } from "@/types/ops";
 
 export type FeedbackCategory = "bug" | "data" | "idea" | "payment" | "account" | "other";
 
@@ -48,15 +53,18 @@ export function UserFeedbackModal({
   draft,
   isEn,
   onClose,
+  onSubmitted,
 }: {
   draft: FeedbackDraft | null;
   isEn: boolean;
   onClose: () => void;
+  onSubmitted?: (entry?: UserFeedbackEntry) => void;
 }) {
   const open = Boolean(draft);
   const [category, setCategory] = useState<FeedbackCategory>("bug");
   const [message, setMessage] = useState("");
   const [contact, setContact] = useState("");
+  const [loginEmailContact, setLoginEmailContact] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
@@ -65,9 +73,35 @@ export function UserFeedbackModal({
     if (!open) return;
     setCategory(draft?.category || "bug");
     setMessage("");
+    setContact("");
+    setLoginEmailContact("");
     setError("");
     setSubmitted(false);
   }, [open, draft?.category]);
+
+  useEffect(() => {
+    if (!open || !hasSupabasePublicEnv()) return;
+    let cancelled = false;
+
+    const loadLoginEmail = async () => {
+      try {
+        const {
+          data: { session },
+        } = await getSupabaseBrowserClient().auth.getSession();
+        const email = String(session?.user?.email || "").trim();
+        if (cancelled || !email) return;
+        setLoginEmailContact(email);
+        setContact(email);
+      } catch {
+        // Feedback can still be submitted; the backend will attach auth email when present.
+      }
+    };
+
+    void loadLoginEmail();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const contextPreview = useMemo(() => {
     const context = draft?.context || {};
@@ -103,7 +137,11 @@ export function UserFeedbackModal({
         const detail = (await res.text().catch(() => "")).slice(0, 200);
         throw new Error(detail || `HTTP ${res.status}`);
       }
+      const payload = (await res.json().catch(() => null)) as {
+        feedback?: UserFeedbackEntry;
+      } | null;
       setSubmitted(true);
+      onSubmitted?.(payload?.feedback);
     } catch (err) {
       setError(String(err).slice(0, 220));
     } finally {
@@ -139,8 +177,8 @@ export function UserFeedbackModal({
             </div>
             <p className="mx-auto mt-2 max-w-sm text-xs leading-5 text-slate-500">
               {isEn
-                ? "We saved the report with the current terminal context."
-                : "已附带当前终端上下文保存，后续会在后台统一处理。"}
+                ? "We saved the report with the current terminal context. The bell icon will show handling updates."
+                : "已附带当前终端上下文保存。右上角铃铛会显示后续处理进度。"}
             </p>
             <button
               type="button"
@@ -190,12 +228,20 @@ export function UserFeedbackModal({
 
             <label className="block">
               <span className="text-xs font-bold text-slate-600">
-                {isEn ? "Contact, optional" : "联系方式，可选"}
+                {loginEmailContact
+                  ? isEn ? "Contact (login email)" : "联系方式（登录邮箱）"
+                  : isEn ? "Contact, optional" : "联系方式，可选"}
               </span>
               <input
                 value={contact}
-                onChange={(event) => setContact(event.target.value)}
-                className="mt-1 h-9 w-full rounded border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                onChange={(event) => {
+                  if (!loginEmailContact) setContact(event.target.value);
+                }}
+                readOnly={Boolean(loginEmailContact)}
+                className={clsx(
+                  "mt-1 h-9 w-full rounded border border-slate-200 px-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100",
+                  loginEmailContact ? "bg-slate-50 text-slate-600" : "bg-white",
+                )}
                 placeholder={isEn ? "Email or Telegram" : "邮箱或 Telegram"}
               />
             </label>
