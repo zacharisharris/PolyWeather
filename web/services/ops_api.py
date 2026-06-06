@@ -1218,9 +1218,8 @@ _SENSITIVE_CONFIG_KEYS: dict[str, dict[str, str]] = {
 
 def get_ops_config(request: Request) -> dict[str, Any]:
     _require_ops(request)
-    import os
 
-    configs: list[dict[str, str]] = []
+    configs: list[dict[str, Any]] = []
     for key, desc in _EDITABLE_CONFIG_KEYS.items():
         configs.append(
             {
@@ -1234,14 +1233,18 @@ def get_ops_config(request: Request) -> dict[str, Any]:
 
 def update_ops_config(request: Request, key: str, value: str) -> dict[str, Any]:
     _require_ops(request)
-    import os
 
-    if key not in _EDITABLE_CONFIG_KEYS:
+    normalized_key = str(key or "").strip()
+    if normalized_key not in _EDITABLE_CONFIG_KEYS:
         raise HTTPException(
-            status_code=400, detail=f"config key '{key}' is not editable"
+            status_code=400, detail=f"config key '{normalized_key}' is not editable"
         )
-    os.environ[key] = str(value)
-    return {"key": key, "value": value, "ok": True}
+    os.environ[normalized_key] = str(value)
+    return {
+        "key": normalized_key,
+        "value": value,
+        "ok": True,
+    }
 
 
 def _sensitive_config_payload(key: str) -> dict[str, Any]:
