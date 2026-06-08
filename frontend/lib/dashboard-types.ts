@@ -225,9 +225,17 @@ export interface DebForecast {
   prediction: number | null;
   raw_prediction?: number | null;
   version?: string | null;
+  selected_version?: string | null;
+  guard_reason?: string | null;
   weights_info?: string | null;
   bias_adjustment?: number | null;
   bias_samples?: number | null;
+  quality_tier?: string | null;
+  recommendation?: string | null;
+  recent_hit_rate?: number | null;
+  recent_samples?: number | null;
+  recent_hits?: number | null;
+  recent_mae?: number | null;
   intraday_adjustment?: number | null;
   hourly_path?: DebHourlyPath | null;
   hourly_correction?: Record<string, unknown> | null;
@@ -328,6 +336,12 @@ export interface DailyModelForecast {
   models?: Record<string, number | null>;
   deb?: {
     prediction?: number | null;
+    quality_tier?: string | null;
+    recommendation?: string | null;
+    recent_hit_rate?: number | null;
+    recent_samples?: number | null;
+    recent_hits?: number | null;
+    recent_mae?: number | null;
   };
   probabilities?: ProbabilityBucket[];
   probabilities_all?: ProbabilityBucket[];

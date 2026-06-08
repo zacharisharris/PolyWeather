@@ -1196,17 +1196,29 @@ def _analyze(
     deb_val, deb_weights = None, ""
     deb_raw_val, deb_version = None, None
     deb_bias_adjustment, deb_bias_samples = 0.0, 0
+    deb_selected_version, deb_guard_reason = None, None
     deb_intraday_adjustment = 0.0
     deb_hourly_consensus = None
+    deb_quality = {}
     if current_forecasts:
         deb_result = calculate_deb_prediction(city, current_forecasts)
         if deb_result.get("prediction") is not None:
             deb_val = deb_result.get("prediction")
             deb_raw_val = deb_result.get("raw_prediction")
             deb_version = deb_result.get("version")
+            deb_selected_version = deb_result.get("selected_version")
+            deb_guard_reason = deb_result.get("guard_reason")
             deb_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
             deb_bias_samples = deb_result.get("bias_samples") or 0
             deb_weights = deb_result.get("weights_info") or ""
+            deb_quality = {
+                "quality_tier": deb_result.get("quality_tier"),
+                "recommendation": deb_result.get("recommendation"),
+                "recent_hit_rate": deb_result.get("recent_hit_rate"),
+                "recent_samples": deb_result.get("recent_samples"),
+                "recent_hits": deb_result.get("recent_hits"),
+                "recent_mae": deb_result.get("recent_mae"),
+            }
             deb_hourly_consensus = build_deb_hourly_consensus_path(
                 city=city,
                 hourly_times=mm.get("hourly_times") or [],
@@ -1366,6 +1378,7 @@ def _analyze(
             deb_bias_adjustment = sd.get("deb_bias_adjustment") or 0.0
             deb_bias_samples = sd.get("deb_bias_samples") or 0
             deb_weights = sd.get("deb_weights", "")
+            deb_quality = sd.get("deb_quality") or deb_quality
         if deb_hourly_consensus is None and sd.get("deb_hourly_consensus"):
             deb_hourly_consensus = sd.get("deb_hourly_consensus")
 
@@ -1656,8 +1669,11 @@ def _analyze(
             d_val, d_winfo = deb_val, deb_weights
             d_raw_val = deb_raw_val
             d_version = deb_version
+            d_selected_version = deb_selected_version
+            d_guard_reason = deb_guard_reason
             d_bias_adjustment = deb_bias_adjustment
             d_bias_samples = deb_bias_samples
+            d_quality = dict(deb_quality)
         else:
             day_m = mm_daily_raw.get(d_str, {}).copy()
             if i < len(maxtemps) and maxtemps[i] is not None:
@@ -1674,7 +1690,9 @@ def _analyze(
             
             d_val, d_winfo = None, ""
             d_raw_val, d_version = None, None
+            d_selected_version, d_guard_reason = None, None
             d_bias_adjustment, d_bias_samples = 0.0, 0
+            d_quality = {}
             d_probs = []
             d_probs_all = []
             if day_m:
@@ -1685,9 +1703,19 @@ def _analyze(
                         d_val = d_prediction
                         d_raw_val = deb_result.get("raw_prediction")
                         d_version = deb_result.get("version")
+                        d_selected_version = deb_result.get("selected_version")
+                        d_guard_reason = deb_result.get("guard_reason")
                         d_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
                         d_bias_samples = deb_result.get("bias_samples") or 0
                         d_winfo = deb_result.get("weights_info") or ""
+                        d_quality = {
+                            "quality_tier": deb_result.get("quality_tier"),
+                            "recommendation": deb_result.get("recommendation"),
+                            "recent_hit_rate": deb_result.get("recent_hit_rate"),
+                            "recent_samples": deb_result.get("recent_samples"),
+                            "recent_hits": deb_result.get("recent_hits"),
+                            "recent_mae": deb_result.get("recent_mae"),
+                        }
                         
                         # Calculate future probability based on model divergence
                         m_vals = [v for v in day_m.values() if v is not None]
@@ -1711,9 +1739,12 @@ def _analyze(
                     "prediction": d_val,
                     "raw_prediction": d_raw_val,
                     "version": d_version,
+                    "selected_version": d_selected_version,
+                    "guard_reason": d_guard_reason,
                     "weights_info": d_winfo,
                     "bias_adjustment": d_bias_adjustment,
                     "bias_samples": d_bias_samples,
+                    **d_quality,
                 },
                 "probabilities": d_probs if i > 0 else probabilities, # Use today's real prob for today
                 "probabilities_all": d_probs_all if i > 0 else probabilities_all,
@@ -1880,6 +1911,7 @@ def _analyze(
             "hourly_consensus": deb_hourly_consensus,
             "hourly_path": deb_hourly_path,
             "hourly_correction": (deb_hourly_path or {}).get("correction") if isinstance(deb_hourly_path, dict) else None,
+            **deb_quality,
         },
         "deviation_monitor": deviation_monitor,
         "ensemble": ens_data,
@@ -2201,14 +2233,26 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
     deb_version = None
     deb_bias_adjustment = 0.0
     deb_bias_samples = 0
+    deb_selected_version, deb_guard_reason = None, None
+    deb_quality = {}
     if current_forecasts:
         deb_result = calculate_deb_prediction(city, current_forecasts)
         if deb_result.get("prediction") is not None:
             deb_val = deb_result.get("prediction")
             deb_raw_val = deb_result.get("raw_prediction")
             deb_version = deb_result.get("version")
+            deb_selected_version = deb_result.get("selected_version")
+            deb_guard_reason = deb_result.get("guard_reason")
             deb_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
             deb_bias_samples = deb_result.get("bias_samples") or 0
+            deb_quality = {
+                "quality_tier": deb_result.get("quality_tier"),
+                "recommendation": deb_result.get("recommendation"),
+                "recent_hit_rate": deb_result.get("recent_hit_rate"),
+                "recent_samples": deb_result.get("recent_samples"),
+                "recent_hits": deb_result.get("recent_hits"),
+                "recent_mae": deb_result.get("recent_mae"),
+            }
     if deb_val is None:
         deb_val = om_today
 
@@ -2283,8 +2327,11 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             "prediction": _sf(deb_val),
             "raw_prediction": _sf(deb_raw_val),
             "version": deb_version,
+            "selected_version": deb_selected_version,
+            "guard_reason": deb_guard_reason,
             "bias_adjustment": deb_bias_adjustment,
             "bias_samples": deb_bias_samples,
+            **deb_quality,
         },
         "deviation_monitor": deviation_monitor or {},
         "updated_at": datetime.now(timezone.utc).isoformat(),

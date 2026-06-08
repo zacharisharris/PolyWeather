@@ -448,7 +448,9 @@ def analyze_weather_trend(
     deb_version = None
     deb_bias_adjustment = 0.0
     deb_bias_samples = 0
+    deb_selected_version, deb_guard_reason = None, None
     deb_weights = ""
+    deb_quality = {}
     if city_name and current_forecasts:
         deb_result = calculate_deb_prediction(
             city_name,
@@ -459,9 +461,19 @@ def analyze_weather_trend(
             deb_prediction = deb_result.get("prediction")
             deb_raw_prediction = deb_result.get("raw_prediction")
             deb_version = deb_result.get("version")
+            deb_selected_version = deb_result.get("selected_version")
+            deb_guard_reason = deb_result.get("guard_reason")
             deb_bias_adjustment = deb_result.get("bias_adjustment") or 0.0
             deb_bias_samples = deb_result.get("bias_samples") or 0
             deb_weights = deb_result.get("weights_info") or ""
+            deb_quality = {
+                "quality_tier": deb_result.get("quality_tier"),
+                "recommendation": deb_result.get("recommendation"),
+                "recent_hit_rate": deb_result.get("recent_hit_rate"),
+                "recent_samples": deb_result.get("recent_samples"),
+                "recent_hits": deb_result.get("recent_hits"),
+                "recent_mae": deb_result.get("recent_mae"),
+            }
             insights.insert(
                 0,
                 f"🧬 <b>DEB 融合预测</b>：<b>{deb_prediction}{temp_symbol}</b> ({deb_weights})",
@@ -989,9 +1001,12 @@ def analyze_weather_trend(
         "deb_raw_prediction": deb_raw_prediction,
         "deb_hourly_consensus": deb_hourly_consensus,
         "deb_version": deb_version,
+        "deb_selected_version": deb_selected_version,
+        "deb_guard_reason": deb_guard_reason,
         "deb_bias_adjustment": deb_bias_adjustment,
         "deb_bias_samples": deb_bias_samples,
         "deb_weights": deb_weights,
+        "deb_quality": deb_quality,
         "current_forecasts": current_forecasts,
         "ens_data": ens_data,
         "forecast_miss_deg": forecast_miss_deg,

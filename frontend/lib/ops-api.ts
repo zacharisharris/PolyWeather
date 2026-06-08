@@ -19,6 +19,9 @@ export const opsApi = {
   sourceHealth(limit = 80) {
     return opsFetch<Record<string, unknown>>(`/api/ops/source-health?limit=${limit}`);
   },
+  observationCollectorStatus(limit = 200) {
+    return opsFetch<Record<string, unknown>>(`/api/ops/observation-collector-status?limit=${limit}`);
+  },
   paymentRuntime() {
     return opsFetch<Record<string, unknown>>("/api/payments/runtime");
   },
@@ -154,16 +157,95 @@ export const opsApi = {
           hit_rate: number;
           mae: number;
           total_days: number;
+          hits?: number;
           details_str: string;
+        } | null;
+        deb_recent?: {
+          recent_7d?: {
+            start_date?: string | null;
+            end_date?: string | null;
+            samples?: number;
+            hits?: number;
+            hit_rate?: number | null;
+            mae?: number | null;
+            bias?: number | null;
+            city_count?: number;
+          };
+          recent_14d?: {
+            start_date?: string | null;
+            end_date?: string | null;
+            samples?: number;
+            hits?: number;
+            hit_rate?: number | null;
+            mae?: number | null;
+            bias?: number | null;
+            city_count?: number;
+          };
+          trust_tier?: string;
+          recommendation?: string;
+          bias_direction?: string;
+          reason?: string;
         } | null;
         mu?: {
           mae: number;
           hit_rate: number;
           brier_score: number | null;
           total_days: number;
+          hits?: number;
           details_str: string;
         } | null;
       }>;
+      deb_summary?: {
+        historical?: {
+          city_count?: number;
+          avg_hit_rate?: number | null;
+          weighted_hit_rate?: number | null;
+          avg_mae?: number | null;
+          avg_days_per_city?: number;
+          sample_days?: number;
+          hits?: number;
+        };
+        usable_recent?: {
+          window?: string;
+          city_count?: number;
+          samples?: number;
+          hits?: number;
+          hit_rate?: number | null;
+          avg_mae?: number | null;
+          recommendations?: {
+            primary?: number;
+            supporting?: number;
+          };
+        };
+        recent_7d?: {
+          start_date?: string | null;
+          end_date?: string | null;
+          samples?: number;
+          hits?: number;
+          hit_rate?: number | null;
+          mae?: number | null;
+          bias?: number | null;
+          city_count?: number;
+        };
+        recent_14d?: {
+          start_date?: string | null;
+          end_date?: string | null;
+          samples?: number;
+          hits?: number;
+          hit_rate?: number | null;
+          mae?: number | null;
+          bias?: number | null;
+          city_count?: number;
+        };
+        versions?: Record<string, {
+          version?: string;
+          samples?: number;
+          mae?: number | null;
+          rmse?: number | null;
+          bias?: number | null;
+          bucket_hit_rate?: number | null;
+        }>;
+      };
     }>("/api/ops/training/accuracy");
   },
   telegramAudit() {

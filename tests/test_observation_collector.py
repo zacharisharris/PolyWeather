@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
 import time
 
 
@@ -130,3 +131,195 @@ def test_observation_collector_run_due_once_refreshes_panel_cache():
     assert collector.run_due_once(now_ts=1180.0) == 1
     assert calls == [("qingdao", False), ("qingdao", False)]
     assert refreshed == ["qingdao", "qingdao"]
+
+
+def test_observation_collector_records_source_status_to_runtime_state(tmp_path):
+    from src.database.runtime_state import ObservationCollectorStatusRepository, RuntimeStateDB
+    from web.observation_collector_service import (
+        ObservationCollector,
+        ObservationSourceProfile,
+    )
+
+    class FakeWeather:
+        def _uses_fahrenheit(self, city):
+            return False
+
+        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+            results["amsc_awos"] = {"source": "amsc_awos", "temp_c": 22.8}
+
+    db = RuntimeStateDB(str(tmp_path / "polyweather.db"))
+    status_repo = ObservationCollectorStatusRepository(db)
+    collector = ObservationCollector(
+        weather=FakeWeather(),
+        profiles=[ObservationSourceProfile("amsc_awos", ("beijing",), 180)],
+        status_recorder=status_repo,
+    )
+
+    assert collector.run_due_once(now_ts=1000.0) == 1
+
+    payload = status_repo.load_snapshot(now_ts=1001.0)
+    assert payload["total_entries"] == 1
+    assert payload["status_counts"] == {"ok": 1}
+
+    entry = payload["entries"][0]
+    assert entry["source"] == "amsc_awos"
+    assert entry["city"] == "beijing"
+    assert entry["interval_sec"] == 180
+    assert entry["failure_count"] == 0
+    assert entry["last_error"] is None
+    assert entry["last_success_at"] is not None
+    assert entry["last_failure_at"] is None
+    assert entry["last_latency_ms"] is not None
+    assert entry["next_due_ts"] == 1180.0
+    assert entry["in_cooldown"] is False
+    assert entry["status"] == "ok"
+
+    source = payload["sources"][0]
+    assert source["source"] == "amsc_awos"
+    assert source["city_count"] == 1
+    assert source["failure_count"] == 0
+    assert source["avg_latency_ms"] is not None
+    assert source["status_counts"] == {"ok": 1}
+
+
+def test_observation_collector_records_failure_and_cooldown(tmp_path):
+    from src.database.runtime_state import ObservationCollectorStatusRepository, RuntimeStateDB
+    from web.observation_collector_service import (
+        ObservationCollector,
+        ObservationSourceProfile,
+    )
+
+    class FakeWeather:
+        def _uses_fahrenheit(self, city):
+            return False
+
+        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+            raise RuntimeError("upstream timeout")
+
+    db = RuntimeStateDB(str(tmp_path / "polyweather.db"))
+    status_repo = ObservationCollectorStatusRepository(db)
+    collector = ObservationCollector(
+        weather=FakeWeather(),
+        profiles=[ObservationSourceProfile("amsc_awos", ("seoul",), 180)],
+        status_recorder=status_repo,
+    )
+
+    assert collector.run_due_once(now_ts=2000.0) == 0
+
+    payload = status_repo.load_snapshot(now_ts=2010.0)
+    assert payload["total_entries"] == 1
+    assert payload["status_counts"] == {"cooldown": 1}
+
+    entry = payload["entries"][0]
+    assert entry["source"] == "amsc_awos"
+    assert entry["city"] == "seoul"
+    assert entry["failure_count"] == 1
+    assert entry["last_success_at"] is None
+    assert entry["last_failure_at"] is not None
+    assert entry["last_error"] == "upstream timeout"
+    assert entry["next_due_ts"] == 2180.0
+    assert entry["in_cooldown"] is True
+    assert entry["status"] == "cooldown"
+
+    source = payload["sources"][0]
+    assert source["failure_count"] == 1
+    assert source["cooldown_count"] == 1
+
+
+def test_ops_observation_collector_status_returns_runtime_snapshot(monkeypatch, tmp_path):
+    from src.database.runtime_state import ObservationCollectorStatusRepository, RuntimeStateDB
+    from web.services import ops_api
+
+    db = RuntimeStateDB(str(tmp_path / "polyweather.db"))
+    status_repo = ObservationCollectorStatusRepository(db)
+    now = time.time()
+    status_repo.record_result(
+        source="cowin_obs",
+        city="hong kong",
+        interval_sec=60,
+        due_ts=now,
+        started_ts=now,
+        completed_ts=now + 0.25,
+        ok=True,
+    )
+
+    monkeypatch.setattr(
+        ops_api.legacy_routes,
+        "_require_ops_admin",
+        lambda request: {"email": "ops@example.com"},
+    )
+    monkeypatch.setattr(ops_api, "ObservationCollectorStatusRepository", lambda: status_repo)
+
+    payload = ops_api.get_ops_observation_collector_status(object(), limit=10)
+
+    assert payload["total_entries"] == 1
+    assert payload["entries"][0]["source"] == "cowin_obs"
+    assert payload["entries"][0]["city"] == "hong kong"
+    assert payload["sources"][0]["source"] == "cowin_obs"
+    assert payload["status_counts"] == {"ok": 1}
+
+
+def test_observation_collector_worker_entrypoint_exists():
+    from web import observation_collector_worker
+
+    assert callable(observation_collector_worker.main)
+
+
+def test_ephemeral_observation_log_writes_skip_sqlite_lock(monkeypatch, tmp_path):
+    from src.database.db_manager import DBManager
+
+    db = DBManager(str(tmp_path / "polyweather.db"))
+
+    def locked_connection():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "_get_connection", locked_connection)
+
+    db.append_airport_obs(
+        icao="ZSQD",
+        city="qingdao",
+        temp_c=24.0,
+        obs_time="2026-06-08T04:00:00Z",
+    )
+    db.append_runway_obs(
+        icao="ZSQD",
+        city="qingdao",
+        runway="17/35",
+        target_runway_max=24.0,
+        otime_utc="2026-06-08T04:00:00Z",
+    )
+
+
+def test_airport_obs_batch_writes_share_one_sqlite_transaction(monkeypatch, tmp_path):
+    from src.database.db_manager import DBManager
+
+    db = DBManager(str(tmp_path / "polyweather-airport-obs-batch.db"))
+    original_get_connection = db._get_connection
+    connection_calls = {"count": 0}
+
+    def counting_connection():
+        connection_calls["count"] += 1
+        return original_get_connection()
+
+    monkeypatch.setattr(db, "_get_connection", counting_connection)
+
+    db.append_airport_obs_batch(
+        [
+            {
+                "icao": "ZBAA",
+                "city": "beijing",
+                "temp_c": 24.0,
+                "obs_time": "2026-06-08T04:00:00Z",
+            },
+            {
+                "icao": "ZBAD",
+                "city": "beijing",
+                "temp_c": 25.0,
+                "obs_time": "2026-06-08T04:00:00Z",
+            },
+        ]
+    )
+
+    assert connection_calls["count"] == 1
+    assert [row["temp_c"] for row in db.get_airport_obs_recent("ZBAA", minutes=180)] == [24.0]
+    assert [row["temp_c"] for row in db.get_airport_obs_recent("ZBAD", minutes=180)] == [25.0]
