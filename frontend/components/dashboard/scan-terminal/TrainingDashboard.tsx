@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { TrendingUp, Target, Thermometer, Hash, BarChart3, Crosshair } from "lucide-react";
+import { buildDebRecentRankingRows } from "@/lib/deb-training-ranking";
 
 type MetricPayload = {
   hit_rate: number;
@@ -19,11 +20,77 @@ type MetricPayload = {
   brier_score?: number;
 };
 
+type DebWindowSummary = {
+  start_date?: string | null;
+  end_date?: string | null;
+  samples?: number;
+  hits?: number;
+  hit_rate?: number | null;
+  mae?: number | null;
+  bias?: number | null;
+  city_count?: number;
+};
+
+type DebHistoricalSummary = {
+  city_count?: number;
+  avg_hit_rate?: number | null;
+  weighted_hit_rate?: number | null;
+  avg_mae?: number | null;
+  avg_days_per_city?: number;
+  sample_days?: number;
+  hits?: number;
+};
+
+type DebUsableRecentSummary = {
+  window?: "recent_7d" | "recent_14d" | string;
+  city_count?: number;
+  samples?: number;
+  hits?: number;
+  hit_rate?: number | null;
+  avg_mae?: number | null;
+  recommendations?: {
+    primary?: number;
+    supporting?: number;
+  };
+};
+
+type DebVersionSummary = {
+  version?: string;
+  samples?: number;
+  mae?: number | null;
+  rmse?: number | null;
+  bias?: number | null;
+  bucket_hit_rate?: number | null;
+};
+
+type DebSummaryPayload = {
+  historical?: DebHistoricalSummary;
+  usable_recent?: DebUsableRecentSummary;
+  recent_7d?: DebWindowSummary;
+  recent_14d?: DebWindowSummary;
+  versions?: Record<string, DebVersionSummary>;
+};
+
+type DebRecentStrategy = {
+  recent_7d?: DebWindowSummary;
+  recent_14d?: DebWindowSummary;
+  trust_tier?: "high" | "medium" | "low" | "insufficient" | string;
+  recommendation?: "primary" | "supporting" | "context_only" | "insufficient" | string;
+  bias_direction?: "under" | "over" | "neutral" | "unknown" | string;
+  reason?: string;
+};
+
 type TrainingCity = {
   city_id: string;
   name: string;
   deb?: MetricPayload;
+  deb_recent?: DebRecentStrategy | null;
   mu?: MetricPayload;
+};
+
+type TrainingAccuracyPayload = {
+  accuracy: TrainingCity[];
+  deb_summary?: DebSummaryPayload;
 };
 
 const STAT_CARD_CLASSES: Record<string, string> = {
@@ -45,48 +112,78 @@ function barColor(hr: number) {
   return "#dc2626";
 }
 
+function trustBadgeClass(tier?: string) {
+  if (tier === "high") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (tier === "medium") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (tier === "low") return "border-rose-200 bg-rose-50 text-rose-700";
+  return "border-slate-200 bg-slate-50 text-slate-500";
+}
+
+function trustLabel(tier: string | undefined, isEn: boolean) {
+  if (tier === "high") return isEn ? "High" : "高";
+  if (tier === "medium") return isEn ? "Medium" : "中";
+  if (tier === "low") return isEn ? "Low" : "低";
+  return isEn ? "Thin" : "少";
+}
+
+function recommendationLabel(value: string | undefined, isEn: boolean) {
+  if (value === "primary") return isEn ? "Primary" : "主用";
+  if (value === "supporting") return isEn ? "Support" : "辅助";
+  if (value === "context_only") return isEn ? "Context" : "参考";
+  return isEn ? "Insufficient" : "样本少";
+}
+
 const TRAINING_CACHE_KEY = "polyweather_training_accuracy_v1";
 const TRAINING_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-function readTrainingCache(): TrainingCity[] | null {
+function readTrainingCache(): TrainingAccuracyPayload | null {
   try {
     const raw = localStorage.getItem(TRAINING_CACHE_KEY);
     if (!raw) return null;
     const cached = JSON.parse(raw);
-    if (cached.ts && Date.now() - cached.ts < TRAINING_CACHE_TTL_MS && Array.isArray(cached.data)) {
-      return cached.data;
+    if (cached.ts && Date.now() - cached.ts < TRAINING_CACHE_TTL_MS) {
+      if (Array.isArray(cached.data)) return { accuracy: cached.data };
+      if (cached.data && Array.isArray(cached.data.accuracy)) return cached.data;
     }
   } catch { /* ignore */ }
   return null;
 }
 
-function writeTrainingCache(data: TrainingCity[]) {
+function writeTrainingCache(data: TrainingAccuracyPayload) {
   try {
     localStorage.setItem(TRAINING_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
   } catch { /* ignore */ }
 }
 
 export function TrainingDashboard({ isEn }: { isEn: boolean }) {
-  const [data, setData] = useState<TrainingCity[] | null>(() => readTrainingCache());
+  const [payload, setPayload] = useState<TrainingAccuracyPayload | null>(() => readTrainingCache());
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/ops/training/accuracy", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(async (res) => {
         if (!res.ok) return null;
-        return res.json() as Promise<{ accuracy: TrainingCity[] }>;
+        return res.json() as Promise<TrainingAccuracyPayload>;
       })
-      .then((payload) => {
-        if (cancelled || !payload?.accuracy) return;
-        const filtered = payload.accuracy.filter((c) => (c.deb || c.mu) && ((c.deb?.total_days ?? 0) + (c.mu?.total_days ?? 0)) >= 5);
-        setData(filtered);
-        writeTrainingCache(filtered);
+      .then((nextPayload) => {
+        if (cancelled || !nextPayload?.accuracy) return;
+        const filtered = nextPayload.accuracy.filter((c) => (c.deb || c.mu) && ((c.deb?.total_days ?? 0) + (c.mu?.total_days ?? 0)) >= 5);
+        const next = { ...nextPayload, accuracy: filtered };
+        setPayload(next);
+        writeTrainingCache(next);
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
+  const data = payload?.accuracy ?? null;
+  const debSummary = payload?.deb_summary;
   const debSorted = useMemo(() => (data || []).filter((c) => c.deb).sort((a, b) => (b.deb?.hit_rate ?? 0) - (a.deb?.hit_rate ?? 0)), [data]);
+  const debRecentRanked = useMemo(() => buildDebRecentRankingRows(data || []), [data]);
+  const debRecentRankIndex = useMemo(
+    () => new Map(debRecentRanked.map((row, index) => [row.cityId, index])),
+    [debRecentRanked],
+  );
   const muSorted = useMemo(() => (data || []).filter((c) => c.mu).sort((a, b) => (b.mu?.hit_rate ?? 0) - (a.mu?.hit_rate ?? 0)), [data]);
 
   const debStats = useMemo(() => {
@@ -94,8 +191,16 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
     const avgHit = debSorted.reduce((s, c) => s + (c.deb?.hit_rate ?? 0), 0) / debSorted.length;
     const avgMae = debSorted.reduce((s, c) => s + (c.deb?.mae ?? 0), 0) / debSorted.length;
     const avgDays = Math.round(debSorted.reduce((s, c) => s + (c.deb?.total_days ?? 0), 0) / Math.max(debSorted.length, 1));
-    return { avgHit, avgMae, avgDays, cities: debSorted.length };
-  }, [debSorted]);
+    return {
+      avgHit: debSummary?.historical?.avg_hit_rate ?? avgHit,
+      avgMae: debSummary?.historical?.avg_mae ?? avgMae,
+      avgDays: debSummary?.historical?.avg_days_per_city ?? avgDays,
+      cities: debSummary?.historical?.city_count ?? debSorted.length,
+      sampleDays: debSummary?.historical?.sample_days,
+      weightedHit: debSummary?.historical?.weighted_hit_rate,
+      usableRecent: debSummary?.usable_recent,
+    };
+  }, [debSorted, debSummary]);
 
   const muStats = useMemo(() => {
     if (!muSorted.length) return null;
@@ -107,12 +212,19 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
   }, [muSorted]);
 
   const debHitChart = useMemo(
-    () => debSorted.slice(0, 18).map((c) => ({ name: c.name, value: Number((c.deb?.hit_rate ?? 0).toFixed(1)) })),
-    [debSorted],
+    () => debRecentRanked.slice(0, 18).map((c) => ({ name: c.name, value: c.hitRate })),
+    [debRecentRanked],
   );
   const debMaeChart = useMemo(
-    () => [...debSorted].sort((a, b) => (a.deb?.mae ?? 99) - (b.deb?.mae ?? 99)).slice(0, 18).map((c) => ({ name: c.name, value: Number((c.deb?.mae ?? 0).toFixed(2)) })),
-    [debSorted],
+    () => [...debRecentRanked]
+      .sort((a, b) => {
+        if (a.usableScore !== b.usableScore) return b.usableScore - a.usableScore;
+        if (a.trustScore !== b.trustScore) return b.trustScore - a.trustScore;
+        return a.mae - b.mae;
+      })
+      .slice(0, 18)
+      .map((c) => ({ name: c.name, value: c.mae })),
+    [debRecentRanked],
   );
   const muHitChart = useMemo(
     () => muSorted.slice(0, 18).map((c) => ({ name: c.name, value: Number((c.mu?.hit_rate ?? 0).toFixed(1)) })),
@@ -122,6 +234,22 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
     () => [...muSorted].sort((a, b) => (a.mu?.brier_score ?? 99) - (b.mu?.brier_score ?? 99)).slice(0, 18).map((c) => ({ name: c.name, value: Number((c.mu?.brier_score ?? 0).toFixed(3)) })),
     [muSorted],
   );
+  const debVersionRows = useMemo(() => {
+    const versions = debSummary?.versions || {};
+    return [
+      { key: "deb_v1_raw", label: isEn ? "Raw DEB" : "原始 DEB" },
+      { key: "deb_v1_recent_bias_corrected", label: isEn ? "Mean Bias" : "均值偏差" },
+      { key: "deb_v2_bucket_calibrated", label: isEn ? "Bucket v2" : "桶校准 v2" },
+      { key: "deb_v3_guarded_calibrated", label: isEn ? "Guarded v3" : "保护 v3" },
+    ].map(({ key, label }) => ({ key, label, value: versions[key] })).filter((row) => row.value);
+  }, [debSummary?.versions, isEn]);
+
+  const formatPct = (value: number | null | undefined) => value == null ? "--" : `${value.toFixed(1)}%`;
+  const formatMaybeDeg = (value: number | null | undefined, digits = 1) => value == null ? "--" : `${value.toFixed(digits)}°`;
+  const usableWindowLabel = (window?: string) => {
+    if (window === "recent_14d") return isEn ? "Usable 14d" : "可用近14天";
+    return isEn ? "Usable 7d" : "可用近7天";
+  };
 
   return (
     <div className="h-full overflow-auto bg-[#f5f7fa]">
@@ -143,12 +271,14 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
               <Thermometer size={14} className="text-amber-600" />
               {isEn ? "DEB Temperature Forecast" : "DEB 气温预报"}
             </h2>
-            <div className="grid grid-cols-4 gap-2 mb-3">
+            <div className="grid grid-cols-2 gap-2 mb-3 md:grid-cols-3 xl:grid-cols-6">
               {[
                 { icon: Hash, label: isEn ? "Cities" : "城市数", value: debStats.cities, tone: "blue" },
-                { icon: Target, label: isEn ? "Avg Hit" : "平均命中", value: `${debStats.avgHit.toFixed(1)}%`, tone: "emerald" },
+                { icon: Target, label: usableWindowLabel(debStats.usableRecent?.window), value: formatPct(debStats.usableRecent?.hit_rate), tone: "emerald" },
+                { icon: TrendingUp, label: isEn ? "Recent 7d" : "近7天", value: formatPct(debSummary?.recent_7d?.hit_rate), tone: "emerald" },
+                { icon: TrendingUp, label: isEn ? "Recent 14d" : "近14天", value: formatPct(debSummary?.recent_14d?.hit_rate), tone: "purple" },
                 { icon: Thermometer, label: isEn ? "Avg Error" : "平均误差", value: `${debStats.avgMae.toFixed(1)}°`, tone: "amber" },
-                { icon: TrendingUp, label: isEn ? "Avg Days/City" : "每城平均天数", value: debStats.avgDays.toLocaleString(), tone: "purple" },
+                { icon: Hash, label: isEn ? "Samples" : "样本天数", value: (debStats.sampleDays ?? debStats.avgDays).toLocaleString(), tone: "blue" },
               ].map(({ icon: Icon, label, value, tone }) => (
                 <div key={label} className={`flex items-center gap-3 rounded-lg border ${STAT_CARD_CLASSES[tone]} p-3`}>
                   <Icon size={20} className={STAT_ICON_CLASSES[tone]} />
@@ -159,8 +289,27 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
                 </div>
               ))}
             </div>
+            {debVersionRows.length ? (
+              <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                {debVersionRows.map((row) => {
+                  const bucketRate = row.value?.bucket_hit_rate == null ? null : row.value.bucket_hit_rate * 100;
+                  return (
+                    <div key={row.key} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] font-black uppercase text-slate-500">{row.label}</span>
+                        <span className="font-mono text-sm font-black text-slate-900">{formatPct(bucketRate)}</span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                        <span>{isEn ? "MAE" : "误差"} {formatMaybeDeg(row.value?.mae, 2)}</span>
+                        <span>{isEn ? "Samples" : "样本"} {row.value?.samples ?? 0}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <ChartCard title={isEn ? "Forecast Hit Rate by City" : "预报命中率 by 城市"}>
+              <ChartCard title={isEn ? "Usable Recent Hit Rate by City" : "可用近期命中率 by 城市"}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={debHitChart} layout="vertical" margin={{ top: 0, right: 16, left: 48, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
@@ -171,7 +320,7 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
                   </BarChart>
                 </ResponsiveContainer>
               </ChartCard>
-              <ChartCard title={isEn ? "Forecast Error by City (lower = better)" : "预报误差 by 城市（越低越好）"}>
+              <ChartCard title={isEn ? "Usable Recent Error by City (lower = better)" : "可用近期误差 by 城市（越低越好）"}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={debMaeChart} layout="vertical" margin={{ top: 0, right: 16, left: 48, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
@@ -237,12 +386,15 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
         )}
 
         {/* ── Combined Table ── */}
-        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-          <table className="w-full text-[12px] border-collapse">
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table className="min-w-[960px] w-full text-[12px] border-collapse">
             <thead>
               <tr className="border-b border-slate-200 bg-[#f8f9fa] text-left">
                 <th className="w-10 px-3 py-2 text-center text-[11px] font-black text-slate-400">#</th>
                 <th className="px-3 py-2 text-[11px] font-black uppercase text-slate-500">{isEn ? "City" : "城市"}</th>
+                <th className="px-2 py-2 text-left text-[11px] font-black uppercase text-slate-500">{isEn ? "DEB Trust" : "DEB 信任"}</th>
+                <th className="px-2 py-2 text-right text-[11px] font-black uppercase text-slate-500">{isEn ? "7d" : "7天"}</th>
+                <th className="px-2 py-2 text-right text-[11px] font-black uppercase text-slate-500">{isEn ? "14d" : "14天"}</th>
                 <th className="px-2 py-2 text-right text-[11px] font-black uppercase text-slate-500">{isEn ? "DEB Hit" : "DEB 命中"}</th>
                 <th className="px-2 py-2 text-right text-[11px] font-black uppercase text-slate-500">{isEn ? "DEB Error" : "DEB 误差"}</th>
                 <th className="px-2 py-2 text-right text-[11px] font-black uppercase text-slate-500">{isEn ? "μ Hit" : "μ 命中"}</th>
@@ -253,28 +405,47 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
             <tbody className="divide-y divide-slate-100">
               {debSorted.length || muSorted.length ? (
                 (() => {
-                  const cities = new Map<string, { deb?: MetricPayload; mu?: MetricPayload; name: string }>();
-                  for (const c of debSorted) cities.set(c.city_id, { deb: c.deb, mu: c.mu, name: c.name });
+                  const cities = new Map<string, { deb?: MetricPayload; debRecent?: DebRecentStrategy | null; mu?: MetricPayload; name: string }>();
+                  for (const c of debSorted) cities.set(c.city_id, { deb: c.deb, debRecent: c.deb_recent, mu: c.mu, name: c.name });
                   for (const c of muSorted) {
                     const existing = cities.get(c.city_id);
                     if (existing) existing.mu = c.mu;
-                    else cities.set(c.city_id, { deb: c.deb, mu: c.mu, name: c.name });
+                    else cities.set(c.city_id, { deb: c.deb, debRecent: c.deb_recent, mu: c.mu, name: c.name });
                   }
                   const merged = [...cities.entries()]
                     .sort((a, b) => {
+                      const aDebRank = debRecentRankIndex.get(a[0]) ?? 9999;
+                      const bDebRank = debRecentRankIndex.get(b[0]) ?? 9999;
+                      if (aDebRank !== bDebRank) return aDebRank - bDebRank;
                       const aMax = Math.max(a[1].deb?.hit_rate ?? 0, a[1].mu?.hit_rate ?? 0);
                       const bMax = Math.max(b[1].deb?.hit_rate ?? 0, b[1].mu?.hit_rate ?? 0);
                       return bMax - aMax;
                     })
                     .slice(0, 30);
-                  return merged.map(([cityId, { deb, mu, name }], i) => {
+                  return merged.map(([cityId, { deb, debRecent, mu, name }], i) => {
                     const debHit = deb?.hit_rate ?? 0;
                     const muHit = mu?.hit_rate ?? 0;
                     const brier = mu?.brier_score;
+                    const recent7 = debRecent?.recent_7d?.hit_rate;
+                    const recent14 = debRecent?.recent_14d?.hit_rate;
                     return (
                       <tr key={cityId} className="hover:bg-slate-50 transition-colors">
                         <td className="px-3 py-2 text-center text-[12px] font-mono text-slate-400">{i + 1}</td>
                         <td className="px-3 py-2 font-semibold text-slate-800 capitalize">{name}</td>
+                        <td className="px-2 py-2">
+                          {debRecent ? (
+                            <span
+                              className={`inline-flex min-w-[4rem] items-center justify-center rounded border px-2 py-0.5 text-[10px] font-black uppercase ${trustBadgeClass(debRecent.trust_tier)}`}
+                              title={debRecent.reason}
+                            >
+                              {trustLabel(debRecent.trust_tier, isEn)} · {recommendationLabel(debRecent.recommendation, isEn)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">--</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-600">{recent7 == null ? "--" : `${recent7.toFixed(0)}%`}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-600">{recent14 == null ? "--" : `${recent14.toFixed(0)}%`}</td>
                         <td className="px-2 py-2 text-right font-mono font-bold" style={{ color: barColor(debHit) }}>
                           {deb ? `${debHit.toFixed(0)}%` : "--"}
                         </td>
@@ -290,7 +461,7 @@ export function TrainingDashboard({ isEn }: { isEn: boolean }) {
                 })()
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
+                  <td colSpan={10} className="px-4 py-12 text-center text-slate-400">
                     {data === null ? (isEn ? "Loading..." : "加载中...") : (isEn ? "No training data" : "暂无训练数据")}
                   </td>
                 </tr>

@@ -123,9 +123,105 @@ def test_calculate_deb_prediction_keeps_raw_and_adds_versioned_bias_correction(m
 
     assert result["raw_prediction"] == 24.0
     assert result["prediction"] == 25.0
-    assert result["version"] == "deb_v1_recent_bias_corrected"
+    assert result["version"] == "deb_v3_guarded_calibrated"
+    assert result["selected_version"] == "deb_v1_recent_bias_corrected"
+    assert result["guard_reason"] == "bucket_unavailable"
     assert result["bias_adjustment"] == 1.0
     assert result["bias_samples"] == 3
+
+
+def test_calculate_deb_prediction_prefers_bucket_calibration_when_enough_samples(monkeypatch):
+    monkeypatch.setattr(
+        "src.analysis.deb_algorithm.load_history",
+        lambda _: {
+            "ankara": {
+                "2026-04-11": {
+                    "actual_high": 21.0,
+                    "deb_prediction": 20.4,
+                    "forecasts": {"ECMWF": 20.4, "GFS": 20.4},
+                },
+                "2026-04-12": {
+                    "actual_high": 22.0,
+                    "deb_prediction": 21.4,
+                    "forecasts": {"ECMWF": 21.4, "GFS": 21.4},
+                },
+                "2026-04-13": {
+                    "actual_high": 23.0,
+                    "deb_prediction": 22.4,
+                    "forecasts": {"ECMWF": 22.4, "GFS": 22.4},
+                },
+                "2026-04-14": {
+                    "actual_high": 24.0,
+                    "deb_prediction": 23.4,
+                    "forecasts": {"ECMWF": 23.4, "GFS": 23.4},
+                },
+                "2026-04-15": {
+                    "actual_high": 25.0,
+                    "deb_prediction": 24.4,
+                    "forecasts": {"ECMWF": 24.4, "GFS": 24.4},
+                },
+            }
+        },
+    )
+
+    result = calculate_deb_prediction(
+        "ankara",
+        {"ECMWF": 25.4, "GFS": 25.4},
+    )
+
+    assert result["raw_prediction"] == 25.4
+    assert result["prediction"] == 26.0
+    assert result["version"] == "deb_v3_guarded_calibrated"
+    assert result["selected_version"] == "deb_v2_bucket_calibrated"
+    assert result["guard_reason"] == "bucket_same_adjustment"
+    assert result["bias_adjustment"] == 0.6
+    assert result["bias_samples"] == 5
+
+
+def test_calculate_deb_prediction_reports_recent_quality_for_effective_deb(monkeypatch):
+    monkeypatch.setattr(
+        "src.analysis.deb_algorithm.load_history",
+        lambda _: {
+            "high": {
+                "2026-04-11": {"actual_high": 21.0, "deb_prediction": 21.0},
+                "2026-04-12": {"actual_high": 22.0, "deb_prediction": 22.0},
+                "2026-04-13": {"actual_high": 23.0, "deb_prediction": 23.0},
+                "2026-04-14": {"actual_high": 24.0, "deb_prediction": 24.0},
+                "2026-04-15": {"actual_high": 25.0, "deb_prediction": 25.0},
+            },
+            "low": {
+                "2026-04-11": {"actual_high": 20.0, "deb_prediction": 16.0},
+                "2026-04-12": {"actual_high": 21.0, "deb_prediction": 26.0},
+                "2026-04-13": {"actual_high": 22.0, "deb_prediction": 18.0},
+                "2026-04-14": {"actual_high": 23.0, "deb_prediction": 28.0},
+                "2026-04-15": {"actual_high": 24.0, "deb_prediction": 20.0},
+            },
+            "thin": {
+                "2026-04-14": {"actual_high": 23.0, "deb_prediction": 23.0},
+                "2026-04-15": {"actual_high": 24.0, "deb_prediction": 24.0},
+            },
+        },
+    )
+
+    def raw(_city, _forecasts, **_kwargs):
+        return 25.0, "raw"
+
+    high = calculate_deb_prediction("high", {"ECMWF": 25.0}, raw_calculator=raw)
+    low = calculate_deb_prediction("low", {"ECMWF": 25.0}, raw_calculator=raw)
+    thin = calculate_deb_prediction("thin", {"ECMWF": 25.0}, raw_calculator=raw)
+
+    assert high["quality_tier"] == "high"
+    assert high["recommendation"] == "primary"
+    assert high["recent_hit_rate"] == 100.0
+
+    assert low["quality_tier"] == "low"
+    assert low["recommendation"] == "context_only"
+    assert low["recent_hit_rate"] == 0.0
+    assert "quality:low" in low["weights_info"]
+
+    assert thin["quality_tier"] == "insufficient"
+    assert thin["recommendation"] == "insufficient"
+    assert thin["recent_samples"] == 2
 
 
 def test_compute_hourly_model_errors_basic():

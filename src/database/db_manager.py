@@ -39,6 +39,10 @@ class DBManager:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
+    @staticmethod
+    def _is_sqlite_locked_error(exc: sqlite3.OperationalError) -> bool:
+        return "database is locked" in str(exc).lower()
+
     def _init_cache_key(self) -> str:
         return os.path.abspath(self.db_path)
 
@@ -558,6 +562,10 @@ class DBManager:
                     user_id TEXT,
                     user_email TEXT,
                     context_json TEXT NOT NULL,
+                    reward_points INTEGER DEFAULT 0,
+                    reward_reason TEXT DEFAULT '',
+                    rewarded_at TIMESTAMP,
+                    reward_status TEXT DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -663,6 +671,10 @@ class DBManager:
             self._ensure_column(conn, "users", "daily_city_queries", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "users", "daily_deb_queries", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "users", "daily_queries_date", "TEXT")
+            self._ensure_column(conn, "user_feedback", "reward_points", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "user_feedback", "reward_reason", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "user_feedback", "rewarded_at", "TIMESTAMP")
+            self._ensure_column(conn, "user_feedback", "reward_status", "TEXT DEFAULT ''")
             # Migrate legacy one-to-one binding column into mapping table.
             conn.execute(
                 """
@@ -1090,6 +1102,10 @@ class DBManager:
             "user_id": str(row["user_id"] or ""),
             "user_email": str(row["user_email"] or ""),
             "context": context if isinstance(context, dict) else {},
+            "reward_points": max(0, int(row["reward_points"] or 0)),
+            "reward_reason": str(row["reward_reason"] or ""),
+            "rewarded_at": row["rewarded_at"],
+            "reward_status": str(row["reward_status"] or ""),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -1147,7 +1163,8 @@ class DBManager:
             row = conn.execute(
                 """
                 SELECT id, category, message, source, status, contact, user_id,
-                       user_email, context_json, created_at, updated_at
+                       user_email, context_json, reward_points, reward_reason,
+                       rewarded_at, reward_status, created_at, updated_at
                 FROM user_feedback
                 WHERE id = ?
                 """,
@@ -1189,7 +1206,8 @@ class DBManager:
             rows = conn.execute(
                 f"""
                 SELECT id, category, message, source, status, contact, user_id,
-                       user_email, context_json, created_at, updated_at
+                       user_email, context_json, reward_points, reward_reason,
+                       rewarded_at, reward_status, created_at, updated_at
                 FROM user_feedback
                 {where_sql}
                 ORDER BY id DESC
@@ -1222,7 +1240,56 @@ class DBManager:
             row = conn.execute(
                 """
                 SELECT id, category, message, source, status, contact, user_id,
-                       user_email, context_json, created_at, updated_at
+                       user_email, context_json, reward_points, reward_reason,
+                       rewarded_at, reward_status, created_at, updated_at
+                FROM user_feedback
+                WHERE id = ?
+                """,
+                (int(feedback_id),),
+            ).fetchone()
+            conn.commit()
+        return self._feedback_row_to_dict(row) if row else None
+
+    def update_user_feedback_reward(
+        self,
+        feedback_id: int,
+        *,
+        points: int,
+        reason: str = "",
+        status: str = "granted",
+    ) -> Optional[Dict[str, Any]]:
+        safe_points = max(0, int(points or 0))
+        normalized_reason = str(reason or "").strip()[:500]
+        normalized_status = str(status or "").strip().lower()[:40]
+        if not normalized_status:
+            normalized_status = "granted" if safe_points > 0 else "skipped"
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                UPDATE user_feedback
+                SET reward_points = ?,
+                    reward_reason = ?,
+                    reward_status = ?,
+                    rewarded_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    safe_points,
+                    normalized_reason,
+                    normalized_status,
+                    now,
+                    now,
+                    int(feedback_id),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id, category, message, source, status, contact, user_id,
+                       user_email, context_json, reward_points, reward_reason,
+                       rewarded_at, reward_status, created_at, updated_at
                 FROM user_feedback
                 WHERE id = ?
                 """,
@@ -3015,19 +3082,64 @@ class DBManager:
         pressure_hpa: Optional[float] = None,
         obs_time: str,
     ) -> None:
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO airport_obs_log (icao, city, temp_c, wind_kt, pressure_hpa, obs_time)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (str(icao).strip().upper(), str(city).strip().lower(),
-                 temp_c, wind_kt, pressure_hpa, str(obs_time)),
+        self.append_airport_obs_batch(
+            [
+                {
+                    "icao": icao,
+                    "city": city,
+                    "temp_c": temp_c,
+                    "wind_kt": wind_kt,
+                    "pressure_hpa": pressure_hpa,
+                    "obs_time": obs_time,
+                }
+            ]
+        )
+
+    def append_airport_obs_batch(self, rows: List[Dict[str, Any]]) -> None:
+        normalized_rows: List[Tuple[str, str, Optional[float], Optional[float], Optional[float], str]] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            safe_icao = str(row.get("icao") or "").strip().upper()
+            safe_city = str(row.get("city") or "").strip().lower()
+            safe_obs_time = str(row.get("obs_time") or "").strip()
+            if not safe_icao or not safe_city or not safe_obs_time:
+                continue
+            normalized_rows.append(
+                (
+                    safe_icao,
+                    safe_city,
+                    row.get("temp_c"),
+                    row.get("wind_kt"),
+                    row.get("pressure_hpa"),
+                    safe_obs_time,
+                )
             )
-            conn.execute(
-                "DELETE FROM airport_obs_log WHERE created_at < datetime('now', '-2 hours')"
-            )
-            conn.commit()
+        if not normalized_rows:
+            return
+        first_icao, first_city = normalized_rows[0][0], normalized_rows[0][1]
+        try:
+            with self._get_connection() as conn:
+                conn.executemany(
+                    """
+                    INSERT INTO airport_obs_log (icao, city, temp_c, wind_kt, pressure_hpa, obs_time)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    normalized_rows,
+                )
+                conn.execute(
+                    "DELETE FROM airport_obs_log WHERE created_at < datetime('now', '-2 hours')"
+                )
+                conn.commit()
+        except sqlite3.OperationalError as exc:
+            if self._is_sqlite_locked_error(exc):
+                logger.warning(
+                    "airport obs log skipped because sqlite is locked icao={} city={}",
+                    first_icao,
+                    first_city,
+                )
+                return
+            raise
 
     def get_airport_obs_recent(
         self, icao: str, minutes: int = 30
@@ -3068,30 +3180,41 @@ class DBManager:
         safe_otime = str(otime_utc or "").strip()
         if not safe_icao or not safe_runway or not safe_otime:
             return
-        with self._get_connection() as conn:
-            existing = conn.execute(
-                "SELECT id FROM runway_obs_log WHERE icao=? AND runway=? AND otime_utc=? LIMIT 1",
-                (safe_icao, safe_runway, safe_otime),
-            ).fetchone()
-            if existing:
+        try:
+            with self._get_connection() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM runway_obs_log WHERE icao=? AND runway=? AND otime_utc=? LIMIT 1",
+                    (safe_icao, safe_runway, safe_otime),
+                ).fetchone()
+                if existing:
+                    return
+                conn.execute(
+                    """
+                    INSERT INTO runway_obs_log (
+                        icao, city, runway,
+                        tdz_temp, mid_temp, end_temp, target_runway_max,
+                        wind_dir, wind_speed, rvr, mor, humidity,
+                        otime_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        safe_icao, safe_city, safe_runway,
+                        tdz_temp, mid_temp, end_temp, target_runway_max,
+                        wind_dir, wind_speed, rvr, mor, humidity,
+                        safe_otime,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.OperationalError as exc:
+            if self._is_sqlite_locked_error(exc):
+                logger.warning(
+                    "runway obs log skipped because sqlite is locked icao={} city={} runway={}",
+                    safe_icao,
+                    safe_city,
+                    safe_runway,
+                )
                 return
-            conn.execute(
-                """
-                INSERT INTO runway_obs_log (
-                    icao, city, runway,
-                    tdz_temp, mid_temp, end_temp, target_runway_max,
-                    wind_dir, wind_speed, rvr, mor, humidity,
-                    otime_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    safe_icao, safe_city, safe_runway,
-                    tdz_temp, mid_temp, end_temp, target_runway_max,
-                    wind_dir, wind_speed, rvr, mor, humidity,
-                    safe_otime,
-                ),
-            )
-            conn.commit()
+            raise
 
     def get_runway_obs_recent(
         self, icao: str, minutes: int = 60

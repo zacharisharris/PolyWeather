@@ -6,6 +6,7 @@ import { RefreshCcw, TrendingUp, TrendingDown, Target, Activity } from "lucide-r
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { buildDebRecentRankingRows } from "@/lib/deb-training-ranking";
 import { opsApi } from "@/lib/ops-api";
 import type { SystemStatusPayload } from "@/types/ops";
 import Link from "next/link";
@@ -56,6 +57,22 @@ interface CityAccuracy {
     total_days: number;
     details_str: string;
   } | null;
+  deb_recent?: {
+    recent_7d?: {
+      hit_rate?: number | null;
+      samples?: number;
+      mae?: number | null;
+    };
+    recent_14d?: {
+      hit_rate?: number | null;
+      samples?: number;
+      mae?: number | null;
+    };
+    trust_tier?: string;
+    recommendation?: string;
+    bias_direction?: string;
+    reason?: string;
+  } | null;
   mu?: {
     mae: number;
     hit_rate: number;
@@ -65,20 +82,81 @@ interface CityAccuracy {
   } | null;
 }
 
+interface DebSummary {
+  historical?: {
+    avg_hit_rate?: number | null;
+    weighted_hit_rate?: number | null;
+    avg_mae?: number | null;
+    sample_days?: number;
+    city_count?: number;
+  };
+  usable_recent?: {
+    window?: string;
+    city_count?: number;
+    samples?: number;
+    hits?: number;
+    hit_rate?: number | null;
+    avg_mae?: number | null;
+    recommendations?: {
+      primary?: number;
+      supporting?: number;
+    };
+  };
+  recent_7d?: {
+    hit_rate?: number | null;
+    mae?: number | null;
+    samples?: number;
+    hits?: number;
+  };
+  recent_14d?: {
+    hit_rate?: number | null;
+    mae?: number | null;
+    samples?: number;
+    hits?: number;
+  };
+}
+
+function debTrustBadgeClass(tier?: string) {
+  if (tier === "high") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+  if (tier === "medium") return "bg-amber-500/15 text-amber-300 border-amber-500/30";
+  if (tier === "low") return "bg-rose-500/15 text-rose-300 border-rose-500/30";
+  return "bg-slate-500/15 text-slate-300 border-slate-500/30";
+}
+
+function debTrustLabel(tier?: string) {
+  if (tier === "high") return "高可信";
+  if (tier === "medium") return "中可信";
+  if (tier === "low") return "低可信";
+  return "样本少";
+}
+
+function debRecommendationLabel(recommendation?: string) {
+  if (recommendation === "primary") return "主用";
+  if (recommendation === "supporting") return "辅助";
+  if (recommendation === "context_only") return "仅参考";
+  return "不足";
+}
+
+function formatPct(value: number | null | undefined) {
+  return value == null ? "—" : `${value.toFixed(0)}%`;
+}
+
 export function TrainingPageClient() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<SystemStatusPayload | null>(null);
   const [accuracy, setAccuracy] = useState<CityAccuracy[] | null>(null);
+  const [debSummary, setDebSummary] = useState<DebSummary | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
       const [s, accData] = await Promise.all([
         opsApi.systemStatus() as Promise<SystemStatusPayload>,
-        opsApi.trainingAccuracy().catch(() => ({ accuracy: [] as CityAccuracy[] })),
+        opsApi.trainingAccuracy().catch(() => ({ accuracy: [] as CityAccuracy[], deb_summary: null })),
       ]);
       setStatus(s);
       setAccuracy((accData as { accuracy: CityAccuracy[] }).accuracy ?? []);
+      setDebSummary((accData as { deb_summary?: DebSummary | null }).deb_summary ?? null);
     } catch { /* */ }
     setLoading(false);
   };
@@ -92,22 +170,37 @@ export function TrainingPageClient() {
     const avgMae = debCities.reduce((s, c) => s + (c.deb?.mae ?? 0), 0) / debCities.length;
     const best = debCities.reduce((a, b) => ((a.deb?.hit_rate ?? 0) > (b.deb?.hit_rate ?? 0) ? a : b));
     const worst = debCities.reduce((a, b) => ((a.deb?.mae ?? 0) > (b.deb?.mae ?? 0) ? a : b));
-    return { avgHit, avgMae, best, worst };
-  }, [accuracy]);
+    return {
+      avgHit: debSummary?.historical?.avg_hit_rate ?? avgHit,
+      avgMae: debSummary?.historical?.avg_mae ?? avgMae,
+      usableRecent: debSummary?.usable_recent,
+      recent7Hit: debSummary?.recent_7d?.hit_rate,
+      recent14Hit: debSummary?.recent_14d?.hit_rate,
+      best,
+      worst,
+    };
+  }, [accuracy, debSummary]);
+
+  const usableWindowLabel = (window?: string) =>
+    window === "recent_14d" ? "DEB 可用近 14 天命中" : "DEB 可用近 7 天命中";
+
+  const debRecentRanked = useMemo(() => buildDebRecentRankingRows(accuracy || []), [accuracy]);
+  const debRecentRankIndex = useMemo(
+    () => new Map(debRecentRanked.map((row, index) => [row.cityId, index])),
+    [debRecentRanked],
+  );
 
   const debChartData = useMemo(() => {
-    if (!accuracy?.length) return [];
-    return accuracy
-      .filter((c) => c.deb && c.deb.total_days >= 5)
-      .sort((a, b) => (b.deb?.hit_rate ?? 0) - (a.deb?.hit_rate ?? 0))
+    return debRecentRanked
+      .slice(0, 24)
       .map((c) => ({
         name: c.name,
-        cityId: c.city_id,
-        hitRate: Number((c.deb?.hit_rate ?? 0).toFixed(1)),
-        mae: Number((c.deb?.mae ?? 0).toFixed(1)),
-        days: c.deb?.total_days ?? 0,
+        cityId: c.cityId,
+        hitRate: c.hitRate,
+        mae: c.mae,
+        days: c.samples,
       }));
-  }, [accuracy]);
+  }, [debRecentRanked]);
 
   const muChartData = useMemo(() => {
     if (!accuracy?.length) return [];
@@ -123,6 +216,18 @@ export function TrainingPageClient() {
         days: c.mu?.total_days ?? 0,
       }));
   }, [accuracy]);
+
+  const sortedAccuracy = useMemo(() => {
+    if (!accuracy?.length) return [];
+    return [...accuracy].sort((a, b) => {
+      const aDebRank = debRecentRankIndex.get(a.city_id) ?? 9999;
+      const bDebRank = debRecentRankIndex.get(b.city_id) ?? 9999;
+      if (aDebRank !== bDebRank) return aDebRank - bDebRank;
+      const aMax = Math.max(a.deb?.hit_rate ?? 0, a.mu?.hit_rate ?? 0);
+      const bMax = Math.max(b.deb?.hit_rate ?? 0, b.mu?.hit_rate ?? 0);
+      return bMax - aMax;
+    });
+  }, [accuracy, debRecentRankIndex]);
 
   if (loading) return <div className="text-slate-400 animate-pulse">加载中...</div>;
   if (!status) return <div className="text-red-400">加载失败</div>;
@@ -172,10 +277,20 @@ export function TrainingPageClient() {
 
       {/* Accuracy KPI row */}
       {kpis ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <KpiCard
             icon={Target} color="bg-cyan-500/20 text-cyan-400"
-            label="DEB 平均命中率" value={`${kpis.avgHit.toFixed(1)}%`}
+            label={usableWindowLabel(kpis.usableRecent?.window)}
+            value={kpis.usableRecent?.hit_rate == null ? "—" : `${kpis.usableRecent.hit_rate.toFixed(1)}%`}
+            sub={`可用城市 ${kpis.usableRecent?.city_count ?? 0} · 样本 ${kpis.usableRecent?.samples ?? 0} · 历史 ${kpis.avgHit.toFixed(1)}%`}
+          />
+          <KpiCard
+            icon={Target} color="bg-emerald-500/20 text-emerald-400"
+            label="近 7 天命中" value={kpis.recent7Hit == null ? "—" : `${kpis.recent7Hit.toFixed(1)}%`}
+          />
+          <KpiCard
+            icon={Activity} color="bg-violet-500/20 text-violet-400"
+            label="近 14 天命中" value={kpis.recent14Hit == null ? "—" : `${kpis.recent14Hit.toFixed(1)}%`}
           />
           <KpiCard
             icon={Activity} color="bg-blue-500/20 text-blue-400"
@@ -240,6 +355,8 @@ export function TrainingPageClient() {
               <thead className="text-xs uppercase bg-slate-800/50 text-slate-400">
                 <tr>
                   <th scope="col" className="px-4 py-3">城市</th>
+                  <th scope="col" className="px-4 py-3 text-center">DEB 策略</th>
+                  <th scope="col" className="px-4 py-3 text-center">近 7 / 14 天</th>
                   <th scope="col" className="px-4 py-3 text-center">DEB 命中</th>
                   <th scope="col" className="px-4 py-3 text-center">DEB MAE</th>
                   <th scope="col" className="px-4 py-3 text-center">DEB 天数</th>
@@ -250,12 +367,35 @@ export function TrainingPageClient() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {accuracy && accuracy.length > 0 ? (
-                  accuracy.map((row) => (
+                {sortedAccuracy.length > 0 ? (
+                  sortedAccuracy.map((row) => (
                     <tr key={row.city_id} className="hover:bg-white/5 transition-colors">
                       <td className="px-4 py-3 font-medium text-white capitalize">
                         {row.name}
                         <span className="text-xs text-slate-500 block font-mono">{row.city_id}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {row.deb_recent ? (
+                          <span
+                            title={row.deb_recent.reason}
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${debTrustBadgeClass(row.deb_recent.trust_tier)}`}
+                          >
+                            {debTrustLabel(row.deb_recent.trust_tier)} · {debRecommendationLabel(row.deb_recent.recommendation)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center font-mono text-xs text-slate-300">
+                        {row.deb_recent ? (
+                          <span>
+                            {formatPct(row.deb_recent.recent_7d?.hit_rate)}
+                            <span className="mx-1 text-slate-600">/</span>
+                            {formatPct(row.deb_recent.recent_14d?.hit_rate)}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {row.deb ? (
@@ -318,7 +458,7 @@ export function TrainingPageClient() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={10} className="px-4 py-8 text-center text-slate-500">
                       无有效准确率记录
                     </td>
                   </tr>
