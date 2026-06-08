@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bug, CheckCircle2, MessageSquare, RefreshCcw } from "lucide-react";
+import { Bug, CheckCircle2, Coins, MessageSquare, RefreshCcw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { opsApi } from "@/lib/ops-api";
@@ -16,13 +16,24 @@ const STATUS_OPTIONS = [
   { key: "closed", label: "关闭" },
 ] as const;
 
-const NEXT_STATUS: Record<string, string> = {
-  open: "triaged",
-  triaged: "investigating",
-  investigating: "resolved",
-  resolved: "closed",
-  closed: "open",
-};
+const STATUS_UPDATE_OPTIONS = STATUS_OPTIONS.filter((item) => item.key);
+
+const REWARD_POINT_OPTIONS = [
+  { value: 100, label: "100 分", title: "轻量提醒" },
+  { value: 300, label: "300 分", title: "可复现 Bug" },
+  { value: 500, label: "500 分", title: "有效数据问题" },
+  { value: 1000, label: "1000 分", title: "高影响问题" },
+  { value: 1500, label: "1500 分", title: "重大事故" },
+] as const;
+
+const REWARD_GUIDELINES = [
+  { points: "0", title: "无效/重复", detail: "重复反馈、无法复现、非问题" },
+  { points: "100", title: "轻量提醒", detail: "文案、体验、小范围提示" },
+  { points: "300", title: "可复现 Bug", detail: "加载失败、操作异常、局部影响" },
+  { points: "500", title: "有效数据问题", detail: "城市数据、图表、关键变量异常" },
+  { points: "1000", title: "高影响问题", detail: "支付、账号、订阅、核心终端异常" },
+  { points: "1500", title: "重大事故", detail: "大面积不可用或严重业务损失，谨慎使用" },
+] as const;
 
 function compactDate(value?: string) {
   if (!value) return "—";
@@ -67,17 +78,14 @@ function contextSummary(context?: Record<string, unknown>) {
   return pieces.length ? pieces.join(" · ") : "terminal";
 }
 
-function feedbackActionLabel(status?: string) {
-  const next = NEXT_STATUS[String(status || "open").toLowerCase()] || "triaged";
-  return statusLabel(next);
-}
-
 export function FeedbackPageClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [payload, setPayload] = useState<UserFeedbackPayload | null>(null);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [rewardingId, setRewardingId] = useState<number | null>(null);
+  const [rewardPointsById, setRewardPointsById] = useState<Record<number, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -110,14 +118,50 @@ export function FeedbackPageClient() {
     return acc;
   }, [rows]);
 
-  const advanceStatus = async (row: UserFeedbackEntry) => {
-    const next = NEXT_STATUS[String(row.status || "open").toLowerCase()] || "triaged";
+  const changeStatus = async (row: UserFeedbackEntry, next: string) => {
+    const current = String(row.status || "open").toLowerCase();
+    if (!next || next === current) return;
     setUpdatingId(row.id);
     try {
       await opsApi.updateFeedbackStatus(row.id, next);
       await load();
     } finally {
       setUpdatingId(null);
+    }
+  };
+
+  const updateRewardPoints = (rowId: number, points: string) => {
+    setRewardPointsById((prev) => ({
+      ...prev,
+      [rowId]: points,
+    }));
+  };
+
+  const handleRewardGrant = async (row: UserFeedbackEntry) => {
+    const selectedPoints = rewardPointsById[row.id] || String(REWARD_POINT_OPTIONS[1].value);
+    const points = Number.parseInt(selectedPoints, 10);
+    if (!row.user_email) {
+      setError("这条反馈没有绑定用户邮箱，不能从反馈页直接发放积分。");
+      return;
+    }
+    if (!Number.isFinite(points) || points <= 0) {
+      setError("请输入有效的奖励积分。");
+      return;
+    }
+    setRewardingId(row.id);
+    setError("");
+    try {
+      await opsApi.grantFeedbackReward(row.id, points);
+      setRewardPointsById((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      await load();
+    } catch (err) {
+      setError(String(err).slice(0, 220));
+    } finally {
+      setRewardingId(null);
     }
   };
 
@@ -180,6 +224,35 @@ export function FeedbackPageClient() {
       </div>
 
       <Card>
+        <CardHeader className="pb-2">
+          <CardTitle>积分奖励标准</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+            {REWARD_GUIDELINES.map((item) => (
+              <div
+                key={item.points}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+              >
+                <div className="font-mono text-sm font-black text-blue-700">
+                  {item.points} 分
+                </div>
+                <div className="mt-1 text-xs font-bold text-slate-900">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-[11px] leading-4 text-slate-500">
+                  {item.detail}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            先确认反馈是否有效；未复现的问题可先标为已确认/处理中，奖励发放后会自动记录到用户账户页。
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">
           <CardTitle>反馈收件箱</CardTitle>
           <div className="flex flex-wrap gap-1.5">
@@ -216,46 +289,97 @@ export function FeedbackPageClient() {
                     <th className="py-2 pr-4 font-bold">上下文</th>
                     <th className="py-2 pr-4 font-bold">用户</th>
                     <th className="py-2 pr-4 font-bold">时间</th>
+                    <th className="py-2 pr-4 font-bold">奖励</th>
                     <th className="py-2 pr-4 font-bold">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-100 align-top">
-                      <td className="py-3 pr-4">
-                        <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-bold ${statusTone(row.status)}`}>
-                          {statusLabel(row.status)}
-                        </span>
-                      </td>
-                      <td className="py-3 pr-4 text-slate-500">{categoryLabel(row.category)}</td>
-                      <td className="max-w-xl py-3 pr-4">
-                        <div className="font-semibold leading-5 text-slate-900">{row.message || "—"}</div>
-                        {row.contact && <div className="mt-1 text-xs text-slate-500">联系：{row.contact}</div>}
-                      </td>
-                      <td className="py-3 pr-4">
-                        <div className="font-mono text-xs text-blue-700">{contextSummary(row.context)}</div>
-                        {Boolean(row.context?.detail_error) && (
-                          <div className="mt-1 max-w-xs text-xs text-amber-700">
-                            {String(row.context?.detail_error || "").slice(0, 120)}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 pr-4 font-mono text-xs text-slate-500">
-                        {row.user_email || row.user_id || "—"}
-                      </td>
-                      <td className="whitespace-nowrap py-3 pr-4 text-xs text-slate-500">{compactDate(row.created_at)}</td>
-                      <td className="py-3 pr-4">
-                        <button
-                          type="button"
-                          onClick={() => advanceStatus(row)}
-                          disabled={updatingId === row.id}
-                          className="rounded border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
-                        >
-                          标为{feedbackActionLabel(row.status)}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map((row) => {
+                    const selectedPoints = rewardPointsById[row.id] || String(REWARD_POINT_OPTIONS[1].value);
+                    const rewardPoints = Number(row.reward_points || 0);
+                    const rewardStatus = String(row.reward_status || "").toLowerCase();
+                    const hasReward = rewardStatus === "granted" && rewardPoints > 0;
+                    return (
+                      <tr key={row.id} className="border-b border-slate-100 align-top">
+                        <td className="py-3 pr-4">
+                          <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-bold ${statusTone(row.status)}`}>
+                            {statusLabel(row.status)}
+                          </span>
+                        </td>
+                        <td className="py-3 pr-4 text-slate-500">{categoryLabel(row.category)}</td>
+                        <td className="max-w-xl py-3 pr-4">
+                          <div className="font-semibold leading-5 text-slate-900">{row.message || "—"}</div>
+                          {row.contact && <div className="mt-1 text-xs text-slate-500">联系：{row.contact}</div>}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <div className="font-mono text-xs text-blue-700">{contextSummary(row.context)}</div>
+                          {Boolean(row.context?.detail_error) && (
+                            <div className="mt-1 max-w-xs text-xs text-amber-700">
+                              {String(row.context?.detail_error || "").slice(0, 120)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4 font-mono text-xs text-slate-500">
+                          {row.user_email || row.user_id || "—"}
+                        </td>
+                        <td className="whitespace-nowrap py-3 pr-4 text-xs text-slate-500">{compactDate(row.created_at)}</td>
+                        <td className="min-w-[170px] py-3 pr-4">
+                          {hasReward ? (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs">
+                              <div className="font-black text-emerald-700">
+                                已发放 +{rewardPoints.toLocaleString()} 分
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <select
+                                value={selectedPoints}
+                                onChange={(event) => updateRewardPoints(row.id, event.target.value)}
+                                disabled={rewardingId === row.id || !row.user_email}
+                                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                aria-label="奖励积分"
+                              >
+                                {REWARD_POINT_OPTIONS.map((item) => (
+                                  <option key={item.value} value={item.value}>
+                                    {item.label} · {item.title}
+                                  </option>
+                                ))}
+                              </select>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleRewardGrant(row)}
+                                disabled={rewardingId === row.id || !row.user_email}
+                                className="h-8 gap-1.5"
+                              >
+                                <Coins className="h-3.5 w-3.5" />
+                                发放奖励
+                              </Button>
+                              {!row.user_email && (
+                                <div className="text-[11px] text-amber-700">无用户邮箱，无法直接发放。</div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <select
+                            value={String(row.status || "open").toLowerCase()}
+                            onChange={(event) => changeStatus(row, event.target.value)}
+                            disabled={updatingId === row.id}
+                            className="h-8 min-w-[108px] rounded border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 outline-none transition hover:bg-slate-50 focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-wait disabled:opacity-60"
+                            aria-label="更新反馈状态"
+                          >
+                            {STATUS_UPDATE_OPTIONS.map((item) => (
+                              <option key={item.key} value={item.key}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
