@@ -121,6 +121,13 @@ export const opsApi = {
       body: JSON.stringify({ status }),
     });
   },
+  grantFeedbackReward(feedbackId: string | number, points: number) {
+    return opsFetch<Record<string, unknown>>(`/api/ops/feedback/${feedbackId}/reward`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points }),
+    });
+  },
   resolveIncident(eventId: string | number) {
     return opsFetch<Record<string, unknown>>(`/api/ops/payments/incidents/${eventId}/resolve`, {
       method: "POST",
