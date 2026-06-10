@@ -1,7 +1,13 @@
 import { getTemperatureChartData } from "@/lib/chart-utils";
 import type { CityDetail } from "@/lib/dashboard-types";
 import { buildDebBaselinePath } from "@/lib/temperature-chart-paths";
-import { buildFullDayChartData } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
+import {
+  buildFullDayChartData,
+  mergeHourlyWithLiveObservations,
+  mergePatchIntoHourly,
+  mergeRowObservationIntoHourly,
+  seedHourlyForecastFromRow,
+} from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
 function assert(condition: unknown, message: string) {
   if (!condition) throw new Error(message);
@@ -246,5 +252,154 @@ export function runTests() {
   assert(
     normalBaseline.debPast.some((t) => t != null) && normalBaseline.debFuture.some((t) => t != null),
     "Normal city: both past and future portions should have data",
+  );
+
+  const guangzhouRow = {
+    city: "guangzhou",
+    local_date: "2026-06-10",
+    local_time: "12:45",
+    current_temp: 28.4,
+    current_max_so_far: 29,
+    temp_symbol: "°C",
+    tz_offset_seconds: 8 * 3600,
+    metar_context: {
+      source: "amsc_awos",
+      station_label: "AMSC AWOS",
+      airport_current_temp: 28.4,
+      airport_obs_time: "12:45",
+      airport_max_so_far: 29,
+    },
+  } as any;
+  const seededGuangzhou = seedHourlyForecastFromRow(guangzhouRow);
+  const guangzhouLiveChart = buildFullDayChartData(guangzhouRow, seededGuangzhou, false);
+  const guangzhouSettlementRunway = guangzhouLiveChart.series.find((item) => item.key === "runway_02L_20R");
+  assert(
+    guangzhouSettlementRunway?.values.some((value) => value === 28.4),
+    "row-seeded runway cities must plot the latest scan-row observation immediately instead of waiting for city detail",
+  );
+
+  const guangzhouPatched = mergePatchIntoHourly(seededGuangzhou, {
+    city: "guangzhou",
+    revision: 42,
+    changes: {
+      temp: 28.8,
+      observed_at_local: "12:48",
+      obs_time: "12:48",
+      source: "amsc_awos",
+      runway_points: [{ runway: "02L/20R", temp: 28.8 }],
+    },
+  });
+  const guangzhouPatchedChart = buildFullDayChartData(guangzhouRow, guangzhouPatched, false);
+  const patchedRunway = guangzhouPatchedChart.series.find((item) => item.key === "runway_02L_20R");
+  assert(
+    patchedRunway?.values.some((value) => value === 28.8),
+    "SSE runway patches must append directly to the chart series without waiting for a force-refreshed detail payload",
+  );
+
+  const guangzhouLaterRow = {
+    ...guangzhouRow,
+    current_temp: 29.1,
+    local_time: "12:51",
+    sse_revision: 43,
+    metar_context: {
+      ...guangzhouRow.metar_context,
+      airport_current_temp: 29.1,
+      airport_obs_time: "12:51",
+      airport_max_so_far: 29.1,
+    },
+  } as any;
+  const guangzhouRowMerged = mergeRowObservationIntoHourly(seededGuangzhou, guangzhouLaterRow);
+  const guangzhouRowMergedChart = buildFullDayChartData(guangzhouLaterRow, guangzhouRowMerged, false);
+  const rowMergedRunway = guangzhouRowMergedChart.series.find((item) => item.key === "runway_02L_20R");
+  assert(
+    rowMergedRunway?.values.some((value) => value === 29.1),
+    "same-city scan row observation changes must merge into chart state without requiring an active-slot click",
+  );
+
+  const staleDetail = {
+    ...seededGuangzhou,
+    forecastDaily: [{ date: "2026-06-10", max_temp: 31, min_temp: 24 }] as any,
+    probabilities: { engine: "legacy", distribution: [{ value: 30, probability: 0.4 }] },
+    runwayPlateHistory: {
+      "02L/20R": [{ timestamp: "12:45", temp_c: 28.4, value: 28.4 }],
+    },
+    airportPrimaryTodayObs: [["12:45", 28.4]],
+    airportCurrent: { temp: 28.4, obs_time: "12:45", max_so_far: 29 },
+    airportPrimary: { temp: 28.4, obs_time: "12:45", max_so_far: 29 },
+  } as any;
+  const mergedAfterStaleDetail = mergeHourlyWithLiveObservations(staleDetail, guangzhouPatched, guangzhouRow);
+  const mergedAfterStaleDetailChart = buildFullDayChartData(guangzhouRow, mergedAfterStaleDetail, false);
+  const preservedPatchRunway = mergedAfterStaleDetailChart.series.find((item) => item.key === "runway_02L_20R");
+  assert(
+    preservedPatchRunway?.values.some((value) => value === 28.8),
+    "stale full-detail responses must not overwrite a newer live SSE observation point",
+  );
+
+  const chengduDetail = {
+    forecastTodayHigh: null,
+    debPrediction: 31,
+    debQuality: null,
+    debHourlyPath: null,
+    localDate: "2026-06-10",
+    localTime: "13:46",
+    times: [],
+    temps: [],
+    modelCurves: undefined,
+    runwayPlateHistory: {
+      "02L/20R": [
+        { timestamp: "13:35", temp_c: 29.6, value: 29.6 },
+        { timestamp: "13:39", temp_c: 29.8, value: 29.8 },
+        { timestamp: "13:43", temp_c: 30.4, value: 30.4 },
+      ],
+    },
+    runwayBandHistory: undefined,
+    amos: null,
+    current: null,
+    airportCurrent: { temp: 28, obs_time: "13:00", max_so_far: 28 },
+    airportPrimary: { temp: 28, obs_time: "13:00", max_so_far: 28 },
+    forecastDaily: [],
+    multiModelDaily: {},
+    probabilities: null,
+    airportPrimaryTodayObs: [["13:00", 28]],
+  } as any;
+  const staleChengduRow = {
+    city: "chengdu",
+    local_date: "2026-06-07",
+    local_time: "21:37",
+    current_temp: 21.0,
+    current_max_so_far: 25.0,
+    temp_symbol: "°C",
+    tz_offset_seconds: 8 * 3600,
+    runway_plate_history: {
+      "02L/20R": [
+        { time: "2026-06-07T13:20:00+00:00", temp: 21.2 },
+        { time: "2026-06-07T13:30:00+00:00", temp: 21.4 },
+      ],
+    },
+  } as any;
+  const chengduMerged = mergeRowObservationIntoHourly(chengduDetail, staleChengduRow);
+  const chengduChart = buildFullDayChartData(
+    {
+      city: "chengdu",
+      local_date: "2026-06-10",
+      local_time: "13:46",
+      temp_symbol: "°C",
+      tz_offset_seconds: 8 * 3600,
+    } as any,
+    chengduMerged,
+    false,
+  );
+  const chengduSettlementRunway = chengduChart.series.find((item) => item.key === "runway_02L_20R");
+  assert(
+    chengduSettlementRunway?.values.some((value) => value === 30.4),
+    "current-date Chengdu detail runway history should remain visible after receiving a stale scan row",
+  );
+  assert(
+    !chengduSettlementRunway?.values.some((value) => value !== null && value <= 22),
+    "stale previous-day Chengdu scan rows must not append a fake latest runway point to current-date detail",
+  );
+  assert(
+    chengduMerged?.airportCurrent?.temp === 28,
+    "stale previous-day scan rows must not replace current-date detail airport conditions",
   );
 }

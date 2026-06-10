@@ -78,6 +78,49 @@ def _city_force_refresh_timeout_sec() -> float:
     return max(0.01, min(30.0, value))
 
 
+def _city_chart_optional_overlay_timeout_sec() -> float:
+    try:
+        timeout_ms = int(
+            os.getenv("POLYWEATHER_CITY_CHART_OPTIONAL_OVERLAY_TIMEOUT_MS", "500")
+            or "500"
+        )
+    except ValueError:
+        timeout_ms = 500
+    return max(0.001, min(3.0, timeout_ms / 1000.0))
+
+
+async def _run_optional_city_chart_overlay(
+    *,
+    city: str,
+    overlay_name: str,
+    payload: Dict[str, Any],
+    fn: Callable[..., Dict[str, Any]],
+    args: Tuple[Any, ...],
+) -> Dict[str, Any]:
+    timeout_sec = _city_chart_optional_overlay_timeout_sec()
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(fn, *args),
+            timeout=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "city chart optional overlay timed out city={} overlay={} timeout_sec={}; returning cached payload",
+            city,
+            overlay_name,
+            timeout_sec,
+        )
+        return payload
+    except Exception as exc:
+        logger.debug(
+            "city chart optional overlay skipped city={} overlay={}: {}",
+            city,
+            overlay_name,
+            exc,
+        )
+        return payload
+
+
 async def _get_cached_city_payload(city: str, kind: str) -> Dict[str, Any]:
     cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, kind, city)
     if not isinstance(cached_entry, dict):
@@ -354,14 +397,20 @@ async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, A
     if cached_entry:
         payload = cached_entry.get("payload") or {}
         if payload:
-            if not legacy_routes._city_cache_is_fresh(cached_entry, legacy_routes.CITY_FULL_CACHE_TTL_SEC):
-                _start_city_full_stale_refresh(city)
-            payload = await run_in_threadpool(
-                _overlay_cached_runway_history_from_db,
-                city,
-                payload,
+            payload = await _run_optional_city_chart_overlay(
+                city=city,
+                overlay_name="runway_history",
+                payload=payload,
+                fn=_overlay_cached_runway_history_from_db,
+                args=(city, payload),
             )
-            return await _overlay_cached_wunderground(city, payload)
+            return await _run_optional_city_chart_overlay(
+                city=city,
+                overlay_name="wunderground_current",
+                payload=payload,
+                fn=legacy_routes._overlay_latest_wunderground_current,
+                args=(city, payload),
+            )
 
     return {
         "name": city,
@@ -936,17 +985,17 @@ async def _build_city_detail_batch_item_async(
 
 def _city_detail_batch_concurrency() -> int:
     try:
-        value = int(os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY", "1") or "1")
+        value = int(os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY", "3") or "3")
     except ValueError:
-        value = 1
+        value = 3
     return max(1, min(4, value))
 
 
 def _city_detail_batch_global_concurrency() -> int:
     try:
-        value = int(os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY", "1") or "1")
+        value = int(os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY", "2") or "2")
     except ValueError:
-        value = 1
+        value = 2
     return max(1, min(4, value))
 
 
@@ -963,14 +1012,98 @@ def _city_detail_batch_build_semaphore() -> threading.BoundedSemaphore:
 def _city_detail_batch_partial_timeout_seconds() -> Optional[float]:
     try:
         timeout_ms = int(
-            os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", "3000")
-            or "3000"
+            os.getenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", "8000")
+            or "8000"
         )
     except ValueError:
-        timeout_ms = 3000
+        timeout_ms = 8000
     if timeout_ms <= 0:
         return None
     return max(0.001, min(60.0, timeout_ms / 1000.0))
+
+
+def _city_detail_batch_partial_timeout_ms() -> Optional[int]:
+    timeout_sec = _city_detail_batch_partial_timeout_seconds()
+    if timeout_sec is None:
+        return None
+    return int(round(timeout_sec * 1000.0))
+
+
+def _city_detail_batch_partial_reason(
+    *,
+    busy: bool,
+    missing: List[str],
+    errors: Dict[str, str],
+) -> Optional[str]:
+    if busy:
+        return "busy"
+    if missing and errors:
+        return "timeout_error"
+    if missing:
+        return "timeout"
+    if errors:
+        return "error"
+    return None
+
+
+def _build_city_detail_batch_diagnostics(
+    *,
+    city_names: List[str],
+    details: Dict[str, Any],
+    errors: Dict[str, str],
+    missing: List[str],
+    resolution: Optional[str],
+    detail_scope: str,
+    force_refresh: bool,
+    response_source: str,
+    busy: bool = False,
+    city_durations_ms: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    city_durations_ms = city_durations_ms or {}
+    missing_set = set(missing)
+    error_set = set(errors)
+    detail_set = set(details)
+    partial_reason = _city_detail_batch_partial_reason(
+        busy=busy,
+        missing=missing,
+        errors=errors,
+    )
+    city_status: Dict[str, Dict[str, Any]] = {}
+    for city in city_names:
+        if busy:
+            status = "busy"
+        elif city in missing_set:
+            status = "timeout"
+        elif city in error_set:
+            status = "error"
+        elif city in detail_set:
+            status = "ok"
+        else:
+            status = "missing"
+        city_status[city] = {
+            "status": status,
+            "duration_ms": city_durations_ms.get(city),
+        }
+        if city in errors:
+            city_status[city]["error"] = errors[city]
+
+    return {
+        "version": 1,
+        "response_source": response_source,
+        "partial": bool(partial_reason),
+        "partial_reason": partial_reason,
+        "requested_count": len(city_names),
+        "completed_count": len(details),
+        "missing_count": len(missing),
+        "error_count": len(errors),
+        "batch_concurrency": _city_detail_batch_concurrency(),
+        "global_concurrency": _city_detail_batch_global_concurrency(),
+        "partial_timeout_ms": _city_detail_batch_partial_timeout_ms(),
+        "force_refresh": force_refresh,
+        "resolution": resolution,
+        "scope": detail_scope,
+        "city_status": city_status,
+    }
 
 
 async def get_city_detail_batch_payload(
@@ -1014,30 +1147,52 @@ async def get_city_detail_batch_payload(
         async def _build_uncached_payload() -> Dict[str, Any]:
             build_semaphore = _city_detail_batch_build_semaphore()
             if not build_semaphore.acquire(blocking=False):
+                missing = list(city_names)
+                errors: Dict[str, str] = {}
+                details: Dict[str, Any] = {}
                 return {
                     "cities": city_names,
-                    "details": {},
-                    "errors": {},
-                    "missing": list(city_names),
+                    "details": details,
+                    "errors": errors,
+                    "missing": missing,
                     "partial": True,
                     "busy": True,
                     "stale_reason": "city detail batch builder is busy",
+                    "diagnostics": _build_city_detail_batch_diagnostics(
+                        city_names=city_names,
+                        details=details,
+                        errors=errors,
+                        missing=missing,
+                        resolution=resolution,
+                        detail_scope=detail_scope,
+                        force_refresh=force_refresh,
+                        response_source="busy",
+                        busy=True,
+                    ),
                 }
 
             try:
                 semaphore = asyncio.Semaphore(_city_detail_batch_concurrency())
+                city_durations_ms: Dict[str, float] = {}
 
                 async def _build_with_limit(city: str) -> Tuple[str, Dict[str, Any]]:
                     async with semaphore:
-                        return await _build_city_detail_batch_item_async(
-                            city,
-                            force_refresh=force_refresh,
-                            market_slug=market_slug,
-                            target_date=target_date,
-                            resolution=resolution,
-                            detail_scope=detail_scope,
-                            timing_recorder=timer,
-                        )
+                        started = time.perf_counter()
+                        try:
+                            return await _build_city_detail_batch_item_async(
+                                city,
+                                force_refresh=force_refresh,
+                                market_slug=market_slug,
+                                target_date=target_date,
+                                resolution=resolution,
+                                detail_scope=detail_scope,
+                                timing_recorder=timer,
+                            )
+                        finally:
+                            city_durations_ms[city] = round(
+                                (time.perf_counter() - started) * 1000.0,
+                                1,
+                            )
 
                 task_by_city = {
                     city: asyncio.create_task(_build_with_limit(city))
@@ -1076,6 +1231,17 @@ async def get_city_detail_batch_payload(
                     "errors": errors,
                     "missing": missing,
                     "partial": bool(missing or errors),
+                    "diagnostics": _build_city_detail_batch_diagnostics(
+                        city_names=city_names,
+                        details=details,
+                        errors=errors,
+                        missing=missing,
+                        resolution=resolution,
+                        detail_scope=detail_scope,
+                        force_refresh=force_refresh,
+                        response_source="fresh_build",
+                        city_durations_ms=city_durations_ms,
+                    ),
                 }
             finally:
                 build_semaphore.release()
