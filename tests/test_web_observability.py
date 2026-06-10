@@ -925,6 +925,93 @@ def test_chart_scope_overlays_collector_runway_history_from_db(monkeypatch):
     assert history[-1] == {"time": "2026-06-06T05:28:00+00:00", "temp": 24.8}
 
 
+def test_chart_data_cache_hit_does_not_start_full_stale_refresh(monkeypatch):
+    import asyncio
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            return {
+                "payload": {
+                    "name": city,
+                    "display_name": city.title(),
+                    "hourly": {"times": ["13:00"], "temps": [25.0]},
+                },
+            }
+
+        def get_runway_obs_recent(self, icao, minutes=60):
+            return []
+
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(
+        city_api.legacy_routes,
+        "_city_cache_is_fresh",
+        lambda entry, ttl: False,
+    )
+    monkeypatch.setattr(
+        city_api,
+        "_start_city_full_stale_refresh",
+        lambda city: (_ for _ in ()).throw(AssertionError("chart scope must not start full stale refresh")),
+    )
+    monkeypatch.setattr(
+        city_api.legacy_routes,
+        "_overlay_latest_wunderground_current",
+        lambda city, payload: payload,
+    )
+
+    payload = asyncio.run(city_api._get_city_chart_data("paris", force_refresh=False))
+
+    assert payload["hourly"]["temps"] == [25.0]
+
+
+def test_chart_data_returns_cached_payload_when_optional_overlay_times_out(monkeypatch):
+    import asyncio
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            return {
+                "payload": {
+                    "name": city,
+                    "display_name": city.title(),
+                    "risk": {"icao": "ZSPD"},
+                    "hourly": {"times": ["13:00"], "temps": [25.0]},
+                    "runway_plate_history": {
+                        "35R/17L": [{"time": "2026-06-06T05:21:00+00:00", "temp": 24.2}]
+                    },
+                },
+            }
+
+        def get_runway_obs_recent(self, icao, minutes=60):
+            return [
+                {
+                    "runway": "35R/17L",
+                    "target_runway_max": 24.8,
+                    "otime_utc": "2026-06-06T05:28:00+00:00",
+                }
+            ]
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        if fn is city_api._overlay_cached_runway_history_from_db:
+            await asyncio.sleep(0.05)
+        return fn(*args, **kwargs)
+
+    monkeypatch.setenv("POLYWEATHER_CITY_CHART_OPTIONAL_OVERLAY_TIMEOUT_MS", "1")
+    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(
+        city_api.legacy_routes,
+        "_overlay_latest_wunderground_current",
+        lambda city, payload: payload,
+    )
+
+    payload = asyncio.run(city_api._get_city_chart_data("shanghai", force_refresh=False))
+
+    assert payload["runway_plate_history"]["35R/17L"] == [
+        {"time": "2026-06-06T05:21:00+00:00", "temp": 24.2}
+    ]
+
+
 def test_chart_detail_payload_uses_threadpool_and_reuses_short_cache(monkeypatch):
     import asyncio
 
@@ -969,7 +1056,12 @@ def test_chart_detail_payload_uses_threadpool_and_reuses_short_cache(monkeypatch
 
 def test_city_detail_batch_partial_timeout_default_stays_below_proxy_budget(monkeypatch):
     monkeypatch.delenv("POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS", raising=False)
-    assert city_api._city_detail_batch_partial_timeout_seconds() == 3.0
+    monkeypatch.delenv("POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY", raising=False)
+    monkeypatch.delenv("POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY", raising=False)
+
+    assert city_api._city_detail_batch_concurrency() == 3
+    assert city_api._city_detail_batch_global_concurrency() == 2
+    assert city_api._city_detail_batch_partial_timeout_seconds() == 8.0
 
 
 def test_city_detail_batch_returns_busy_when_global_builder_slot_is_full(monkeypatch):
@@ -1007,6 +1099,13 @@ def test_city_detail_batch_returns_busy_when_global_builder_slot_is_full(monkeyp
     assert payload["busy"] is True
     assert payload["details"] == {}
     assert payload["missing"] == ["paris", "shanghai"]
+    assert payload["diagnostics"]["partial_reason"] == "busy"
+    assert payload["diagnostics"]["response_source"] == "busy"
+    assert payload["diagnostics"]["requested_count"] == 2
+    assert payload["diagnostics"]["completed_count"] == 0
+    assert payload["diagnostics"]["missing_count"] == 2
+    assert payload["diagnostics"]["city_status"]["paris"]["status"] == "busy"
+    assert payload["diagnostics"]["city_status"]["shanghai"]["status"] == "busy"
     assert build_calls == 0
 
 
@@ -1097,6 +1196,17 @@ def test_city_detail_batch_returns_completed_details_when_one_city_is_slow(monke
     assert payload["partial"] is True
     assert payload["missing"] == ["slow"]
     assert payload["errors"] == {}
+    assert payload["diagnostics"]["partial_reason"] == "timeout"
+    assert payload["diagnostics"]["requested_count"] == 3
+    assert payload["diagnostics"]["completed_count"] == 2
+    assert payload["diagnostics"]["missing_count"] == 1
+    assert payload["diagnostics"]["error_count"] == 0
+    assert payload["diagnostics"]["batch_concurrency"] == 2
+    assert payload["diagnostics"]["partial_timeout_ms"] == 20
+    assert payload["diagnostics"]["city_status"]["fast"]["status"] == "ok"
+    assert payload["diagnostics"]["city_status"]["other"]["status"] == "ok"
+    assert payload["diagnostics"]["city_status"]["slow"]["status"] == "timeout"
+    assert isinstance(payload["diagnostics"]["city_status"]["fast"]["duration_ms"], (int, float))
     assert "slow" not in completed
 
 
@@ -2019,7 +2129,7 @@ def test_auth_me_uses_subscription_window_as_required_subscription_gate(monkeypa
     assert payload["subscription_queued_days"] == 30
 
 
-def test_auth_me_entitlement_scope_reuses_subscription_window_cache(monkeypatch):
+def test_auth_me_entitlement_scope_reuses_subscription_access_window_cache(monkeypatch):
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
@@ -2032,16 +2142,15 @@ def test_auth_me_entitlement_scope_reuses_subscription_window_cache(monkeypatch)
 
     calls = []
 
-    def _subscription_window(
+    def _subscription_access_window(
         user_id,
         respect_requirement=False,
-        bypass_cache=False,
         unknown_on_error=False,
     ):
         calls.append(
             {
                 "user_id": user_id,
-                "bypass_cache": bypass_cache,
+                "respect_requirement": respect_requirement,
                 "unknown_on_error": unknown_on_error,
             }
         )
@@ -2056,7 +2165,12 @@ def test_auth_me_entitlement_scope_reuses_subscription_window_cache(monkeypatch)
 
     monkeypatch.setattr(routes, "_assert_entitlement", lambda request: None)
     monkeypatch.setattr(routes, "_bind_optional_supabase_identity", _bind_identity)
-    monkeypatch.setattr(routes.SUPABASE_ENTITLEMENT, "get_subscription_window", _subscription_window)
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "get_subscription_access_window",
+        _subscription_access_window,
+        raising=False,
+    )
 
     response = client.get("/api/auth/me?scope=entitlement")
 
@@ -2064,7 +2178,163 @@ def test_auth_me_entitlement_scope_reuses_subscription_window_cache(monkeypatch)
     assert calls == [
         {
             "user_id": "user-1",
-            "bypass_cache": False,
+            "respect_requirement": False,
+            "unknown_on_error": True,
+        }
+    ]
+
+
+def test_auth_me_entitlement_scope_defers_signup_trial_grant(monkeypatch):
+    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
+    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
+    monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
+    monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
+
+    def _bind_identity(request):
+        request.state.auth_user_id = "user-1"
+        request.state.auth_email = "user@example.com"
+        request.state.auth_points = 0
+
+    scheduled = []
+
+    def _start_signup_trial_background(user_id, email):
+        scheduled.append((user_id, email))
+        return True
+
+    monkeypatch.setattr(routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(routes, "_bind_optional_supabase_identity", _bind_identity)
+    monkeypatch.setattr(
+        auth_api,
+        "_start_signup_trial_background",
+        _start_signup_trial_background,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "ensure_signup_trial",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("entitlement scope must not block on signup trial writes"),
+        ),
+    )
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "get_subscription_access_window",
+        lambda user_id, respect_requirement=False, bypass_cache=False, unknown_on_error=False: {},
+        raising=False,
+    )
+
+    response = client.get("/api/auth/me?scope=entitlement")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["subscription_active"] is None
+    assert scheduled == [("user-1", "user@example.com")]
+
+
+def test_signup_trial_background_grant_is_singleflight_and_cooled_down(monkeypatch):
+    with auth_api._SIGNUP_TRIAL_INFLIGHT_LOCK:
+        auth_api._SIGNUP_TRIAL_INFLIGHT.clear()
+        auth_api._SIGNUP_TRIAL_RECENT_ATTEMPTS.clear()
+
+    submitted = []
+    ensure_calls = []
+
+    class _FakeExecutor:
+        def submit(self, fn):
+            submitted.append(fn)
+            return object()
+
+    monkeypatch.setattr(auth_api, "_SIGNUP_TRIAL_EXECUTOR", _FakeExecutor())
+    monkeypatch.setattr(auth_api, "_signup_trial_background_cooldown_sec", lambda: 300.0)
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "ensure_signup_trial",
+        lambda user_id, email: ensure_calls.append((user_id, email)),
+    )
+
+    assert auth_api._start_signup_trial_background("user-1", "user@example.com") is True
+    assert auth_api._start_signup_trial_background("user-1", "user@example.com") is False
+    assert len(submitted) == 1
+
+    submitted[0]()
+
+    assert ensure_calls == [("user-1", "user@example.com")]
+    assert auth_api._start_signup_trial_background("user-1", "user@example.com") is False
+    assert len(submitted) == 1
+
+
+def test_auth_me_entitlement_scope_uses_access_window_fast_path(monkeypatch):
+    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
+    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
+    monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
+    monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
+
+    def _bind_identity(request):
+        request.state.auth_user_id = "user-1"
+        request.state.auth_email = "user@example.com"
+        request.state.auth_points = 0
+
+    fast_calls = []
+
+    def _access_window(user_id, respect_requirement=False, unknown_on_error=False):
+        fast_calls.append(
+            {
+                "user_id": user_id,
+                "respect_requirement": respect_requirement,
+                "unknown_on_error": unknown_on_error,
+            }
+        )
+        return {
+            "current": {
+                "plan_code": "pro_monthly",
+                "source": "payment_contract",
+                "starts_at": "2026-06-01T00:00:00+00:00",
+                "expires_at": "2026-07-01T00:00:00+00:00",
+            },
+            "total_expires_at": "2026-07-01T00:00:00+00:00",
+            "queued_days": 0,
+            "queued_count": 0,
+        }
+
+    monkeypatch.setattr(routes, "_assert_entitlement", lambda request: None)
+    monkeypatch.setattr(routes, "_bind_optional_supabase_identity", _bind_identity)
+    monkeypatch.setattr(
+        auth_api,
+        "_start_signup_trial_background",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("active entitlement must not schedule signup trial work"),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "ensure_signup_trial",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "get_subscription_access_window",
+        _access_window,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes.SUPABASE_ENTITLEMENT,
+        "get_subscription_window",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("entitlement scope should use the current-access fast path"),
+        ),
+    )
+
+    response = client.get("/api/auth/me?scope=entitlement")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["subscription_active"] is True
+    assert payload["subscription_plan_code"] == "pro_monthly"
+    assert fast_calls == [
+        {
+            "user_id": "user-1",
+            "respect_requirement": False,
             "unknown_on_error": True,
         }
     ]
@@ -2287,7 +2557,7 @@ def test_auth_me_entitlement_scope_skips_non_access_profile_sections(monkeypatch
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "get_identity", lambda token: _Identity())
     monkeypatch.setattr(
         web_core.SUPABASE_ENTITLEMENT,
-        "get_subscription_window",
+        "get_subscription_access_window",
         lambda user_id, respect_requirement=False, bypass_cache=False, unknown_on_error=False: {
             "current": {
                 "plan_code": "pro_monthly",
@@ -2298,6 +2568,7 @@ def test_auth_me_entitlement_scope_skips_non_access_profile_sections(monkeypatch
             "queued_days": 0,
             "queued_count": 0,
         },
+        raising=False,
     )
     monkeypatch.setattr(
         web_core.SUPABASE_ENTITLEMENT,
@@ -3125,6 +3396,81 @@ def test_scan_terminal_cold_requests_start_background_build_without_blocking(mon
     assert [result["status"] for result in results] == ["failed", "failed"]
     assert all(result["rows"] == [] for result in results)
     assert all("初始化" in result["stale_reason"] or "刷新中" in result["stale_reason"] for result in results)
+
+
+def test_scan_terminal_background_refresh_reuses_cached_city_data(monkeypatch):
+    filters = {"scan_mode": "tradable", "limit": 17, "min_edge_pct": 6.75}
+    calls = []
+
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "mark_scan_terminal_refreshing",
+        lambda _filters: True,
+    )
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "clear_scan_terminal_refreshing",
+        lambda _filters: None,
+    )
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "_build_scan_terminal_payload_singleflight",
+        lambda filters_arg, *, force_refresh=False: calls.append(
+            (dict(filters_arg), force_refresh)
+        ),
+    )
+
+    class _ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(scan_terminal_service.threading, "Thread", _ImmediateThread)
+
+    assert scan_terminal_service._start_scan_terminal_background_refresh(filters) is True
+    assert calls == [(filters, False)]
+
+
+def test_scan_terminal_nonforce_ignores_ancient_success_snapshot(monkeypatch):
+    filters = {"scan_mode": "tradable", "limit": 17, "min_edge_pct": 6.75}
+    old_success_t = 1780839484.0
+
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "get_cached_scan_terminal_payload",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "get_scan_terminal_cache_entry",
+        lambda *_args, **_kwargs: {
+            "t": old_success_t,
+            "success_t": old_success_t,
+            "success_payload": {
+                "generated_at": "2026-06-07T13:38:04.694350Z",
+                "rows": [{"id": "chengdu:2026-06-07", "city": "chengdu", "current_temp": 21.0}],
+                "summary": {"candidate_total": 1},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        scan_terminal_service.time,
+        "time",
+        lambda: old_success_t + scan_terminal_service.SCAN_TERMINAL_PAYLOAD_TTL_SEC * 3,
+    )
+    monkeypatch.setattr(
+        scan_terminal_service,
+        "_start_scan_terminal_background_refresh",
+        lambda *_args, **_kwargs: True,
+    )
+
+    payload = scan_terminal_service.build_scan_terminal_payload(filters)
+
+    assert payload["status"] == "failed"
+    assert payload["rows"] == []
+    assert payload["summary"]["candidate_total"] == 0
 
 
 def test_scan_terminal_prewarm_builds_default_terminal_payload(monkeypatch):

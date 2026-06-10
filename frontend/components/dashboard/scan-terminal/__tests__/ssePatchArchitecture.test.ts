@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  __applySsePatchForTest,
+  getLatestPatchesSnapshot,
+} from "@/hooks/use-sse-patches";
 
 function assert(condition: unknown, message: string) {
   if (!condition) throw new Error(message);
@@ -78,6 +82,15 @@ export function runTests() {
   assert(nginx.includes("location /api/events"), "Nginx deploy config must route /api/events separately");
   assert(nginx.includes("proxy_buffering off"), "Nginx /api/events must disable proxy buffering for SSE");
   assert(nginx.includes("proxy_read_timeout 86400s"), "Nginx /api/events must keep SSE connections open");
+  const frontendServerStart = nginx.indexOf("server_name polyweather.top www.polyweather.top");
+  const apiServerStart = nginx.indexOf("server_name api.polyweather.top");
+  const frontendServer = nginx.slice(frontendServerStart, apiServerStart);
+  assert(
+    frontendServer.includes("location /api/events") &&
+      frontendServer.includes("proxy_pass http://127.0.0.1:8000") &&
+      frontendServer.indexOf("location /api/events") < frontendServer.indexOf("location / {"),
+    "Nginx frontend host must route /api/events directly to FastAPI before the generic Next.js location",
+  );
 
   const weatherSources = readRepoFile("src", "data_collection", "weather_sources.py");
   assert(weatherSources.includes("_emit_temperature_patch_if_changed"), "collector must centralize temperature patch emission");
@@ -118,6 +131,36 @@ export function runTests() {
       !subscriptionBlock.includes("ensureSsePatchConnection();"),
     "city subscription mount/unmount should schedule one coalesced SSE reconnect instead of reconnecting per chart",
   );
+  const originalDateNow = Date.now;
+  try {
+    Date.now = () => 1_000_000;
+    __applySsePatchForTest({
+      type: "city_observation_patch.v1",
+      city: "Latency City",
+      source: "amsc_awos",
+      obs_time: "2026-06-10T04:50:00Z",
+      observed_at_utc: "2026-06-10T04:50:00Z",
+      revision: 987001,
+      ts: 940_000,
+      sse_emitted_at_ms: 995_000,
+      payload: {
+        temp: 30.5,
+        latency_sec: 64,
+        received_at_utc: "2026-06-10T04:51:04Z",
+      },
+    });
+    const latencyPatch = getLatestPatchesSnapshot().get("latency city") as any;
+    assert(
+      latencyPatch?.delivery?.client_received_at_ms === 1_000_000 &&
+        latencyPatch?.delivery?.sse_emitted_at_ms === 995_000 &&
+        latencyPatch?.delivery?.server_to_client_latency_sec === 5 &&
+        latencyPatch?.delivery?.collector_to_client_latency_sec === 60 &&
+        latencyPatch?.delivery?.source_to_collector_latency_sec === 64,
+      "frontend patch hook should retain SSE delivery latency diagnostics for feedback context",
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
 
   const bffEventsRoute = readFrontendFile("app", "api", "events", "route.ts");
   assert(bffEventsRoute.includes("searchParams"), "Next.js SSE proxy must forward query parameters to FastAPI");
@@ -151,7 +194,11 @@ export function runTests() {
   assert(
     chart.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
       !chart.includes("2 * 60_000"),
-    "temperature chart must wait one METAR cadence without patches before full-fetch fallback",
+    "temperature chart must keep METAR cadence for heavy patch-triggered probability refreshes",
+  );
+  assert(
+    chart.includes("NO_PATCH_CACHED_DETAIL_REFRESH_MS = DASHBOARD_REFRESH_POLICY_MS.observation"),
+    "temperature chart must use observation cadence for lightweight cached no-patch refreshes",
   );
   assert(chart.includes("TemperatureChartCanvas"), "temperature chart shell must compose the extracted chart canvas");
   assert(chart.includes("TemperatureStatsBars"), "temperature chart shell must compose the extracted stat bars");
@@ -182,10 +229,12 @@ export function runTests() {
     chart.includes("ignoreCache: true") && chart.includes("currentCityLocalDate !== loadedLocalDate"),
     "temperature chart must background-refresh full city detail when the city-local day rolls over",
   );
-  const fallbackRefreshBlock = chart.match(/const refreshFullDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
+  const fallbackRefreshBlock = chart.match(/const refreshCachedDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
   assert(
-    !fallbackRefreshBlock.includes("setIsHourlyLoading(true)"),
-    "no-patch fallback refresh should update the chart in the background without showing the loading overlay",
+    fallbackRefreshBlock.includes("fetchHourlyForecastForCity(city, { resolution: targetResolution })") &&
+      !fallbackRefreshBlock.includes("ignoreCache: true") &&
+      !fallbackRefreshBlock.includes("setIsHourlyLoading(true)"),
+    "no-patch fallback refresh should update the chart through cached batch detail without force-refreshing or showing the loading overlay",
   );
   const resyncBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!resyncVersion \|\| !city\) return;[\s\S]*?\}, \[resyncVersion, city, targetResolution, applySuccessfulHourlyDetail\]\);/)?.[0] || "";
   assert(
@@ -240,7 +289,9 @@ export function runTests() {
       chart.includes("refreshProbabilityOverlayAfterPatch"),
     "temperature chart must trigger a throttled background probability refresh after live observation patches",
   );
-  const patchEffectBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!latestPatch[\s\S]*?\}, \[latestPatch, row, city, targetResolution, compact, isActive, isMaximized, applySuccessfulHourlyDetail\]\);/)?.[0] || "";
+  const patchEffectBlock = chart.match(
+    /useEffect\(\(\) => \{\s*if \(!latestPatch[\s\S]*?refreshProbabilityOverlayAfterPatch\(\);[\s\S]*?\}, \[[^\]]*latestPatch[^\]]*applySuccessfulHourlyDetail[^\]]*\]\);/,
+  )?.[0] || "";
   assert(
     patchEffectBlock.includes("refreshProbabilityOverlayAfterPatch") &&
       patchEffectBlock.includes("ignoreCache: true") &&

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxyBackendJsonGet } from "@/lib/api-proxy";
-import { buildCityDetailProxyCachePolicy } from "@/lib/proxy-cache-policy";
+import {
+  buildCityDetailProxyCachePolicy,
+  NO_STORE_CACHE_CONTROL,
+} from "@/lib/proxy-cache-policy";
 import {
   createProxyTimer,
   finishProxyTimedResponse,
@@ -33,6 +36,15 @@ function parseRequestedCities(req: NextRequest) {
 }
 
 function buildCityDetailBatchTimeoutPayload(requestedCities: string[]) {
+  const city_status = Object.fromEntries(
+    requestedCities.map((city) => [
+      city,
+      {
+        status: "proxy_timeout",
+        duration_ms: null,
+      },
+    ]),
+  );
   return {
     cities: requestedCities,
     details: {},
@@ -40,6 +52,18 @@ function buildCityDetailBatchTimeoutPayload(requestedCities: string[]) {
     missing: requestedCities,
     partial: true,
     timeout: true,
+    diagnostics: {
+      version: 1,
+      response_source: "next_proxy_timeout",
+      partial: true,
+      partial_reason: "proxy_timeout",
+      requested_count: requestedCities.length,
+      completed_count: 0,
+      missing_count: requestedCities.length,
+      error_count: 0,
+      proxy_timeout_ms: DETAIL_BATCH_PROXY_TIMEOUT_MS,
+      city_status,
+    },
   };
 }
 
@@ -58,7 +82,7 @@ export async function GET(req: NextRequest) {
 
   const forceRefresh = req.nextUrl.searchParams.get("force_refresh") ?? "false";
   const requestedCities = parseRequestedCities(req);
-  const cachePolicy = buildCityDetailProxyCachePolicy(forceRefresh, 15);
+  const cachePolicy = buildCityDetailProxyCachePolicy(forceRefresh);
   const searchParams = new URLSearchParams({
     cities: req.nextUrl.searchParams.get("cities") || "",
     force_refresh: forceRefresh,
@@ -79,7 +103,7 @@ export async function GET(req: NextRequest) {
         data &&
         typeof data === "object" &&
         (data as { partial?: unknown }).partial === true
-          ? "no-store, max-age=0"
+          ? NO_STORE_CACHE_CONTROL
           : cachePolicy.responseCacheControl,
       fetchCache: "no-store",
       publicMessage: "Failed to fetch city detail batch",
@@ -87,7 +111,10 @@ export async function GET(req: NextRequest) {
       signal: controller.signal,
       timeoutResponse: () =>
         NextResponse.json(buildCityDetailBatchTimeoutPayload(requestedCities), {
-          headers: { "Cache-Control": "no-store, max-age=0" },
+          headers: {
+            "Cache-Control": NO_STORE_CACHE_CONTROL,
+            "Cloudflare-CDN-Cache-Control": NO_STORE_CACHE_CONTROL,
+          },
           status: 200,
         }),
       timeoutPublicMessage: "City detail batch request timed out",
