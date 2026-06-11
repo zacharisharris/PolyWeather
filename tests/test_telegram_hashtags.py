@@ -4,6 +4,8 @@ from src.utils.telegram_push import (
     _AIRPORT_PUSH_INTERVAL,
     _build_airport_status_message,
     _compute_slope_15m,
+    _due_airport_cities,
+    _parse_observation_time_epoch,
     _run_high_freq_airport_cycle,
     _telegram_push_language,
 )
@@ -163,23 +165,36 @@ def test_singapore_is_in_telegram_push_city_lists():
     assert HIGH_FREQ_AIRPORT_ICAO["singapore"] == "WSSS"
 
 
-def test_shenzhen_is_in_high_freq_push_as_hko_station():
-    # shenzhen uses LFS / HKO 1-min data (formerly lau fau shan)
-    assert "shenzhen" in HIGH_FREQ_AIRPORT_CITIES
-    assert "shenzhen" in HIGH_FREQ_AIRPORT_ICAO
-    assert HIGH_FREQ_AIRPORT_ICAO["shenzhen"] == "LFS"
+def test_shenzhen_is_not_in_airport_push_city_lists():
+    assert "shenzhen" not in HIGH_FREQ_AIRPORT_CITIES
+    assert "shenzhen" not in HIGH_FREQ_AIRPORT_ICAO
 
 
-def test_china_airport_push_defaults_to_three_minute_city_interval():
+def test_china_airport_push_defaults_to_one_minute_city_interval():
     assert _AIRPORT_PUSH_INTERVAL["seoul"] == 60
     assert _AIRPORT_PUSH_INTERVAL["busan"] == 60
-    assert _AIRPORT_PUSH_INTERVAL["shanghai"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["beijing"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["guangzhou"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["qingdao"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["chengdu"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["chongqing"] == 180
-    assert _AIRPORT_PUSH_INTERVAL["wuhan"] == 180
+    assert _AIRPORT_PUSH_INTERVAL["shanghai"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["beijing"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["guangzhou"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["qingdao"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["chengdu"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["chongqing"] == 60
+    assert _AIRPORT_PUSH_INTERVAL["wuhan"] == 60
+
+
+def test_airport_push_prioritizes_china_markets():
+    due = _due_airport_cities(
+        {"paris", "shanghai", "wuhan", "ankara", "beijing"},
+        now_ts=1000,
+        last_by_city={},
+    )
+
+    assert due[:3] == ["beijing", "shanghai", "wuhan"]
+
+
+def test_airport_push_normalizes_observation_times_for_stale_rejection():
+    assert _parse_observation_time_epoch("1781161200") == 1781161200
+    assert _parse_observation_time_epoch("2026-06-11T07:10:00+00:00") == 1781161800
 
 
 def test_high_freq_airport_push_prefers_fresh_city_cache(monkeypatch):
@@ -232,6 +247,41 @@ def test_high_freq_airport_push_prefers_fresh_city_cache(monkeypatch):
 
     assert sent is True
     assert bot.messages
+
+
+def test_airport_push_prefers_cache_with_newest_observation(monkeypatch):
+    import src.utils.telegram_push as telegram_push
+
+    now = telegram_push.time.time()
+
+    class FakeDB:
+        def get_city_cache(self, kind, city):
+            assert city == "shanghai"
+            if kind == "full":
+                return {
+                    "updated_at_ts": now,
+                    "payload": {
+                        "current": {"temp": 31.0},
+                        "airport_primary": {"temp": 31.0, "obs_time": "15:00"},
+                    },
+                }
+            return {
+                "updated_at_ts": now - 120,
+                "payload": {
+                    "current": {"temp": 31.4},
+                    "amos": {"observation_time": "2026-06-11T07:42:00+00:00"},
+                    "airport_primary": {
+                        "temp": 31.4,
+                        "obs_time": "2026-06-11T07:42:00+00:00",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(telegram_push, "DBManager", lambda: FakeDB())
+
+    city_weather = telegram_push._read_cached_airport_city_weather("shanghai")
+
+    assert city_weather["airport_primary"]["temp"] == 31.4
 
 
 def test_airport_push_fallback_analysis_does_not_force_observation_refresh(monkeypatch):
@@ -319,6 +369,80 @@ def test_high_freq_airport_cycle_skips_cities_before_interval(monkeypatch):
 
     assert dirty is False
     assert calls == []
+
+
+def test_airport_push_rejects_observation_older_than_last_push(monkeypatch):
+    import src.utils.telegram_push as telegram_push
+
+    monkeypatch.setattr(
+        telegram_push,
+        "_load_airport_city_weather_for_push",
+        lambda _city: {
+            "local_time": "15:22",
+            "current": {"temp": 31.0},
+            "deb": {"prediction": 32.0},
+            "airport_primary": {
+                "temp": 31.0,
+                "obs_time": "2026-06-11T06:56:00+00:00",
+            },
+        },
+    )
+
+    result = telegram_push._process_airport_city(
+        "shanghai",
+        now_ts=1781162600,
+        last_city={
+            "ts": 1781161800,
+            "obs_time": "2026-06-11T07:10:00+00:00",
+            "obs_ts": 1781161800,
+        },
+        chat_ids=["chat-1"],
+        bot=object(),
+    )
+
+    assert result is None
+
+
+def test_airport_push_retries_main_chat_when_forum_thread_is_missing(monkeypatch):
+    import src.utils.telegram_push as telegram_push
+
+    calls = []
+
+    monkeypatch.setattr(
+        telegram_push,
+        "_load_airport_city_weather_for_push",
+        lambda _city: {
+            "local_time": "15:22",
+            "current": {"temp": 30.0},
+            "deb": {"prediction": 31.0},
+            "airport_primary": {
+                "temp": 30.0,
+                "obs_time": "2026-06-11T07:52:00+00:00",
+            },
+        },
+    )
+    monkeypatch.setattr(telegram_push, "_resolve_thread_id", lambda _chat, _city: 99)
+
+    def fake_send(_bot, chat_id, _message, **kwargs):
+        calls.append((chat_id, kwargs))
+        if kwargs.get("message_thread_id"):
+            raise RuntimeError("Bad Request: message thread not found")
+
+    monkeypatch.setattr(telegram_push, "_rate_limited_send", fake_send)
+
+    result = telegram_push._process_airport_city(
+        "hong kong",
+        now_ts=1781164400,
+        last_city={},
+        chat_ids=["chat-1"],
+        bot=object(),
+    )
+
+    assert result is not None
+    assert calls == [
+        ("chat-1", {"message_thread_id": 99}),
+        ("chat-1", {}),
+    ]
 
 
 def test_high_freq_airport_push_workers_default_to_one_for_shared_cpu(monkeypatch):
