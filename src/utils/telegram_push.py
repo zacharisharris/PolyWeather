@@ -287,6 +287,22 @@ def _parse_iso_datetime_utc(value: Any) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_observation_time_epoch(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        numeric = float(text)
+        if numeric >= 1_000_000_000:
+            return int(numeric)
+    except (TypeError, ValueError):
+        pass
+    parsed = _parse_iso_datetime_utc(text)
+    return int(parsed.timestamp()) if parsed is not None else None
+
+
 def _parse_city_list(raw: Optional[str]) -> List[str]:
     if not raw:
         return list(CITY_REGISTRY.keys())
@@ -592,16 +608,19 @@ def _alert_signature(alert_payload: Dict[str, Any]) -> str:
 
 HIGH_FREQ_AIRPORT_CITIES = {
     "seoul", "singapore", "busan", "tokyo", "ankara", "helsinki", "amsterdam",
-    "istanbul", "paris", "hong kong", "shenzhen", "taipei",
+    "istanbul", "paris", "hong kong", "taipei",
     "beijing", "shanghai", "guangzhou", "qingdao", "chengdu", "chongqing", "wuhan",
     "new york", "los angeles", "chicago", "denver", "atlanta",
     "miami", "san francisco", "houston", "dallas", "austin", "seattle",
     "tel aviv",
 }
+CHINA_HIGH_FREQ_AIRPORT_CITIES = {
+    "beijing", "shanghai", "guangzhou", "qingdao", "chengdu", "chongqing", "wuhan",
+}
 HIGH_FREQ_AIRPORT_ICAO = {
     "seoul": "RKSI", "singapore": "WSSS", "busan": "RKPK", "tokyo": "44166",
     "ankara": "17128", "helsinki": "EFHK", "amsterdam": "EHAM", "istanbul": "17058",
-    "paris": "LFPB", "hong kong": "HKO", "shenzhen": "LFS", "taipei": "466920",
+    "paris": "LFPB", "hong kong": "HKO", "taipei": "466920",
     "beijing": "ZBAA", "shanghai": "ZSPD", "guangzhou": "ZGGG", "qingdao": "ZSQD",
     "chengdu": "ZUUU", "chongqing": "ZUCK", "wuhan": "ZHHH",
     "new york": "KLGA", "los angeles": "KLAX", "chicago": "KORD",
@@ -1106,7 +1125,7 @@ def _build_airport_status_message(
     _AIRPORT_EN = {"seoul": "Incheon", "singapore": "Changi", "busan": "Gimhae", "tokyo": "Haneda",
                    "ankara": "Esenboğa", "helsinki": "Vantaa", "amsterdam": "Schiphol",
                    "istanbul": "Airport", "paris": "Le Bourget",
-                   "hong kong": "Observatory", "shenzhen": "LFS Observatory",
+                   "hong kong": "Observatory",
                    "taipei": "Songshan", "beijing": "Capital", "shanghai": "Pudong",
                    "guangzhou": "Baiyun", "qingdao": "Jiaodong",
                    "chengdu": "Shuangliu", "chongqing": "Jiangbei", "wuhan": "Tianhe",
@@ -1381,19 +1400,32 @@ _AIRPORT_PUSH_INTERVAL = {
 _AIRPORT_PUSH_INTERVAL.update({
     "seoul": 60,
     "busan": 60,
-    "beijing": 180,
-    "shanghai": 180,
-    "guangzhou": 180,
-    "qingdao": 180,
-    "chengdu": 180,
-    "chongqing": 180,
-    "wuhan": 180,
+    **{city: 60 for city in CHINA_HIGH_FREQ_AIRPORT_CITIES},
 })
 
 
 def _airport_push_cache_max_age_sec(city: str) -> int:
     interval = int(_AIRPORT_PUSH_INTERVAL.get((city or "").strip().lower(), 600) or 600)
     return max(90, interval * 2)
+
+
+def _cached_payload_observation_epoch(payload: Dict[str, Any]) -> Optional[int]:
+    amos = payload.get("amos") or {}
+    airport_primary = payload.get("airport_primary") or {}
+    airport_current = payload.get("airport_current") or {}
+    current = payload.get("current") or {}
+    candidates = [
+        amos.get("observation_time"),
+        airport_primary.get("obs_time"),
+        airport_current.get("obs_time"),
+        current.get("obs_time"),
+    ]
+    parsed = [
+        timestamp
+        for timestamp in (_parse_observation_time_epoch(value) for value in candidates)
+        if timestamp is not None
+    ]
+    return max(parsed) if parsed else None
 
 
 def _read_cached_airport_city_weather(city: str, max_age_sec: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -1403,7 +1435,7 @@ def _read_cached_airport_city_weather(city: str, max_age_sec: Optional[int] = No
         return None
     max_age = int(max_age_sec if max_age_sec is not None else _airport_push_cache_max_age_sec(normalized_city))
     now_ts = time.time()
-    stale_candidate: Optional[Tuple[float, Dict[str, Any]]] = None
+    candidates: List[Tuple[int, int, float, str, Dict[str, Any]]] = []
     try:
         db = DBManager()
         for kind in ("full", "panel"):
@@ -1415,6 +1447,7 @@ def _read_cached_airport_city_weather(city: str, max_age_sec: Optional[int] = No
             if updated_at_ts <= 0 or not isinstance(payload, dict):
                 continue
             age_sec = now_ts - updated_at_ts
+            is_fresh = age_sec <= max_age
             if age_sec > max_age:
                 logger.debug(
                     "airport push cache stale city={} kind={} age_sec={} max_age_sec={}",
@@ -1423,21 +1456,32 @@ def _read_cached_airport_city_weather(city: str, max_age_sec: Optional[int] = No
                     round(age_sec, 1),
                     max_age,
                 )
-                if stale_candidate is None or updated_at_ts > stale_candidate[0]:
-                    stale_candidate = (updated_at_ts, dict(payload))
-                continue
-            logger.debug(
-                "airport push cache hit city={} kind={} age_sec={}",
-                normalized_city,
-                kind,
-                round(max(0.0, age_sec), 1),
+            observation_ts = _cached_payload_observation_epoch(payload)
+            candidates.append(
+                (
+                    int(observation_ts or 0),
+                    1 if is_fresh else 0,
+                    updated_at_ts,
+                    kind,
+                    dict(payload),
+                )
             )
-            return dict(payload)
     except Exception as exc:
         logger.debug("airport push city cache read failed city={}: {}", normalized_city, exc)
-    if stale_candidate is not None:
-        logger.debug("airport push using stale cache city={}", normalized_city)
-        return stale_candidate[1]
+    if candidates:
+        observation_ts, is_fresh, updated_at_ts, kind, payload = max(
+            candidates,
+            key=lambda item: (item[0], item[1], item[2]),
+        )
+        logger.debug(
+            "airport push cache selected city={} kind={} age_sec={} observation_ts={} fresh={}",
+            normalized_city,
+            kind,
+            round(max(0.0, now_ts - updated_at_ts), 1),
+            observation_ts or None,
+            bool(is_fresh),
+        )
+        return payload
     return None
 
 
@@ -1463,7 +1507,7 @@ def _load_airport_city_weather_for_push(city: str) -> Dict[str, Any]:
 _AIRPORT_HEAT_THRESHOLD = {
     "seoul": 3.0, "ankara": 3.0, "istanbul": 3.0, "paris": 3.0,
     "busan": 2.0, "tokyo": 2.0, "amsterdam": 2.0, "helsinki": 2.0,
-    "hong kong": 1.5, "shenzhen": 1.5, "taipei": 1.5,
+    "hong kong": 1.5, "taipei": 1.5,
 }
 
 
@@ -1534,6 +1578,10 @@ def _process_airport_city(
     """
     last_city_ts = int(last_city.get("ts") or 0)
     last_obs_time = str(last_city.get("obs_time") or "")
+    last_obs_ts = (
+        _parse_observation_time_epoch(last_city.get("obs_ts"))
+        or _parse_observation_time_epoch(last_obs_time)
+    )
     city_interval = _AIRPORT_PUSH_INTERVAL.get(city, 600)
     if now_ts - last_city_ts < city_interval:
         return None
@@ -1601,6 +1649,7 @@ def _process_airport_city(
         current_temp = airport_primary.get("temp") or (city_weather.get("current") or {}).get("temp")
         if not current_obs_time:
             current_obs_time = str(airport_primary.get("obs_time") or "")
+    current_obs_ts = _parse_observation_time_epoch(current_obs_time)
     source_label = ""  # human-readable data source for Paris messages
     arome_temp_val = None  # AROME HD temperature for display (always fetched for comparison)
     aeroweb_available = False
@@ -1626,8 +1675,8 @@ def _process_airport_city(
     elif current_temp is None or deb_pred is None:
         return None
 
-    # Dedup: same observation → skip (with delayed retry for HK / LFS)
-    _CITIES_WITH_DELAYED_API = {"hong kong", "shenzhen"}
+    # Dedup: same observation → skip (with delayed retry for HKO)
+    _CITIES_WITH_DELAYED_API = {"hong kong"}
     if (current_obs_time and last_obs_time and current_obs_time == last_obs_time
             and city in _CITIES_WITH_DELAYED_API
             and now_ts - last_city_ts > 540):
@@ -1656,7 +1705,20 @@ def _process_airport_city(
                 return None
         except Exception:
             return None
-    elif current_obs_time and last_obs_time and current_obs_time == last_obs_time:
+    current_obs_ts = _parse_observation_time_epoch(current_obs_time)
+    if (
+        current_obs_ts is not None
+        and last_obs_ts is not None
+        and current_obs_ts <= last_obs_ts
+    ):
+        logger.debug(
+            "airport push skipped stale observation city={} current_obs_time={} last_obs_time={}",
+            city,
+            current_obs_time,
+            last_obs_time,
+        )
+        return None
+    if current_obs_time and last_obs_time and current_obs_time == last_obs_time:
         return None
 
     obs_local = (
@@ -1671,6 +1733,7 @@ def _process_airport_city(
     # Send to all target chats
     sent = False
     for chat_id in chat_ids:
+        thread_id = 0
         try:
             kwargs = {}
             thread_id = _resolve_thread_id(chat_id, city)
@@ -1679,12 +1742,39 @@ def _process_airport_city(
             _rate_limited_send(bot, chat_id, message, **kwargs)
             sent = True
         except Exception as exc:
+            if thread_id and "message thread not found" in str(exc).lower():
+                logger.warning(
+                    "airport push thread missing; retrying main chat city={} chat_id={} thread_id={}",
+                    city,
+                    chat_id,
+                    thread_id,
+                )
+                try:
+                    _rate_limited_send(bot, chat_id, message)
+                    sent = True
+                    continue
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "airport push main chat fallback failed city={} chat_id={}: {}",
+                        city,
+                        chat_id,
+                        fallback_exc,
+                    )
+                    continue
             logger.warning("airport push failed city={} chat_id={}: {}", city, chat_id, exc)
 
     if sent:
         logger.info("airport status pushed city={} temp={} deb={} obs_time={}",
                      city, current_temp, deb_pred, current_obs_time)
-        return (city, {"ts": now_ts, "active": True, "obs_time": current_obs_time})
+        return (
+            city,
+            {
+                "ts": now_ts,
+                "active": True,
+                "obs_time": current_obs_time,
+                "obs_ts": current_obs_ts,
+            },
+        )
 
     return None
 
@@ -1695,7 +1785,10 @@ def _due_airport_cities(
     last_by_city: Dict[str, Any],
 ) -> List[str]:
     due: List[str] = []
-    for city in sorted(cities):
+    for city in sorted(
+        cities,
+        key=lambda item: (0 if item in CHINA_HIGH_FREQ_AIRPORT_CITIES else 1, item),
+    ):
         last_city = last_by_city.get(city) or {}
         last_city_ts = int(last_city.get("ts") or 0)
         city_interval = _AIRPORT_PUSH_INTERVAL.get(city, 600)
