@@ -27,6 +27,40 @@ type LoginClientProps = {
   initialMode?: Mode;
 };
 
+const TERMINAL_CHECKOUT_PATH = "/account?checkout=1";
+
+function isTerminalNextPath(pathname: string) {
+  return pathname === "/terminal" || pathname.startsWith("/terminal/");
+}
+
+async function resolvePostLoginRedirect({
+  accessToken,
+  nextPath,
+}: {
+  accessToken?: string | null;
+  nextPath: string;
+}) {
+  if (!isTerminalNextPath(nextPath)) return nextPath;
+  const token = String(accessToken || "").trim();
+  if (!token || typeof fetch !== "function") return TERMINAL_CHECKOUT_PATH;
+  try {
+    const response = await fetch("/api/auth/me?scope=entitlement", {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) return TERMINAL_CHECKOUT_PATH;
+    const payload = await response.json();
+    return payload?.subscription_active === true
+      ? nextPath
+      : TERMINAL_CHECKOUT_PATH;
+  } catch {
+    return TERMINAL_CHECKOUT_PATH;
+  }
+}
+
 export function LoginClient({ nextPath, initialError, initialMode }: LoginClientProps) {
   const router = useRouter();
   const { locale } = useI18n();
@@ -169,20 +203,6 @@ export function LoginClient({ nextPath, initialError, initialMode }: LoginClient
     }
   };
 
-  useEffect(() => {
-    if (!supabaseReady) return;
-    const run = async () => {
-      const supabase = getSupabaseBrowserClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.user) {
-        router.replace(nextPath);
-      }
-    };
-    void run();
-  }, [nextPath, router, supabaseReady]);
-
   const onGoogleSignIn = async () => {
     setErrorText("");
     setInfoText("");
@@ -228,7 +248,7 @@ export function LoginClient({ nextPath, initialError, initialMode }: LoginClient
     try {
       const supabase = getSupabaseBrowserClient();
       if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({
+        const { data, error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
           password,
         });
@@ -236,7 +256,11 @@ export function LoginClient({ nextPath, initialError, initialMode }: LoginClient
           setErrorText(error.message);
           return;
         }
-        router.replace(nextPath);
+        const redirectPath = await resolvePostLoginRedirect({
+          accessToken: data.session?.access_token,
+          nextPath,
+        });
+        router.replace(redirectPath);
         return;
       }
 
@@ -255,7 +279,11 @@ export function LoginClient({ nextPath, initialError, initialMode }: LoginClient
         return;
       }
       if (data.session?.user) {
-        router.replace(nextPath);
+        const redirectPath = await resolvePostLoginRedirect({
+          accessToken: data.session.access_token,
+          nextPath,
+        });
+        router.replace(redirectPath);
         return;
       }
       setInfoText(copy.signupCheckEmail);

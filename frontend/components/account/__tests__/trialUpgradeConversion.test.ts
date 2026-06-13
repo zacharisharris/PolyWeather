@@ -11,6 +11,14 @@ export function runTests() {
   const accountCenter = fs.readFileSync(path.join(accountDir, "AccountCenter.tsx"), "utf8");
   const paymentFlow = fs.readFileSync(path.join(accountDir, "usePaymentFlow.ts"), "utf8");
   const accountPayment = fs.readFileSync(path.join(accountDir, "useAccountPayment.ts"), "utf8");
+  const landingPage = fs.readFileSync(
+    path.join(projectRoot, "components", "landing", "InstitutionalLandingPage.tsx"),
+    "utf8",
+  );
+  const landingAuthActions = fs.readFileSync(
+    path.join(projectRoot, "components", "landing", "LandingAuthActions.tsx"),
+    "utf8",
+  );
   const productAccess = fs.readFileSync(
     path.join(projectRoot, "components", "dashboard", "scan-terminal", "ProductAccessRequired.tsx"),
     "utf8",
@@ -31,10 +39,23 @@ export function runTests() {
   );
 
   assert(
+    accountCenter.includes('href="/auth/login?next=%2Faccount%3Fcheckout%3D1"'),
+    "account page sign-in button must preserve the checkout entry for unauthenticated subscription recovery",
+  );
+
+  assert(
+    landingAuthActions.includes('href="/account?checkout=1"') &&
+      landingPage.includes('href="/account?checkout=1"') &&
+      !/href="\/account"(?![/?#])/.test(landingAuthActions) &&
+      !/href="\/account"(?![/?#])/.test(landingPage),
+    "landing subscription/account CTAs must open the checkout account entry instead of a generic account page",
+  );
+
+  assert(
     productAccess.includes('href="/account?checkout=1"') &&
-      productAccess.includes("Subscribe & Activate") &&
-      productAccess.includes("立即订阅并激活"),
-    "expired terminal gate must send users directly to the checkout entry, not a generic account page",
+      productAccess.includes("Renew and restore access") &&
+      productAccess.includes("续费并恢复访问"),
+    "expired terminal gate must send users directly to the checkout entry with renewal recovery copy, not a generic account page",
   );
 
   assert(
