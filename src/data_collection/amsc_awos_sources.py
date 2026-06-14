@@ -164,6 +164,7 @@ def _amsc_parse_wind_plate_payload(
     valid_values = []
     observation_time = None
     observation_time_local = None
+    observation_time_epoch = None
     raw_metar = None
 
     for key, raw_row in data.items():
@@ -179,8 +180,22 @@ def _amsc_parse_wind_plate_payload(
         if not points:
             continue
 
-        if observation_time is None:
-            observation_time, observation_time_local = _amsc_parse_utc_time(raw_row.get("OTIME"))
+        row_observation_time, row_observation_time_local = _amsc_parse_utc_time(raw_row.get("OTIME"))
+        row_observation_epoch = None
+        if row_observation_time:
+            try:
+                row_observation_epoch = datetime.fromisoformat(row_observation_time).timestamp()
+            except ValueError:
+                row_observation_epoch = None
+        if row_observation_epoch is not None and (
+            observation_time_epoch is None or row_observation_epoch > observation_time_epoch
+        ):
+            observation_time = row_observation_time
+            observation_time_local = row_observation_time_local
+            observation_time_epoch = row_observation_epoch
+        elif observation_time is None and row_observation_time:
+            observation_time = row_observation_time
+            observation_time_local = row_observation_time_local
         if raw_metar is None and raw_row.get("METAR"):
             raw_metar = str(raw_row.get("METAR"))
 
@@ -320,11 +335,11 @@ class AmscAwosSourceMixin:
         }
         cookie = get_runtime_secret("POLYWEATHER_AMSC_COOKIE")
         session_id = get_runtime_secret("POLYWEATHER_AMSC_SESSION_ID")
-        if cookie:
-            headers["Cookie"] = cookie
-        elif session_id:
+        if session_id:
             headers["sessionId"] = session_id
             headers["app"] = "AMS"
+        elif cookie:
+            headers["Cookie"] = cookie
         return headers
 
     def _amsc_http_get_json(self, url: str, *, headers: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:

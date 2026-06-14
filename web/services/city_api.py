@@ -16,6 +16,7 @@ from loguru import logger
 import web.routes as legacy_routes
 from web.analysis_service import _runway_history_temp_for_city
 from web.services.canonical_temperature import build_city_weather_from_canonical
+from web.services.latest_observation_overlay import overlay_latest_amsc_observation
 from web.services.request_timing import ServerTimingRecorder
 
 _RECENT_DEB_CACHE: Optional[Dict[str, Dict[str, object]]] = None
@@ -150,7 +151,12 @@ async def _get_canonical_city_payload(city: str, *, detail_depth: str = "panel")
             "probabilities": {"mu": None, "distribution": []},
         }
     )
-    return payload
+    return await run_in_threadpool(
+        overlay_latest_amsc_observation,
+        legacy_routes._CACHE_DB,
+        city,
+        payload,
+    )
 
 
 def _enqueue_collector_refresh_request(
@@ -260,7 +266,13 @@ async def _refresh_city_payload_with_stale_timeout(
         city,
         kind,
     )
-    return await _overlay_cached_wunderground(city, cached_before_refresh)
+    latest_payload = await run_in_threadpool(
+        overlay_latest_amsc_observation,
+        legacy_routes._CACHE_DB,
+        city,
+        cached_before_refresh,
+    )
+    return await _overlay_cached_wunderground(city, latest_payload)
 
 
 async def _refresh_city_cache_with_stale_timeout(
@@ -285,10 +297,16 @@ def _start_city_cache_stale_refresh(
 
 
 async def _overlay_cached_wunderground(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    latest_payload = await run_in_threadpool(
+        overlay_latest_amsc_observation,
+        legacy_routes._CACHE_DB,
+        city,
+        payload,
+    )
     return await run_in_threadpool(
         legacy_routes._overlay_latest_wunderground_current,
         city,
-        payload,
+        latest_payload,
     )
 
 
@@ -400,6 +418,13 @@ async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, A
                 payload=payload,
                 fn=_overlay_cached_runway_history_from_db,
                 args=(city, payload),
+            )
+            payload = await _run_optional_city_chart_overlay(
+                city=city,
+                overlay_name="amsc_latest_raw",
+                payload=payload,
+                fn=overlay_latest_amsc_observation,
+                args=(legacy_routes._CACHE_DB, city, payload),
             )
             return await _run_optional_city_chart_overlay(
                 city=city,
@@ -763,7 +788,7 @@ async def get_city_detail_payload(
             _request_city_cache_refresh(city, "market")
             return canonical_payload
         return _queue_and_build_initializing_city_payload(city, kind="market")
-    return await run_in_threadpool(legacy_routes._analyze, city, force_refresh, False, detail_mode)
+    return _queue_and_build_initializing_city_payload(city, kind=detail_mode)
 
 
 async def get_city_summary_payload(

@@ -1199,6 +1199,62 @@ def test_chart_data_cache_hit_starts_full_stale_refresh(monkeypatch):
     assert refresh_calls == ["paris"]
 
 
+def test_chart_data_cache_hit_overlays_latest_amsc_raw(monkeypatch):
+    import asyncio
+
+    class FakeCache:
+        def get_city_cache(self, kind, city):
+            assert kind == "full"
+            return {
+                "payload": {
+                    "name": city,
+                    "display_name": city.title(),
+                    "temp_symbol": "°C",
+                    "risk": {"icao": "ZUUU"},
+                    "current": {},
+                    "airport_current": {},
+                    "amos": {},
+                    "hourly": {"times": ["13:00"], "temps": [25.0]},
+                },
+            }
+
+        def get_runway_obs_recent(self, icao, minutes=60):
+            return []
+
+        def get_latest_raw_observation(self, source, city):
+            assert (source, city) == ("amsc_awos", "chengdu")
+            return {
+                "source": "amsc_awos",
+                "city": "chengdu",
+                "station_code": "ZUUU",
+                "station_name": "Chengdu Shuangliu",
+                "status": "ok",
+                "observed_at": "2026-06-14T17:00:00+00:00",
+                "fetched_at": "2026-06-14T17:00:30+00:00",
+                "payload": {
+                    "source": "amsc_awos",
+                    "source_label": "AMSC AWOS Chengdu Shuangliu (ZUUU)",
+                    "icao": "ZUUU",
+                    "temp_c": 25.8,
+                    "observation_time": "2026-06-14T17:00:00+00:00",
+                    "observation_time_local": "2026-06-15 01:00:00",
+                },
+            }
+
+    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
+    monkeypatch.setattr(
+        city_api.legacy_routes,
+        "_overlay_latest_wunderground_current",
+        lambda city, payload: payload,
+    )
+
+    payload = asyncio.run(city_api._get_city_chart_data("chengdu", force_refresh=False))
+
+    assert payload["amos"]["temp_c"] == 25.8
+    assert payload["current"]["temp"] == 25.8
+    assert payload["airport_current"]["source_code"] == "amsc_awos"
+
+
 def test_chart_data_returns_cached_payload_when_optional_overlay_times_out(monkeypatch):
     import asyncio
 
@@ -3782,7 +3838,7 @@ def test_scan_terminal_nonforce_ignores_ancient_success_snapshot(monkeypatch):
     monkeypatch.setattr(
         scan_terminal_service.time,
         "time",
-        lambda: old_success_t + scan_terminal_service.SCAN_TERMINAL_PAYLOAD_TTL_SEC * 3,
+        lambda: old_success_t + scan_terminal_service.SCAN_TERMINAL_STALE_SUCCESS_MAX_AGE_SEC + 1,
     )
     monkeypatch.setattr(
         scan_terminal_service,
@@ -3851,9 +3907,17 @@ def test_scan_terminal_endpoint_forwards_filters(monkeypatch):
 
     captured = {}
 
-    def _fake_build_scan_terminal_payload(filters, *, force_refresh=False):
+    def _fake_build_scan_terminal_payload(
+        filters,
+        *,
+        force_refresh=False,
+        diff=False,
+        since_snapshot_id=None,
+    ):
         captured["filters"] = dict(filters)
         captured["force_refresh"] = force_refresh
+        captured["diff"] = diff
+        captured["since_snapshot_id"] = since_snapshot_id
         return {
             "generated_at": "2026-04-23T00:00:00Z",
             "filters": filters,
@@ -3876,12 +3940,15 @@ def test_scan_terminal_endpoint_forwards_filters(monkeypatch):
     response = client.get(
         "/api/scan/terminal?scan_mode=trend&min_price=0.1&max_price=0.8&min_edge_pct=3"
         "&min_liquidity=700&high_liquidity_only=true&market_type=all&time_range=week&limit=12&force_refresh=true"
+        "&diff=true&since_snapshot_id=scan-old"
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["summary"]["recommended_count"] == 1
     assert captured["force_refresh"] is True
+    assert captured["diff"] is True
+    assert captured["since_snapshot_id"] == "scan-old"
     assert captured["filters"]["scan_mode"] == "trend"
     assert captured["filters"]["market_type"] == "all"
     assert captured["filters"]["time_range"] == "week"

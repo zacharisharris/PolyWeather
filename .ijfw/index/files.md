@@ -1,0 +1,531 @@
+<!-- ijfw schema:1 codebase-index -->
+# Codebase index
+
+Generated: 2026-05-28T16:40:25Z
+Root: .
+
+Files: 513
+
+## By file
+
+- `./.codex/prompts/analyst.md` (135 lines, .md) -- description: \"Pre-planning consultant for requirements analysis (THOROUGH)\"
+- `./.codex/prompts/architect.md` (111 lines, .md) -- description: \"Strategic Architecture & Debugging Advisor (THOROUGH, READ-ONLY)\"
+- `./.codex/prompts/build-fixer.md` (115 lines, .md) -- description: \"Build and compilation error resolution specialist (minimal diffs, no architecture changes)\"
+- `./.codex/prompts/code-reviewer.md` (127 lines, .md) -- description: \"Expert code review specialist with severity-rated feedback\"
+- `./.codex/prompts/code-simplifier.md` (134 lines, .md) -- name: code-simplifier
+- `./.codex/prompts/critic.md` (128 lines, .md) -- description: \"Work plan review expert and critic (THOROUGH)\"
+- `./.codex/prompts/debugger.md` (117 lines, .md) -- description: \"Root-cause analysis, regression isolation, stack trace analysis\"
+- `./.codex/prompts/dependency-expert.md` (129 lines, .md) -- description: \"Dependency Expert - External SDK/API/Package Evaluator\"
+- `./.codex/prompts/designer.md` (126 lines, .md) -- description: \"UI/UX Designer-Developer for stunning interfaces (STANDARD)\"
+- `./.codex/prompts/executor.md` (182 lines, .md) -- description: \"Autonomous deep executor for goal-oriented implementation (STANDARD)\"
+- `./.codex/prompts/explore.md` (138 lines, .md) -- description: \"Codebase search specialist for finding files and code patterns\"
+- `./.codex/prompts/git-master.md` (114 lines, .md) -- description: \"Git expert for atomic commits, rebasing, and history management with style detection\"
+- `./.codex/prompts/planner.md` (137 lines, .md) -- description: \"Strategic planning consultant with interview workflow (THOROUGH)\"
+- `./.codex/prompts/researcher.md` (130 lines, .md) -- description: \"External Documentation & Reference Researcher\"
+- `./.codex/prompts/security-reviewer.md` (143 lines, .md) -- description: \"Security vulnerability detection specialist (OWASP Top 10, secrets, unsafe patterns)\"
+- `./.codex/prompts/team-executor.md` (57 lines, .md) -- description: \"Team execution specialist for supervised, conservative team delivery\"
+- `./.codex/prompts/test-engineer.md` (130 lines, .md) -- description: \"Test strategy, integration/e2e coverage, flaky test hardening, TDD workflows\"
+- `./.codex/prompts/verifier.md` (90 lines, .md) -- description: \"Completion evidence and verification specialist (STANDARD)\"
+- `./.codex/prompts/vision.md` (98 lines, .md) -- description: \"Visual/media file analyzer for images, PDFs, and diagrams\"
+- `./.codex/prompts/writer.md` (109 lines, .md) -- description: \"Technical documentation writer for README, API docs, and comments\"
+- `./.codex/skills/ai-slop-cleaner/SKILL.md` (114 lines, .md) -- name: ai-slop-cleaner
+- `./.codex/skills/analyze/SKILL.md` (148 lines, .md) -- name: analyze
+- `./.codex/skills/ask-claude/SKILL.md` (61 lines, .md) -- name: ask-claude
+- `./.codex/skills/ask-gemini/SKILL.md` (61 lines, .md) -- name: ask-gemini
+- `./.codex/skills/autopilot/SKILL.md` (234 lines, .md) -- name: autopilot
+- `./.codex/skills/autoresearch/SKILL.md` (68 lines, .md) -- name: autoresearch
+- `./.codex/skills/cancel/SKILL.md` (399 lines, .md) -- name: cancel
+- `./.codex/skills/code-review/SKILL.md` (290 lines, .md) -- name: code-review
+- `./.codex/skills/configure-notifications/SKILL.md` (287 lines, .md) -- name: configure-notifications
+- `./.codex/skills/deep-interview/SKILL.md` (461 lines, .md) -- name: deep-interview
+- `./.codex/skills/doctor/SKILL.md` (211 lines, .md) -- name: doctor
+- `./.codex/skills/help/SKILL.md` (202 lines, .md) -- name: help
+- `./.codex/skills/hud/SKILL.md` (98 lines, .md) -- name: \"hud\"
+- `./.codex/skills/note/SKILL.md` (62 lines, .md) -- name: note
+- `./.codex/skills/omx-setup/SKILL.md` (92 lines, .md) -- name: omx-setup
+- `./.codex/skills/plan/SKILL.md` (279 lines, .md) -- name: plan
+- `./.codex/skills/ralph/SKILL.md` (271 lines, .md) -- name: ralph
+- `./.codex/skills/ralplan/SKILL.md` (166 lines, .md) -- name: ralplan
+- `./.codex/skills/security-review/SKILL.md` (300 lines, .md) -- name: security-review
+- `./.codex/skills/skill/SKILL.md` (835 lines, .md) -- name: skill
+- `./.codex/skills/team/SKILL.md` (513 lines, .md) -- name: team
+- `./.codex/skills/trace/SKILL.md` (33 lines, .md) -- name: trace
+- `./.codex/skills/ultraqa/SKILL.md` (146 lines, .md) -- name: ultraqa
+- `./.codex/skills/ultrawork/SKILL.md` (176 lines, .md) -- name: ultrawork
+- `./.codex/skills/visual-verdict/SKILL.md` (76 lines, .md) -- name: visual-verdict
+- `./.codex/skills/web-clone/SKILL.md` (366 lines, .md) -- name: web-clone
+- `./.codex/skills/wiki/SKILL.md` (57 lines, .md) -- name: wiki
+- `./.codex/skills/worker/SKILL.md` (106 lines, .md) -- name: worker
+- `./CHANGELOG.md` (188 lines, .md) -- - README / README_ZH 改用 `frontend/public/static/web.png` 与 `frontend/public/static/tel.png` 作为产品截图，并移除旧 `docs/images` RE
+- `./CLAUDE.md` (147 lines, .md) -- This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+- `./README.md` (239 lines, .md) -- Production weather-intelligence stack for temperature settlement markets.
+- `./README_ZH.md` (253 lines, .md) -- 面向温度结算市场的生产级气象情报系统。
+- `./RELEASE.md` (86 lines, .md) -- 本项目采用语义化版本号：`MAJOR.MINOR.PATCH`
+- `./bot_listener.py` (13 lines, .py) -- import os
+- `./deploy.sh` (65 lines, .sh) -- set -euo pipefail
+- `./docs/AIRPORT_MARKET_MONITOR_ZH.md` (135 lines, .md) -- | 城市 | 站点 | ICAO/站点 | 数据类型 | 数据源 | 刷新频率 |
+- `./docs/AIRPORT_REALTIME_SOURCES.md` (123 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/API_ZH.md` (348 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/CITY_DATA_SOURCES.md` (167 lines, .md) -- > 最后更新: 2026-05-28 | 51 城市
+- `./docs/COMMERCIALIZATION.md` (75 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/CONFIGURATION_ZH.md` (354 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/FRONTEND_DEPLOYMENT_ZH.md` (264 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/MODEL_STACK_AND_DEB_ZH.md` (311 lines, .md) -- 本文档记录 PolyWeather 当前开放模型接入、区域覆盖差异，以及 DEB 在新增模型后的计权规则。
+- `./docs/MONITORING_ZH.md` (198 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/OPEN_CORE_POLICY.md` (45 lines, .md) -- 最后更新：`2026-03-30`
+- `./docs/OPS_ADMIN_ZH.md` (133 lines, .md) -- 最后更新：`2026-04-10`
+- `./docs/SERVICES_ZH.md` (63 lines, .md) -- 最后更新：`2026-05-28`
+- `./docs/SUPABASE_SETUP_ZH.md` (109 lines, .md) -- 最后更新：`2026-03-14`
+- `./docs/TAF_SIGNAL_ZH.md` (286 lines, .md) -- 本文档说明 PolyWeather 当前如何把 `TAF`（机场终端预报）接入“今日日内分析”，以及这些信号在交易判断里到底代表什么。
+- `./docs/TECH_DEBT_ZH.md` (77 lines, .md) -- 最后更新：`2026-05-10`
+- `./docs/data-architecture-review.md` (106 lines, .md) -- > 审查日期：2026-06 | 视角：系统架构师 | 范围：完整数据采集→分析→API→前端状态
+- `./docs/deep-research-report.md` (272 lines, .md) -- PolyWeather（仓库：`yangyuan-zhen/PolyWeather`）定位为**面向温度类结算预测市场（如 Polymarket 的温度结算合约）**的”生产级气象情报系统”，核心在于把多源天气观测/预报转化为**结算导向的
+- `./docs/frontend-ui-design-review.md` (347 lines, .md) -- > 审查日期：2026-05-10 | 审查范围：`frontend/` 全部组件、样式、布局
+- `./docs/payments/PAYMENT_AUDIT_ZH.md` (244 lines, .md) -- 最后更新：`2026-03-21`
+- `./docs/payments/PAYMENT_UPGRADE_V2_ZH.md` (197 lines, .md) -- 最后更新：`2026-03-20`
+- `./docs/payments/POLYGONSCAN_VERIFY.md` (76 lines, .md) -- 最后更新：`2026-03-20`
+- `./docs/product-review-jun-2026.md` (69 lines, .md) -- > 审查日期：2026-06 | 视角：产品经理 | 范围：`frontend/` 全部页面、组件、用户流程 | 最后校准：2026-05-28
+- `./docs/superpowers/plans/2026-05-15-amsc-awos-runway-observations.md` (102 lines, .md) -- > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:
+- `./docs/superpowers/plans/2026-05-18-telegram-group-pricing.md` (61 lines, .md) -- > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:
+- `./docs/superpowers/plans/2026-05-25-terminal-continent-grouping-plan.md` (929 lines, .md) -- > **For agentic workers:** 使用 superpowers:subagent-driven-development 或 superpowers:executing-plans 按任务逐步实施。
+- `./docs/superpowers/plans/2026-05-26-live-temperature-chart-split.md` (26 lines, .md) -- > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:
+- `./docs/superpowers/plans/2026-05-26-production-realtime-sse.md` (71 lines, .md) -- > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:
+- `./docs/superpowers/plans/2026-05-27-redis-stream-realtime-event-architecture.md` (107 lines, .md) -- > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:
+- `./docs/superpowers/specs/2026-05-25-terminal-continent-grouping-design.md` (137 lines, .md) -- 日期：2026-05-25
+- `./docs/superpowers/specs/2026-05-26-production-realtime-sse-design.md` (319 lines, .md) -- > 日期: 2026-05-26
+- `./docs/superpowers/specs/2026-05-27-redis-stream-realtime-event-architecture-design.md` (408 lines, .md) -- > 日期: 2026-05-27
+- `./docs/ux-research-review.md` (189 lines, .md) -- > 审查日期：2026-06 | 视角：UX 研究员 | 范围：用户理解修正逻辑、第一眼认知、图表误导风险、普通用户语言、天气异常体验
+- `./extension/README.md` (57 lines, .md) -- `PolyWeather Side Panel` 是一个面向天气交易市场的 Chrome / Edge 浏览器侧边栏工具。
+- `./extension/background.js` (6 lines, .js) -- chrome.runtime.onInstalled.addListener(() => {
+- `./extension/options.js` (145 lines, .js) -- const DEFAULT_CONFIG = {
+- `./extension/sidepanel.js` (1311 lines, .js) -- const DEFAULT_CONFIG = {
+- `./frontend/README.md` (209 lines, .md) -- PolyWeather Pro 的生产前端工程。
+- `./frontend/app/account/error.tsx` (97 lines, .tsx) -- \"use client\";
+- `./frontend/app/account/page.tsx` (16 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/api/analytics/events/route.ts` (55 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/auth/me/route.ts` (124 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/auth/telegram/bind-by-token/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/auth/telegram/bot-bind-link/route.ts` (40 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/auth/telegram/login/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/cities/route.ts` (21 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/city/[name]/detail/route.ts` (97 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/city/[name]/route.ts` (195 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/city/[name]/summary/route.ts` (32 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/events/route.ts` (45 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/healthz/route.ts` (40 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/analytics/funnel/route.ts` (43 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/config/route.ts` (29 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/health-check/route.ts` (16 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/leaderboard/weekly/route.ts` (42 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/memberships/growth/route.ts` (19 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/memberships/route.ts` (42 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/online-users/route.ts` (38 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/payments/incidents/[eventId]/resolve/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/payments/incidents/route.ts` (42 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/subscriptions/extend/route.ts` (24 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/subscriptions/grant/route.ts` (168 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/telegram/members-audit/route.ts` (16 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/training/accuracy/route.ts` (16 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/truth-history/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/users/grant-points/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/users/route.ts` (44 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/ops/view-logs/route.ts` (21 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/config/route.ts` (21 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/intents/[intentId]/confirm/route.ts` (56 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/intents/[intentId]/route.ts` (24 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/intents/[intentId]/submit/route.ts` (62 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/intents/[intentId]/validate/route.ts` (62 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/intents/route.ts` (65 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/reconcile-latest/route.ts` (42 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/runtime/route.ts` (23 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/wallets/challenge/route.ts` (57 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/wallets/route.ts` (94 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/payments/wallets/verify/route.ts` (58 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/scan/terminal/overview/route.ts` (75 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/scan/terminal/route.ts` (65 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/system/priority-warm/route.ts` (10 lines, .ts) -- import { NextRequest } from \"next/server\";
+- `./frontend/app/api/system/priority/route.ts` (10 lines, .ts) -- import { NextRequest } from \"next/server\";
+- `./frontend/app/api/system/status/route.ts` (21 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/api/vitals/route.ts` (90 lines, .ts) -- import { NextResponse } from \"next/server\";
+- `./frontend/app/auth/callback/route.ts` (45 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/app/auth/login/page.tsx` (31 lines, .tsx) -- import { LoginClient } from \"@/components/auth/LoginClient\";
+- `./frontend/app/docs/[...slug]/page.tsx` (27 lines, .tsx) -- import { notFound } from \"next/navigation\";
+- `./frontend/app/docs/layout.tsx` (5 lines, .tsx) -- import { I18nProvider } from \"@/hooks/useI18n\";
+- `./frontend/app/docs/page.tsx` (5 lines, .tsx) -- import { redirect } from \"next/navigation\";
+- `./frontend/app/entitlement-required/EntitlementRequiredClient.tsx` (131 lines, .tsx) -- \"use client\";
+- `./frontend/app/entitlement-required/page.tsx` (17 lines, .tsx) -- import { EntitlementRequiredClient } from \"./EntitlementRequiredClient\";
+- `./frontend/app/error.tsx` (101 lines, .tsx) -- \"use client\";
+- `./frontend/app/global-error.tsx` (115 lines, .tsx) -- \"use client\";
+- `./frontend/app/layout.tsx` (96 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/loading.tsx` (5 lines, .tsx) -- import { DashboardShellSkeleton } from \"@/components/dashboard/DashboardShellSkeleton\";
+- `./frontend/app/ops/analytics/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/config/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/health/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/layout.tsx` (5 lines, .tsx) -- import { AdminShell } from \"@/components/ops/layout/AdminShell\";
+- `./frontend/app/ops/memberships/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/overview/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/page.tsx` (5 lines, .tsx) -- import { redirect } from \"next/navigation\";
+- `./frontend/app/ops/payments/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/subscriptions/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/system/page.tsx` (12 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/telegram-audit/page.tsx` (5 lines, .tsx) -- import { TelegramAuditPageClient } from \"@/components/ops/telegram-audit/TelegramAuditPageClient\";
+- `./frontend/app/ops/training/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/truth-history/page.tsx` (13 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/users/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/ops/view-logs/page.tsx` (10 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/page.tsx` (63 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/robots.ts` (14 lines, .ts) -- import type { MetadataRoute } from \"next\";
+- `./frontend/app/sitemap.ts` (20 lines, .ts) -- import type { MetadataRoute } from \"next\";
+- `./frontend/app/subscription-help/SubscriptionHelpClient.tsx` (137 lines, .tsx) -- \"use client\";
+- `./frontend/app/subscription-help/page.tsx` (16 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/app/terminal/page.tsx` (12 lines, .tsx) -- import type { Metadata } from \"next\";
+- `./frontend/components/account/AccountCenter.tsx` (1330 lines, .tsx) -- \"use client\";
+- `./frontend/components/account/AccountEntry.tsx` (29 lines, .tsx) -- \"use client\";
+- `./frontend/components/account/AccountInfoRow.tsx` (51 lines, .tsx) -- import type { LucideIcon } from \"lucide-react\";
+- `./frontend/components/account/__tests__/paymentSecurity.test.ts` (101 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/account/__tests__/paymentShell.test.ts` (180 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/account/account-copy.ts` (330 lines, .ts) -- export function createAccountCopy(isEn: boolean): Record<string, string> {
+- `./frontend/components/account/constants.ts` (18 lines, .ts) -- export const WALLETCONNECT_PROJECT_ID = String(
+- `./frontend/components/account/formatters.ts` (49 lines, .ts) -- import { PAYMENT_RECOVERY_STORAGE_KEY } from \"./constants\";
+- `./frontend/components/account/payment-utils.ts` (170 lines, .ts) -- import type { EvmProvider } from \"./types\";
+- `./frontend/components/account/types.ts` (175 lines, .ts) -- export type AuthMeResponse = {
+- `./frontend/components/account/useAccountPayment.ts` (499 lines, .ts) -- \"use client\";
+- `./frontend/components/account/useBilling.ts` (398 lines, .ts) -- \"use client\";
+- `./frontend/components/account/usePaymentFlow.ts` (708 lines, .ts) -- \"use client\";
+- `./frontend/components/account/usePaymentState.ts` (74 lines, .ts) -- import { useCallback, useState } from \"react\";
+- `./frontend/components/account/useWalletBind.ts` (386 lines, .ts) -- \"use client\";
+- `./frontend/components/account/wallet.ts` (237 lines, .ts) -- import type { Eip6963ProviderDetail, EvmProvider, InjectedProviderOption } from \"./types\";
+- `./frontend/components/auth/LoginClient.tsx` (535 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/DashboardShellSkeleton.tsx` (152 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/DetailMiniTemperatureChart.tsx` (157 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/ModelForecast.tsx` (283 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/RegisterSW.tsx` (24 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/ScanTerminalDashboard.tsx` (1196 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-root-styles.ts` (32 lines, .ts) --    Consolidates 20 CSS Modules that are always co-imported into
+- `./frontend/components/dashboard/scan-terminal/CalendarView.tsx` (186 lines, .tsx) -- import { memo, useEffect, useMemo, useState } from \"react\";
+- `./frontend/components/dashboard/scan-terminal/CitySelectorDropdown.tsx` (310 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/GridLayoutSelector.tsx` (104 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/KoyfinRowsTable.tsx` (51 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/LiveTemperatureThresholdChart.tsx` (790 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/LoadingSignal.tsx` (71 lines, .tsx) -- import clsx from \"clsx\";
+- `./frontend/components/dashboard/scan-terminal/MobileCityCard.tsx` (75 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/MobileRegionTabs.tsx` (43 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/ModelCurvesSummary.tsx` (37 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/Panel.tsx` (37 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/ProductAccessRequired.tsx` (193 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/ScanTerminalShellParts.tsx` (35 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/TemperatureChartCanvas.tsx` (345 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/TemperatureRunwayDetails.tsx` (70 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/TemperatureStatsBars.tsx` (189 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/TemperatureTooltipContent.tsx` (88 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/TrainingDashboard.tsx` (318 lines, .tsx) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/cityFallbackRows.test.ts` (123 lines, .ts) -- import {
+- `./frontend/components/dashboard/scan-terminal/__tests__/httpError.test.ts` (18 lines, .ts) -- import assert from \"node:assert/strict\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/koreanRunwayObservationDisplay.test.ts` (108 lines, .ts) -- import {
+- `./frontend/components/dashboard/scan-terminal/__tests__/marketOverviewBadge.test.ts` (36 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/mobileAnnouncement.test.ts` (24 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/proxyCachePolicy.test.ts` (25 lines, .ts) -- import assert from \"node:assert/strict\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/refreshCadencePolicy.test.ts` (133 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/removedMonitorRunwayTabs.test.ts` (59 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/sourceFreshness.test.ts` (112 lines, .ts) -- import assert from \"node:assert/strict\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/ssePatchArchitecture.test.ts` (242 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/temperatureChartData.test.ts` (250 lines, .ts) -- import { getTemperatureChartData } from \"@/lib/chart-utils\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/temperatureDefaultVisibilityPolicy.test.ts` (1284 lines, .ts) -- import {
+- `./frontend/components/dashboard/scan-terminal/__tests__/temperatureTooltipContent.test.ts` (51 lines, .ts) -- import { __buildTemperatureTooltipRowsForTest } from \"@/components/dashboard/scan-terminal/TemperatureTooltipContent\";
+- `./frontend/components/dashboard/scan-terminal/__tests__/terminalAccessState.test.ts` (71 lines, .ts) -- import {
+- `./frontend/components/dashboard/scan-terminal/__tests__/terminalGridPolicy.test.ts` (68 lines, .ts) -- import fs from \"node:fs\";
+- `./frontend/components/dashboard/scan-terminal/calendar-action-utils.ts` (299 lines, .ts) -- import type { ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/components/dashboard/scan-terminal/city-fallback-rows.ts` (85 lines, .ts) -- import type { CityListItem, ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/components/dashboard/scan-terminal/continent-grouping.ts` (238 lines, .ts) -- import type { ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/components/dashboard/scan-terminal/decision-utils.ts` (221 lines, .ts) -- import type { ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/components/dashboard/scan-terminal/scan-terminal-client.ts` (179 lines, .ts) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/temperature-chart-logic.ts` (2174 lines, .ts) -- import type {
+- `./frontend/components/dashboard/scan-terminal/terminal-access-state.ts` (62 lines, .ts) -- import type { ProAccessState } from \"@/lib/dashboard-types\";
+- `./frontend/components/dashboard/scan-terminal/types.ts` (5 lines, .ts) -- export type AiPinnedCity = {
+- `./frontend/components/dashboard/scan-terminal/use-remote-data-query.ts` (114 lines, .ts) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/use-scan-terminal-query.ts` (200 lines, .ts) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/use-scan-terminal-ui-state.ts` (39 lines, .ts) -- \"use client\";
+- `./frontend/components/dashboard/scan-terminal/utils.ts` (29 lines, .ts) -- import type { ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/components/docs/DocsScreen.tsx` (197 lines, .tsx) -- \"use client\";
+- `./frontend/components/landing/InstitutionalLandingPage.tsx` (396 lines, .tsx) -- \"use client\";
+- `./frontend/components/landing/PreloadTerminalData.tsx` (37 lines, .tsx) -- \"use client\";
+- `./frontend/components/observability/WebVitalsReporter.tsx` (49 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/TruthHistoryDashboard.tsx` (269 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/analytics/AnalyticsPageClient.tsx` (170 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/config/ConfigPageClient.tsx` (110 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/health/HealthPageClient.tsx` (144 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/layout/AdminShell.tsx` (12 lines, .tsx) -- import { AdminSidebar } from \"./AdminSidebar\";
+- `./frontend/components/ops/layout/AdminSidebar.tsx` (107 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/memberships/MembershipsPageClient.tsx` (325 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/overview/OverviewPageClient.tsx` (380 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/payments/PaymentsPageClient.tsx` (234 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/subscriptions/SubscriptionsPageClient.tsx` (177 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/system/SystemPageClient.tsx` (183 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/telegram-audit/TelegramAuditPageClient.tsx` (351 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/training/TrainingPageClient.tsx` (480 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/users/UsersPageClient.tsx` (154 lines, .tsx) -- \"use client\";
+- `./frontend/components/ops/view-logs/LogsPageClient.tsx` (120 lines, .tsx) -- \"use client\";
+- `./frontend/components/subscription/UnlockProOverlay.tsx` (450 lines, .tsx) -- \"use client\";
+- `./frontend/components/terminal/Sparkline.tsx` (81 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/badge.tsx` (43 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/button.tsx` (57 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/card.tsx` (78 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/input.tsx` (24 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/separator.tsx` (24 lines, .tsx) -- \"use client\";
+- `./frontend/components/ui/skeleton.tsx` (15 lines, .tsx) -- import { cn } from \"@/lib/utils\";
+- `./frontend/content/docs/docs.config.ts` (19 lines, .ts) -- import type { DocsLocale, DocsNavGroup } from \"./docs\";
+- `./frontend/content/docs/docs.ts` (626 lines, .ts) -- export type DocsLocale = \"zh-CN\" | \"en-US\";
+- `./frontend/hooks/use-sse-patches.ts` (327 lines, .ts) -- \"use client\";
+- `./frontend/hooks/useChart.ts` (62 lines, .ts) -- \"use client\";
+- `./frontend/hooks/useI18n.tsx` (57 lines, .tsx) -- \"use client\";
+- `./frontend/hooks/usePrefersReducedMotion.ts` (26 lines, .ts) -- \"use client\";
+- `./frontend/hooks/useRelativeTime.ts` (51 lines, .ts) -- \"use client\";
+- `./frontend/lib/airport-observation-display.ts` (55 lines, .ts) -- import type { AirportCurrentConditions, CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/api-proxy.ts` (139 lines, .ts) -- import type { NextRequest } from \"next/server\";
+- `./frontend/lib/app-analytics.ts` (95 lines, .ts) -- \"use client\";
+- `./frontend/lib/backend-api.ts` (49 lines, .ts) -- \"use client\";
+- `./frontend/lib/backend-auth.ts` (106 lines, .ts) -- import type { NextRequest } from \"next/server\";
+- `./frontend/lib/chart-utils.ts` (693 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/dashboard-home-copy.ts` (164 lines, .ts) -- import type {
+- `./frontend/lib/dashboard-official-sources.ts` (758 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/dashboard-scenery.ts` (84 lines, .ts) -- export interface CityScenery {
+- `./frontend/lib/dashboard-types.ts` (963 lines, .ts) -- export type RiskLevel = \"low\" | \"medium\" | \"high\" | string;
+- `./frontend/lib/dashboard-utils.ts` (2190 lines, .ts) -- import { Locale } from \"@/lib/i18n\";
+- `./frontend/lib/http-cache.ts` (40 lines, .ts) -- import { createHash } from \"node:crypto\";
+- `./frontend/lib/http-error.ts` (29 lines, .ts) -- export function formatHttpErrorMessage(
+- `./frontend/lib/i18n.ts` (400 lines, .ts) -- export type Locale = \"zh-CN\" | \"en-US\";
+- `./frontend/lib/local-dev-access.ts` (83 lines, .ts) -- import type { ProAccessState } from \"@/lib/dashboard-types\";
+- `./frontend/lib/model-utils.ts` (52 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/observation-source-utils.ts` (74 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/ops-admin.ts` (45 lines, .ts) -- import { cookies } from \"next/headers\";
+- `./frontend/lib/ops-api.ts` (146 lines, .ts) -- type FetchOptions = RequestInit & { timeoutMs?: number };
+- `./frontend/lib/pace-utils.ts` (158 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/lib/payment-host.ts` (44 lines, .ts) -- const DEFAULT_ALLOWED_PAYMENT_HOSTS = [
+- `./frontend/lib/payment-receiver.ts` (19 lines, .ts) -- export const EXPECTED_PAYMENT_RECEIVER_ADDRESS =
+- `./frontend/lib/proxy-cache-policy.ts` (31 lines, .ts) -- export type ProxyCachePolicy = {
+- `./frontend/lib/refresh-policy.ts` (15 lines, .ts) -- export const DASHBOARD_REFRESH_POLICY_SEC = {
+- `./frontend/lib/scan-market-focus.ts` (334 lines, .ts) -- import type { ScanOpportunityRow } from \"@/lib/dashboard-types\";
+- `./frontend/lib/site-url.ts` (7 lines, .ts) -- export const PRODUCTION_SITE_URL = \"https://polyweather.top\";
+- `./frontend/lib/source-freshness.ts` (336 lines, .ts) -- import type { CityDetail, ObservationFreshness } from \"@/lib/dashboard-types\";
+- `./frontend/lib/source-labels.ts` (24 lines, .ts) -- export function normalizeObservationSourceLabel(
+- `./frontend/lib/supabase/client.ts` (29 lines, .ts) -- import { createBrowserClient } from \"@supabase/ssr\";
+- `./frontend/lib/supabase/server.ts` (113 lines, .ts) -- import { createServerClient, type CookieOptions } from \"@supabase/ssr\";
+- `./frontend/lib/system-priority-proxy.ts` (78 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/lib/taf-utils.ts` (35 lines, .ts) -- import type { Locale } from \"@/lib/i18n\";
+- `./frontend/lib/temperature-chart-paths.ts` (442 lines, .ts) -- import { normalizeTemperatureSymbol } from \"@/lib/temperature-utils\";
+- `./frontend/lib/temperature-utils.ts` (35 lines, .ts) -- export function normalizeTemperatureSymbol(value?: string | null) {
+- `./frontend/lib/time-utils.ts` (72 lines, .ts) -- export function normalizeHm(value?: string | null) {
+- `./frontend/lib/utils.ts` (49 lines, .ts) -- import { type ClassValue, clsx } from \"clsx\";
+- `./frontend/lib/vitals-store.ts` (88 lines, .ts) -- type MetricName = \"INP\" | \"LCP\" | \"FCP\";
+- `./frontend/lib/weather-aura.ts` (146 lines, .ts) -- import { CityDetail, CityListItem } from \"@/lib/dashboard-types\";
+- `./frontend/lib/weather-summary-utils.ts` (193 lines, .ts) -- import type { CityDetail } from \"@/lib/dashboard-types\";
+- `./frontend/middleware.ts` (173 lines, .ts) -- import { NextRequest, NextResponse } from \"next/server\";
+- `./frontend/next-env.d.ts` (6 lines, .ts) -- <empty>
+- `./frontend/public/sw.js` (62 lines, .js) -- const CACHE_NAME = \"polyweather-v2\";
+- `./frontend/tailwind.config.ts` (105 lines, .ts) -- import type { Config } from \"tailwindcss\";
+- `./frontend/types/ops.ts` (162 lines, .ts) -- export type HealthPayload = {
+- `./run.py` (24 lines, .py) -- import subprocess
+- `./scripts/backfill_historical_weather.py` (210 lines, .py) -- import argparse
+- `./scripts/backfill_recent_daily_actuals_from_metar.py` (106 lines, .py) -- import argparse
+- `./scripts/backtest_deb_versions.py` (70 lines, .py) -- from __future__ import annotations
+- `./scripts/backtest_metar_calibrated_path.py` (564 lines, .py) -- This script intentionally mirrors the frontend chart logic at a data-science
+- `./scripts/build_settlement_history_from_csv.py` (84 lines, .py) -- import argparse
+- `./scripts/bump_version.py` (67 lines, .py) -- from __future__ import annotations
+- `./scripts/check_city_cache.py` (24 lines, .py) -- import json
+- `./scripts/check_om_cache.py` (14 lines, .py) -- import time
+- `./scripts/check_open_meteo_cache.py` (164 lines, .py) -- This diagnostic is intentionally cache-first:
+- `./scripts/check_ops_health.py` (67 lines, .py) -- from __future__ import annotations
+- `./scripts/check_payment_contract_security.py` (41 lines, .py) -- import argparse
+- `./scripts/check_weekly_reward_status.py` (193 lines, .py) -- from __future__ import annotations
+- `./scripts/create_forum_topics.py` (162 lines, .py) -- 一次性为新 Telegram 群组创建所有城市的 Forum Topics。
+- `./scripts/delete_forum_topic.py` (47 lines, .py) -- from __future__ import annotations
+- `./scripts/encode_checkout_constructor.py` (43 lines, .py) -- from __future__ import annotations
+- `./scripts/encode_checkout_v2_constructor.py` (46 lines, .py) -- from __future__ import annotations
+- `./scripts/export_runtime_state_from_sqlite.py` (53 lines, .py) -- import argparse
+- `./scripts/grant_points.py` (30 lines, .py) -- from __future__ import annotations
+- `./scripts/grant_subscription_by_email.py` (261 lines, .py) -- from __future__ import annotations
+- `./scripts/migrate_runtime_state_to_sqlite.py` (73 lines, .py) -- import argparse
+- `./scripts/reconcile_payment_tx.py` (212 lines, .py) -- Admin utility: reconcile a payment transaction to a user subscription.
+- `./scripts/reconcile_subscription_by_email.py` (90 lines, .py) -- from __future__ import annotations
+- `./scripts/replay_payment_events.py` (68 lines, .py) -- import argparse
+- `./scripts/restore_training_feature_history.py` (114 lines, .py) -- import argparse
+- `./scripts/restore_training_truth_history.py` (140 lines, .py) -- import argparse
+- `./scripts/scan_forum_topics.py` (72 lines, .py) -- from __future__ import annotations
+- `./scripts/scrub_secrets.py` (139 lines, .py) -- Run this on the public/github-safe branch before committing.
+- `./scripts/sync_telegram_profiles_to_supabase.py` (94 lines, .py) -- from __future__ import annotations
+- `./scripts/sync_version.py` (64 lines, .py) -- from __future__ import annotations
+- `./scripts/validate_frontend_cache.sh` (186 lines, .sh) -- set -u
+- `./scripts/validate_runtime_env.py` (28 lines, .py) -- import argparse
+- `./scripts/verify_runtime_state_storage.py` (101 lines, .py) -- import argparse
+- `./src/__init__.py` (0 lines, .py) -- <empty>
+- `./src/analysis/city_query_service.py` (581 lines, .py) -- from __future__ import annotations
+- `./src/analysis/deb_algorithm.py` (1464 lines, .py) -- from __future__ import annotations
+- `./src/analysis/deb_evaluation.py` (319 lines, .py) -- from __future__ import annotations
+- `./src/analysis/deb_hourly_consensus.py` (114 lines, .py) -- from __future__ import annotations
+- `./src/analysis/deb_hourly_correction.py` (351 lines, .py) -- from __future__ import annotations
+- `./src/analysis/settlement_rounding.py` (47 lines, .py) -- import math
+- `./src/analysis/trend_engine.py` (1069 lines, .py) -- Trend Engine — Shared weather analysis module
+- `./src/auth/__init__.py` (2 lines, .py) -- <empty>
+- `./src/auth/supabase_entitlement.py` (514 lines, .py) -- from __future__ import annotations
+- `./src/auth/telegram_group_pricing.py` (150 lines, .py) -- from __future__ import annotations
+- `./src/bot/__init__.py` (2 lines, .py) -- <empty>
+- `./src/bot/analysis/__init__.py` (2 lines, .py) -- <empty>
+- `./src/bot/analysis/city_analysis_service.py` (36 lines, .py) -- from __future__ import annotations
+- `./src/bot/analysis/deb_analysis_service.py` (232 lines, .py) -- from __future__ import annotations
+- `./src/bot/analysis_layer.py` (31 lines, .py) -- from __future__ import annotations
+- `./src/bot/command_guard.py` (101 lines, .py) -- from __future__ import annotations
+- `./src/bot/command_parser.py` (94 lines, .py) -- from __future__ import annotations
+- `./src/bot/handlers/__init__.py` (2 lines, .py) -- <empty>
+- `./src/bot/handlers/activity.py` (39 lines, .py) -- from __future__ import annotations
+- `./src/bot/handlers/basic.py` (543 lines, .py) -- from __future__ import annotations
+- `./src/bot/handlers/city.py` (111 lines, .py) -- from __future__ import annotations
+- `./src/bot/handlers/deb.py` (105 lines, .py) -- from __future__ import annotations
+- `./src/bot/io_layer.py` (320 lines, .py) -- from __future__ import annotations
+- `./src/bot/observability.py` (43 lines, .py) -- from __future__ import annotations
+- `./src/bot/orchestrator.py` (106 lines, .py) -- from __future__ import annotations
+- `./src/bot/runtime_coordinator.py` (350 lines, .py) -- from __future__ import annotations
+- `./src/bot/services/__init__.py` (2 lines, .py) -- <empty>
+- `./src/bot/services/city_command_service.py` (38 lines, .py) -- from __future__ import annotations
+- `./src/bot/services/deb_command_service.py` (31 lines, .py) -- from __future__ import annotations
+- `./src/bot/services/entitlement_service.py` (66 lines, .py) -- from __future__ import annotations
+- `./src/bot/settings.py` (33 lines, .py) -- from __future__ import annotations
+- `./src/bot/weekly_reward_loop.py` (437 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/__init__.py` (0 lines, .py) -- <empty>
+- `./src/data_collection/aeroweb_sources.py` (245 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/amos_station_sources.py` (611 lines, .py) -- Fetches runway-level observations from global.amo.go.kr for Korean airports.
+- `./src/data_collection/amsc_awos_sources.py` (384 lines, .py) -- The AMSC `getWindPlate` endpoint exposes runway-point air temperature fields:
+- `./src/data_collection/city_registry.py` (894 lines, .py) -- CITY_REGISTRY = {
+- `./src/data_collection/city_risk_profiles.py` (61 lines, .py) -- from src.data_collection.city_registry import CITY_REGISTRY
+- `./src/data_collection/city_time.py` (171 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/country_networks.py` (1278 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/cowin_sources.py` (264 lines, .py) -- Fetches 1-minute temperature from HKU CoWIN API for Hong Kong.
+- `./src/data_collection/fmi_sources.py` (180 lines, .py) -- Fetches 10-minute airport weather observations from opendata.fmi.fi
+- `./src/data_collection/hko_obs_sources.py` (163 lines, .py) -- Fetches 1-minute temperature from HKO's public regional-weather API
+- `./src/data_collection/ims_sources.py` (154 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/jma_amedas_sources.py` (156 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/kma_station_sources.py` (269 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/knmi_sources.py` (266 lines, .py) -- Fetches 10-minute weather observations from the KNMI Data Platform
+- `./src/data_collection/madis_sources.py` (213 lines, .py) -- Fetches NetCDF files from NOAA MADIS public archive.
+- `./src/data_collection/metar_sources.py` (473 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/mgm_sources.py` (392 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/ncm_sources.py` (127 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/nws_open_meteo_sources.py` (945 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/open_meteo_cache.py` (209 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/settlement_sources.py` (683 lines, .py) -- from __future__ import annotations
+- `./src/data_collection/singapore_mss_sources.py` (133 lines, .py) -- Fetches air temperature from data.gov.sg public API.
+- `./src/data_collection/weather_sources.py` (1867 lines, .py) -- import os
+- `./src/data_mining/fetch_history.py` (97 lines, .py) -- import os
+- `./src/database/db_manager.py` (2402 lines, .py) -- import sqlite3
+- `./src/database/runtime_state.py` (1240 lines, .py) -- from __future__ import annotations
+- `./src/models/__init__.py` (1 lines, .py) -- <empty>
+- `./src/onchain/__init__.py` (1 lines, .py) -- ﻿\"\"\"On-chain monitoring modules.\"\"\"
+- `./src/payments/__init__.py` (14 lines, .py) -- from .contract_checkout import (
+- `./src/payments/confirm_loop.py` (165 lines, .py) -- from __future__ import annotations
+- `./src/payments/contract_audit.py` (179 lines, .py) -- from __future__ import annotations
+- `./src/payments/contract_checkout.py` (2837 lines, .py) -- from __future__ import annotations
+- `./src/payments/event_loop.py` (461 lines, .py) -- from __future__ import annotations
+- `./src/utils/__init__.py` (0 lines, .py) -- <empty>
+- `./src/utils/config_loader.py` (51 lines, .py) -- import os
+- `./src/utils/config_validation.py` (125 lines, .py) -- from __future__ import annotations
+- `./src/utils/daily_weather_report.py` (441 lines, .py) -- from __future__ import annotations
+- `./src/utils/logger.py` (28 lines, .py) -- import sys
+- `./src/utils/metrics.py` (139 lines, .py) -- from __future__ import annotations
+- `./src/utils/online_tracker.py` (43 lines, .py) -- and exposes a count of users active within a sliding window.  No external
+- `./src/utils/refresh_policy.py` (9 lines, .py) -- from __future__ import annotations
+- `./src/utils/telegram_chat_ids.py` (45 lines, .py) -- from __future__ import annotations
+- `./src/utils/telegram_i18n.py` (41 lines, .py) -- import os
+- `./src/utils/telegram_push.py` (1706 lines, .py) -- import hashlib
+- `./start.sh` (79 lines, .sh) -- set -e
+- `./tests/test_amos_station_sources.py` (150 lines, .py) -- from src.data_collection.amos_station_sources import (
+- `./tests/test_amsc_awos_sources.py` (166 lines, .py) -- from src.data_collection.amsc_awos_sources import (
+- `./tests/test_analysis_ttl.py` (54 lines, .py) -- from web.analysis_service import (
+- `./tests/test_bot_basic_handler.py` (412 lines, .py) -- from types import SimpleNamespace
+- `./tests/test_bot_command_guard.py` (26 lines, .py) -- from types import SimpleNamespace
+- `./tests/test_bot_handlers.py` (98 lines, .py) -- from types import SimpleNamespace
+- `./tests/test_bot_io_layer_points.py` (54 lines, .py) -- from __future__ import annotations
+- `./tests/test_bot_runtime_coordinator.py` (37 lines, .py) -- from src.bot.runtime_coordinator import RuntimeStatus, StartupCoordinator, render_runtime_status_html
+- `./tests/test_city_payloads.py` (28 lines, .py) -- from web.services.city_payloads import build_city_summary_payload
+- `./tests/test_config_validation.py` (31 lines, .py) -- from src.utils.config_validation import validate_runtime_env
+- `./tests/test_country_networks.py` (628 lines, .py) -- import threading
+- `./tests/test_cowin_sources.py` (87 lines, .py) -- import threading
+- `./tests/test_db_manager_init_once.py` (21 lines, .py) -- from src.database.db_manager import DBManager
+- `./tests/test_deb_evaluation_upgrade.py` (121 lines, .py) -- import json
+- `./tests/test_deb_hourly_consensus.py` (72 lines, .py) -- from src.analysis.deb_hourly_consensus import (
+- `./tests/test_deb_hourly_peak_correction.py` (128 lines, .py) -- from src.analysis.deb_hourly_correction import (
+- `./tests/test_deb_model_family.py` (185 lines, .py) -- from src.analysis.deb_algorithm import (
+- `./tests/test_deployment_runtime_config.py` (79 lines, .py) -- from pathlib import Path
+- `./tests/test_direct_payment.py` (276 lines, .py) -- from src.payments.contract_checkout import PaymentContractCheckoutService, PaymentIntentRecord
+- `./tests/test_full_cache.py` (49 lines, .py) -- import tempfile
+- `./tests/test_grant_points.py` (22 lines, .py) -- from src.database.db_manager import DBManager
+- `./tests/test_multi_model_sources.py` (296 lines, .py) -- from src.data_collection.nws_open_meteo_sources import (
+- `./tests/test_observation_time_sources.py` (51 lines, .py) -- from datetime import datetime, timezone
+- `./tests/test_payment_contract_audit.py` (32 lines, .py) -- import os
+- `./tests/test_payments_runtime.py` (435 lines, .py) -- from datetime import datetime, timedelta, timezone
+- `./tests/test_realtime_event_store.py` (115 lines, .py) -- import sqlite3
+- `./tests/test_realtime_event_store_factory.py` (55 lines, .py) -- import pytest
+- `./tests/test_realtime_patch_schema.py` (111 lines, .py) -- import pytest
+- `./tests/test_redis_realtime_event_store.py` (125 lines, .py) -- from web.redis_realtime_event_store import RedisRealtimeEventStore
+- `./tests/test_refresh_policy.py` (33 lines, .py) -- from src.utils.refresh_policy import (
+- `./tests/test_runtime_state_storage.py` (149 lines, .py) -- import time
+- `./tests/test_scan_terminal_modules.py` (161 lines, .py) -- from web.scan_terminal_filters import normalize_scan_terminal_filters
+- `./tests/test_settlement_sources.py` (98 lines, .py) -- import threading
+- `./tests/test_sse_replay.py` (182 lines, .py) -- import json
+- `./tests/test_supabase_entitlement.py` (90 lines, .py) -- from datetime import datetime, timedelta, timezone
+- `./tests/test_telegram_group_pricing.py` (175 lines, .py) -- import hashlib
+- `./tests/test_telegram_hashtags.py` (220 lines, .py) -- from src.utils.telegram_push import (
+- `./tests/test_telegram_i18n.py` (59 lines, .py) -- from src.bot.weekly_reward_loop import _render_settle_report
+- `./tests/test_trend_engine.py` (409 lines, .py) -- Unit tests for trend_engine core logic.
+- `./tests/test_web_observability.py` (366 lines, .py) -- from fastapi.testclient import TestClient
+- `./tests/test_weekly_points_display.py` (51 lines, .py) -- from datetime import datetime
+- `./update.sh` (43 lines, .sh) -- cd ~/Downloads/PolyWeather
+- `./web/__init__.py` (3 lines, .py) -- from web.core import app
+- `./web/analysis_service.py` (2288 lines, .py) -- from __future__ import annotations
+- `./web/app.py` (45 lines, .py) -- PolyWeather Web Map API
+- `./web/app_factory.py` (48 lines, .py) -- This module centralizes router registration while preserving the existing
+- `./web/core.py` (828 lines, .py) -- PolyWeather Web Core Context
+- `./web/realtime_event_store.py` (265 lines, .py) -- from __future__ import annotations
+- `./web/realtime_event_store_factory.py` (45 lines, .py) -- from __future__ import annotations
+- `./web/realtime_patch_schema.py` (294 lines, .py) -- from __future__ import annotations
+- `./web/redis_realtime_event_store.py` (296 lines, .py) -- from __future__ import annotations
+- `./web/routers/__init__.py` (1 lines, .py) -- <empty>
+- `./web/routers/analytics.py` (13 lines, .py) -- from fastapi import APIRouter, Request
+- `./web/routers/auth.py` (33 lines, .py) -- from fastapi import APIRouter, Request
+- `./web/routers/city.py` (160 lines, .py) -- from typing import Any, Dict, List, Optional
+- `./web/routers/ops.py` (195 lines, .py) -- from fastapi import APIRouter, Request
+- `./web/routers/payments.py` (101 lines, .py) -- from fastapi import APIRouter, Request
+- `./web/routers/scan.py` (58 lines, .py) -- from __future__ import annotations
+- `./web/routers/sse_router.py` (136 lines, .py) -- from __future__ import annotations
+- `./web/routers/system.py` (51 lines, .py) -- from typing import Optional
+- `./web/routes.py` (14 lines, .py) -- Endpoint handlers now live under ``web.routers``. The remaining cache/history
+- `./web/scan_terminal_cache.py` (278 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_city_row.py` (356 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_filters.py` (78 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_metar_gate.py` (154 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_payloads.py` (86 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_ranker.py` (84 lines, .py) -- from __future__ import annotations
+- `./web/scan_terminal_service.py` (325 lines, .py) -- from __future__ import annotations
+- `./web/services/__init__.py` (1 lines, .py) -- <empty>
+- `./web/services/analysis_signals.py` (760 lines, .py) -- from __future__ import annotations
+- `./web/services/analysis_utils.py` (206 lines, .py) -- Pure helpers: clock arithmetic, bucket labelling, signal packaging.
+- `./web/services/analytics_api.py` (35 lines, .py) -- from __future__ import annotations
+- `./web/services/auth_api.py` (221 lines, .py) -- from __future__ import annotations
+- `./web/services/city_api.py` (170 lines, .py) -- from __future__ import annotations
+- `./web/services/city_payloads.py` (284 lines, .py) -- from __future__ import annotations
+- `./web/services/city_realtime_stream.py` (117 lines, .py) -- Maintains per-city deque buffers (max 1440 points) fed by _analyze()
+- `./web/services/city_runtime.py` (533 lines, .py) -- from __future__ import annotations
+- `./web/services/dashboard_init_api.py` (90 lines, .py) -- from __future__ import annotations
+- `./web/services/observation_freshness.py` (187 lines, .py) -- Extracted from analysis_service.py to keep the god module leaner.
+- `./web/services/ops_api.py` (1220 lines, .py) -- from __future__ import annotations
+- `./web/services/payment_api.py` (200 lines, .py) -- from __future__ import annotations
+- `./web/services/scan_api.py` (53 lines, .py) -- from __future__ import annotations
+- `./web/services/scan_terminal_config.py` (43 lines, .py) -- from __future__ import annotations
+- `./web/services/system_api.py` (128 lines, .py) -- from __future__ import annotations
+- `./web/sse_manager.py` (168 lines, .py) -- from __future__ import annotations
+
+## By language
+- .py: 195
+- .ts: 138
+- .md: 87
+- .tsx: 85
+- .sh: 4
+- .js: 4
