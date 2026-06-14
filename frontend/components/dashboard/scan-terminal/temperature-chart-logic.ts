@@ -12,6 +12,7 @@ import type {
 } from "@/lib/dashboard-types";
 import { buildDebBaselinePath } from "@/lib/temperature-chart-paths";
 import { DASHBOARD_REFRESH_POLICY_MS } from "@/lib/refresh-policy";
+import { buildBrowserBackendHeaders } from "@/lib/backend-api";
 import type { CityPatch } from "@/hooks/use-sse-patches";
 const ROLLING_WINDOW_BEFORE_MS = 12 * 60 * 60 * 1000;
 const ROLLING_WINDOW_AFTER_LIVE_MS = 2 * 60 * 60 * 1000;
@@ -726,6 +727,26 @@ function canonicalAirportPrimarySourceLabel(hourly: HourlyForecast) {
   return "";
 }
 
+function airportCodeForSeriesLabel(
+  hourly: HourlyForecast,
+  row?: ScanOpportunityRow | null,
+) {
+  const candidates = [
+    hourly?.airportPrimary?.station_code,
+    (hourly?.airportPrimary as any)?.icao,
+    row?.airport,
+    row?.metar_context?.station,
+  ];
+  const code = candidates
+    .map((value) => String(value || "").trim().toUpperCase())
+    .find(Boolean);
+  return code || "";
+}
+
+function isUsAirportCode(value: string) {
+  return /^K[A-Z0-9]{3}$/.test(String(value || "").trim().toUpperCase());
+}
+
 function isGenericAirportPrimaryLabel(label: string) {
   const normalized = label.trim().toLowerCase();
   return (
@@ -736,12 +757,20 @@ function isGenericAirportPrimaryLabel(label: string) {
   );
 }
 
-function airportPrimarySeriesLabel(hourly: HourlyForecast, isHKO: boolean) {
+function airportPrimarySeriesLabel(
+  hourly: HourlyForecast,
+  isHKO: boolean,
+  row?: ScanOpportunityRow | null,
+) {
   if (isHKO) return "HKO";
   const canonicalLabel = canonicalAirportPrimarySourceLabel(hourly);
   if (canonicalLabel === "MGM") return canonicalLabel;
   const payloadLabel = String(hourly?.airportPrimary?.source_label || "").trim();
   if (payloadLabel && !isGenericAirportPrimaryLabel(payloadLabel)) return payloadLabel;
+  if (canonicalLabel === "NOAA MADIS" && !isUsAirportCode(airportCodeForSeriesLabel(hourly, row))) {
+    const stationCode = airportCodeForSeriesLabel(hourly, row);
+    return stationCode ? `${stationCode} METAR` : "METAR";
+  }
   return canonicalLabel || payloadLabel || "NOAA MADIS";
 }
 
@@ -1143,6 +1172,39 @@ function hasFullHourlyDetailPayload(hourly: HourlyForecast) {
   );
 }
 
+function hasArrayItems<T>(value: T[] | null | undefined): value is T[] {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function hasProbabilityPayload(value: LegacyGaussianProbabilitySource | null | undefined) {
+  const distribution =
+    value?.distribution_all ||
+    value?.distribution ||
+    [];
+  return Boolean(value?.mu != null || distribution.length > 0 || value?.engine);
+}
+
+function preferNumber(
+  primary: number | null | undefined,
+  fallback: number | null | undefined,
+) {
+  return validNumber(primary) ?? validNumber(fallback) ?? null;
+}
+
+function preferArray<T>(
+  primary: T[] | null | undefined,
+  fallback: T[] | null | undefined,
+) {
+  return hasArrayItems(primary) ? primary : fallback;
+}
+
+function preferRecord<T>(
+  primary: Record<string, T> | null | undefined,
+  fallback: Record<string, T> | null | undefined,
+) {
+  return hasRecordEntries(primary) ? primary : fallback;
+}
+
 function latestRawObservationRank(
   points: RawObsPoint[] | null | undefined,
   row: ScanOpportunityRow | null,
@@ -1372,6 +1434,7 @@ function mergeHourlyWithLiveObservations(
   if (!live) return base;
   if (hourlyLocalDatesConflict(base, live, row)) return base;
   const detailSource = shouldKeepLiveHourlyDetailPayload(base, live, row) ? live : base;
+  const forecastFallback = detailSource === base ? live : base;
   const localDate = detailSource.localDate || base.localDate || live.localDate || row?.local_date || null;
   const runwayPlateHistory = mergeRunwayPlateHistory(base.runwayPlateHistory, live.runwayPlateHistory);
   const amos = runwayPlateHistory
@@ -1384,6 +1447,19 @@ function mergeHourlyWithLiveObservations(
     ...detailSource,
     localDate,
     localTime: live.localTime || base.localTime,
+    forecastTodayHigh: preferNumber(detailSource.forecastTodayHigh, forecastFallback.forecastTodayHigh),
+    debPrediction: preferNumber(detailSource.debPrediction, forecastFallback.debPrediction),
+    debQuality: hasRecordEntries(detailSource.debQuality) ? detailSource.debQuality : forecastFallback.debQuality,
+    debHourlyPath: detailSource.debHourlyPath || forecastFallback.debHourlyPath || null,
+    times: preferArray(detailSource.times, forecastFallback.times) || [],
+    temps: preferArray(detailSource.temps, forecastFallback.temps) || [],
+    modelTimes: preferArray(detailSource.modelTimes, forecastFallback.modelTimes) || undefined,
+    modelCurves: preferRecord(detailSource.modelCurves, forecastFallback.modelCurves) || undefined,
+    forecastDaily: preferArray(detailSource.forecastDaily, forecastFallback.forecastDaily) || [],
+    multiModelDaily: preferRecord(detailSource.multiModelDaily, forecastFallback.multiModelDaily) || {},
+    probabilities: hasProbabilityPayload(detailSource.probabilities)
+      ? detailSource.probabilities
+      : forecastFallback.probabilities || null,
     runwayPlateHistory,
     amos,
     airportCurrent: mergeAirportCondition(base.airportCurrent, live.airportCurrent, row, localDate),
@@ -1640,7 +1716,7 @@ function resolveAllBatchWaitersAsNull(
   });
 }
 
-function fetchCityDetailBatchWithTimeout(
+async function fetchCityDetailBatchWithTimeout(
   cities: string[],
   resolution: string,
   forceRefresh: boolean,
@@ -1655,8 +1731,9 @@ function fetchCityDetailBatchWithTimeout(
     resolution,
     scope: "chart",
   });
+  const headers = await buildBrowserBackendHeaders({ Accept: "application/json" });
   return fetch(`/api/cities/detail-batch?${params.toString()}`, {
-    headers: { Accept: "application/json" },
+    headers,
     signal: controller.signal,
   })
     .then(async (res) => {
@@ -2435,9 +2512,14 @@ function buildFullDayChartData(
   const isHKOCity = settlementCityKey === 'hongkong' || settlementCityKey === 'laufaushan'
     || settlementCityKey === 'shenzhen' || (row?.city || '').toLowerCase().includes('hong kong')
     || (row?.city || '').toLowerCase().includes('lau fau shan');
+  const airportPrimarySourceText = [
+    (hourly?.airportPrimary as any)?.source,
+    hourly?.airportPrimary?.source_code,
+    hourly?.airportPrimary?.source_label,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
   const isAmscSource =
-    (hourly?.airportPrimary as any)?.source === "amsc_awos" ||
-    String(hourly?.airportPrimary?.source_label || "").toLowerCase().includes("amsc");
+    airportPrimarySourceText.includes("amsc") ||
+    (AMSC_RUNWAY_CITIES.has(settlementCityKey) && runwayHistorySeries.length > 0);
   const isKoreanAmosSource =
     (settlementCityKey === "seoul" || settlementCityKey === "busan") &&
     (
@@ -2555,7 +2637,7 @@ function buildFullDayChartData(
     if (madisVals.some((v) => v !== null)) {
       series.push({
         key: "madis",
-        label: airportPrimarySeriesLabel(hourly, isHKO),
+        label: airportPrimarySeriesLabel(hourly, isHKO, row),
         source: isHKO ? "HKO" : (hourly?.airportPrimary?.station_code || row?.airport || "MADIS"),
         color: "#0284c7",
         dashed: isHKO ? true : false,

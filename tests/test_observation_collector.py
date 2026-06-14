@@ -132,6 +132,25 @@ def test_observation_collector_run_due_once_collects_without_panel_cache_refresh
     assert calls == [("qingdao", False), ("qingdao", False)]
 
 
+def test_observation_collector_default_cache_refresh_workers_is_two(monkeypatch):
+    from web.observation_collector_service import ObservationCollector
+
+    monkeypatch.delenv(
+        "POLYWEATHER_OBSERVATION_COLLECTOR_CACHE_REFRESH_WORKERS",
+        raising=False,
+    )
+    collector = ObservationCollector(
+        weather=object(),
+        profiles=[],
+        cache_refresher=lambda _city: None,
+    )
+    try:
+        assert collector._cache_refresh_executor is not None
+        assert collector._cache_refresh_executor._max_workers == 2
+    finally:
+        collector._cache_refresh_executor.shutdown(wait=False)
+
+
 def test_raw_observation_store_records_latest_observation(tmp_path):
     from src.database.db_manager import DBManager
 
@@ -160,6 +179,47 @@ def test_raw_observation_store_records_latest_observation(tmp_path):
     assert latest["station_code"] == "ZSQD"
     assert latest["status"] == "ok"
     assert latest["payload"]["temp_c"] == 24.0
+
+
+def test_observation_collector_aligns_amsc_payload_time_with_record_observed_at(tmp_path):
+    from src.database.db_manager import DBManager
+    from web.observation_collector_service import ObservationCollector
+    from web.services.observation_source_adapters import ObservationRecord
+
+    db = DBManager(str(tmp_path / "polyweather.db"))
+    collector = ObservationCollector(
+        weather=object(),
+        profiles=[],
+        observation_store=db,
+    )
+
+    record = ObservationRecord(
+        source="amsc_awos",
+        city="shanghai",
+        value=25.4,
+        observed_at="2026-06-14T15:43:00+00:00",
+        observed_at_local="2026-06-14 23:43:00",
+        station_code="ZSPD",
+        station_name="Shanghai Pudong",
+        runway="",
+        value_unit="c",
+        source_label="AMSC AWOS Shanghai Pudong (ZSPD)",
+        payload={
+            "source": "amsc_awos",
+            "temp_c": 25.4,
+            "observation_time": "2026-06-14T10:44:00+00:00",
+            "observation_time_local": "2026-06-14 18:44:00",
+        },
+    )
+
+    assert collector._store_raw_observations([record]) == 1
+
+    latest = db.get_latest_raw_observation("amsc_awos", "shanghai")
+
+    assert latest is not None
+    assert latest["observed_at"] == "2026-06-14T15:43:00+00:00"
+    assert latest["payload"]["observation_time"] == "2026-06-14T15:43:00+00:00"
+    assert latest["payload"]["observation_time_local"] == "2026-06-14 23:43:00"
 
 
 def test_raw_observation_failure_preserves_last_success_and_increments_errors(tmp_path):
