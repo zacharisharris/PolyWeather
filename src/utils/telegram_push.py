@@ -17,8 +17,9 @@ from src.database.runtime_state import (
     TelegramAlertStateRepository,
     get_state_storage_mode,
 )
+from src.data_collection.city_registry import ALIASES
 from src.data_collection.city_registry import CITY_REGISTRY
-from src.utils.telegram_chat_ids import get_telegram_chat_ids_from_env
+from src.utils.telegram_chat_ids import get_telegram_chat_ids_from_env, parse_telegram_chat_ids
 from src.utils.telegram_i18n import (
     copy_text as _copy,
     is_bilingual as _is_bilingual,
@@ -33,8 +34,9 @@ _CITY_THREAD_IDS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "city_thread_ids.json",
 )
-_FORUM_CHAT_ID = "-1003927451869"
+_DEFAULT_FORUM_CHAT_ID = "-1003927451869"
 _city_thread_ids: dict = {}
+_CITY_THREAD_IDS_LOCK = threading.Lock()
 
 # Shared HTTP session for AROME and auxiliary queries (connection reuse)
 _HTTP_SESSION: Optional[requests_lib.Session] = None
@@ -43,7 +45,7 @@ _HTTP_SESSION_LOCK = threading.Lock()
 # Bot send_message rate limiter: max N messages per second across all threads
 _SEND_MSG_LOCK = threading.Lock()
 _SEND_MSG_LAST_TS: float = 0.0
-_SEND_MSG_MIN_INTERVAL_SEC = float(os.getenv("TELEGRAM_SEND_RATE_LIMIT_SEC", "0.05"))
+_SEND_MSG_MIN_INTERVAL_SEC = float(os.getenv("TELEGRAM_SEND_RATE_LIMIT_SEC", "1.1"))
 
 
 def _get_http_session() -> requests_lib.Session:
@@ -106,9 +108,94 @@ def _load_city_thread_ids() -> dict:
     return {}
 
 
+def normalize_airport_push_city(raw: str) -> str:
+    city = str(raw or "").strip().lower().replace("-", " ")
+    city = re.sub(r"\s+", " ", city)
+    compact = city.replace(" ", "")
+    city = ALIASES.get(city, ALIASES.get(compact, city))
+    if city not in HIGH_FREQ_AIRPORT_CITIES:
+        city = {
+            candidate.replace(" ", ""): candidate
+            for candidate in HIGH_FREQ_AIRPORT_CITIES
+        }.get(compact, city)
+    if city in HIGH_FREQ_AIRPORT_CITIES:
+        return city
+    return ""
+
+
+def _city_thread_ids_write_path() -> str:
+    env_path = str(os.getenv("POLYWEATHER_CITY_THREAD_IDS_PATH") or "").strip()
+    if env_path:
+        return env_path
+    for path in (
+        "/var/lib/polyweather/city_thread_ids.json",
+        "/app/data/city_thread_ids.json",
+        _CITY_THREAD_IDS_PATH,
+    ):
+        if os.path.isfile(path):
+            return path
+    return "/var/lib/polyweather/city_thread_ids.json"
+
+
+def record_city_thread_id(city: str, thread_id: int) -> dict:
+    """Persist a forum topic mapping and update the in-process cache."""
+
+    global _city_thread_ids
+    normalized_city = normalize_airport_push_city(city)
+    if not normalized_city:
+        raise ValueError(f"unsupported airport push city: {city}")
+    try:
+        normalized_thread_id = int(thread_id)
+    except Exception as exc:
+        raise ValueError(f"invalid message_thread_id: {thread_id}") from exc
+    if normalized_thread_id <= 0:
+        raise ValueError(f"invalid message_thread_id: {thread_id}")
+
+    with _CITY_THREAD_IDS_LOCK:
+        path = _city_thread_ids_write_path()
+        mapping = dict(_load_city_thread_ids())
+        mapping[normalized_city] = normalized_thread_id
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(mapping, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, path)
+        _city_thread_ids = mapping
+        logger.info(
+            "recorded forum topic mapping city={} thread_id={} path={} total={}",
+            normalized_city,
+            normalized_thread_id,
+            path,
+            len(mapping),
+        )
+        return {
+            "city": normalized_city,
+            "thread_id": normalized_thread_id,
+            "path": path,
+            "total": len(mapping),
+        }
+
+
+def _forum_chat_ids() -> Set[str]:
+    return set(
+        parse_telegram_chat_ids(
+            os.getenv("TELEGRAM_FORUM_CHAT_ID"),
+            os.getenv("POLYWEATHER_TELEGRAM_TOPICS_GROUP_ID"),
+            os.getenv("POLYWEATHER_TELEGRAM_GROUP_ID"),
+            _DEFAULT_FORUM_CHAT_ID,
+        )
+    )
+
+
+def _is_forum_chat_id(chat_id: Any) -> bool:
+    chat_key = str(chat_id or "").strip()
+    return bool(chat_key and chat_key in _forum_chat_ids())
+
+
 def _resolve_thread_id(chat_id: str, city: str) -> int:
     """Return message_thread_id for a given chat and city, or 0 if not a forum topic."""
-    if chat_id != _FORUM_CHAT_ID:
+    if not _is_forum_chat_id(chat_id):
         return 0
     mapping = _load_city_thread_ids()
     city_key = (city or "").strip().lower()
@@ -610,6 +697,7 @@ HIGH_FREQ_AIRPORT_CITIES = {
     "seoul", "singapore", "busan", "tokyo", "ankara", "helsinki", "amsterdam",
     "istanbul", "paris", "hong kong", "taipei",
     "beijing", "shanghai", "guangzhou", "qingdao", "chengdu", "chongqing", "wuhan",
+    "shenzhen",
     "new york", "los angeles", "chicago", "denver", "atlanta",
     "miami", "san francisco", "houston", "dallas", "austin", "seattle",
     "tel aviv",
@@ -622,7 +710,7 @@ HIGH_FREQ_AIRPORT_ICAO = {
     "ankara": "17128", "helsinki": "EFHK", "amsterdam": "EHAM", "istanbul": "17058",
     "paris": "LFPB", "hong kong": "HKO", "taipei": "466920",
     "beijing": "ZBAA", "shanghai": "ZSPD", "guangzhou": "ZGGG", "qingdao": "ZSQD",
-    "chengdu": "ZUUU", "chongqing": "ZUCK", "wuhan": "ZHHH",
+    "chengdu": "ZUUU", "chongqing": "ZUCK", "wuhan": "ZHHH", "shenzhen": "LFS",
     "new york": "KLGA", "los angeles": "KLAX", "chicago": "KORD",
     "denver": "KBKF", "atlanta": "KATL", "miami": "KMIA",
     "san francisco": "KSFO", "houston": "KHOU", "dallas": "KDAL",
@@ -1129,6 +1217,7 @@ def _build_airport_status_message(
                    "taipei": "Songshan", "beijing": "Capital", "shanghai": "Pudong",
                    "guangzhou": "Baiyun", "qingdao": "Jiaodong",
                    "chengdu": "Shuangliu", "chongqing": "Jiangbei", "wuhan": "Tianhe",
+                   "shenzhen": "Lau Fau Shan",
                    "new york": "LaGuardia", "los angeles": "LAX", "chicago": "O'Hare",
                    "denver": "Buckley", "atlanta": "Hartsfield", "miami": "Intl",
                    "san francisco": "SFO", "houston": "Hobby", "dallas": "Love Field",
@@ -1739,28 +1828,25 @@ def _process_airport_city(
             thread_id = _resolve_thread_id(chat_id, city)
             if thread_id:
                 kwargs["message_thread_id"] = thread_id
+            elif _is_forum_chat_id(chat_id):
+                logger.warning(
+                    "airport push skipped missing forum thread mapping city={} chat_id={} mapping_cities={}",
+                    city,
+                    chat_id,
+                    len(_load_city_thread_ids()),
+                )
+                continue
             _rate_limited_send(bot, chat_id, message, **kwargs)
             sent = True
         except Exception as exc:
             if thread_id and "message thread not found" in str(exc).lower():
                 logger.warning(
-                    "airport push thread missing; retrying main chat city={} chat_id={} thread_id={}",
+                    "airport push skipped missing forum thread city={} chat_id={} thread_id={}",
                     city,
                     chat_id,
                     thread_id,
                 )
-                try:
-                    _rate_limited_send(bot, chat_id, message)
-                    sent = True
-                    continue
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "airport push main chat fallback failed city={} chat_id={}: {}",
-                        city,
-                        chat_id,
-                        fallback_exc,
-                    )
-                    continue
+                continue
             logger.warning("airport push failed city={} chat_id={}: {}", city, chat_id, exc)
 
     if sent:

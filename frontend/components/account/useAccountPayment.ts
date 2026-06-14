@@ -6,6 +6,7 @@ import type { User } from "@supabase/supabase-js";
 import {
   buildAuthMePath,
   mergeAccountAuthSnapshot,
+  shouldResolveAccountUnknownWithFullProfile,
 } from "@/lib/auth-snapshot";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -53,8 +54,6 @@ export interface UseAccountPaymentParams {
   setBackend: Dispatch<SetStateAction<AuthMeResponse | null>>;
   setErrorText: (text: string) => void;
   setUpdatedAt: (text: string) => void;
-  showOverlay: boolean;
-  setShowOverlay: (v: boolean) => void;
   usePoints: boolean;
   setUsePoints: (v: boolean) => void;
 }
@@ -72,8 +71,6 @@ export function useAccountPayment(params: UseAccountPaymentParams) {
     setBackend,
     setErrorText,
     setUpdatedAt,
-    showOverlay,
-    setShowOverlay,
     usePoints,
     setUsePoints,
   } = params;
@@ -244,9 +241,19 @@ export function useAccountPayment(params: UseAccountPaymentParams) {
           // an unauthenticated backend snapshot as a temporary sync state.
         }
       }
+      let resolvedWithFullProfile = false;
+      if (shouldResolveAccountUnknownWithFullProfile(backendJson, Boolean(localUser))) {
+        try {
+          backendJson = await readAuthSnapshot(latestHeaders);
+          resolvedWithFullProfile = true;
+        } catch {
+          // Keep the explicit unknown state only when the full account profile
+          // cannot be read; the refresh button can retry the same path.
+        }
+      }
       setBackend((previous) => mergeAccountAuthSnapshot(previous, backendJson));
       setUpdatedAt(new Date().toISOString());
-      if (backendJson.authenticated !== false) {
+      if (backendJson.authenticated !== false && !resolvedWithFullProfile) {
         void readAuthSnapshot(latestHeaders)
           .then((fullJson) => {
             setBackend((previous) =>
@@ -434,7 +441,6 @@ export function useAccountPayment(params: UseAccountPaymentParams) {
     setPaymentBusy,
     setPaymentInfo,
     setPaymentError,
-    setShowOverlay,
     clearPaymentMessages,
     authIsAuthenticated,
     getValidAccessToken,
@@ -510,7 +516,6 @@ export function useAccountPayment(params: UseAccountPaymentParams) {
     setLastIntentId,
     setLastTxHash,
     setLastPaymentStartedAt,
-    setShowOverlay,
     setManualPayment,
     setManualTxHash,
     setTxValidation,
@@ -623,7 +628,6 @@ export function useAccountPayment(params: UseAccountPaymentParams) {
     createManualPaymentIntent: paymentFlow.createManualPaymentIntent,
     submitManualPaymentTx: paymentFlow.submitManualPaymentTx,
     validateTxHash: paymentFlow.validateTxHash,
-    handleOverlayCheckout: paymentFlow.handleOverlayCheckout,
     createTelegramBotBindCommand: billing.createTelegramBotBindCommand,
     openTelegramBotBindLink: billing.openTelegramBotBindLink,
   };
