@@ -7,7 +7,7 @@ import asyncio
 import threading
 import time
 from copy import deepcopy
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -15,6 +15,7 @@ from loguru import logger
 
 import web.routes as legacy_routes
 from web.analysis_service import _runway_history_temp_for_city
+from web.services.canonical_temperature import build_city_weather_from_canonical
 from web.services.request_timing import ServerTimingRecorder
 
 _RECENT_DEB_CACHE: Optional[Dict[str, Dict[str, object]]] = None
@@ -25,12 +26,6 @@ _RECENT_DEB_CACHE_TTL_SEC = max(
     60,
     int(os.getenv("POLYWEATHER_CITIES_DEB_RECENT_CACHE_TTL_SEC", "300") or "300"),
 )
-_CITY_FULL_REFRESH_INFLIGHT: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
-_CITY_FULL_STALE_REFRESH_TASKS: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
-_CITY_FULL_REFRESH_LOCK = asyncio.Lock()
-_CITY_FORCE_REFRESH_INFLIGHT: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
-_CITY_FORCE_REFRESH_LOCK = asyncio.Lock()
-_CITY_STALE_REFRESH_TASKS: Dict[str, "asyncio.Task[Dict[str, Any]]"] = {}
 CityDetailPayloadCacheKey = Tuple[str, str, str, str, str, int]
 CityChartDetailPayloadCacheKey = Tuple[str, str, str, int]
 CityDetailBatchResponseCacheKey = Tuple[Tuple[str, ...], bool, str, str, str, str]
@@ -68,14 +63,6 @@ def _city_detail_batch_response_cache_ttl() -> float:
     except ValueError:
         value = 12.0
     return max(0.0, min(30.0, value))
-
-
-def _city_force_refresh_timeout_sec() -> float:
-    try:
-        value = float(os.getenv("POLYWEATHER_CITY_FORCE_REFRESH_TIMEOUT_SEC", "8") or "8")
-    except ValueError:
-        value = 8.0
-    return max(0.01, min(30.0, value))
 
 
 def _city_chart_optional_overlay_timeout_sec() -> float:
@@ -129,108 +116,172 @@ async def _get_cached_city_payload(city: str, kind: str) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-async def _get_or_start_city_force_refresh_task(
-    key: str,
-    refresh_factory: Callable[[], Awaitable[Dict[str, Any]]],
-) -> Tuple["asyncio.Task[Dict[str, Any]]", bool]:
-    async with _CITY_FORCE_REFRESH_LOCK:
-        task = _CITY_FORCE_REFRESH_INFLIGHT.get(key)
-        started = False
-        if task is None or task.done():
-            task = asyncio.create_task(refresh_factory())
-            _CITY_FORCE_REFRESH_INFLIGHT[key] = task
-            started = True
+async def _get_canonical_city_payload(city: str, *, detail_depth: str = "panel") -> Dict[str, Any]:
+    try:
+        row = await run_in_threadpool(legacy_routes._CACHE_DB.get_canonical_temperature, city)
+    except Exception:
+        return {}
+    if not isinstance(row, dict):
+        return {}
+    canonical = row.get("payload") or row
+    if not isinstance(canonical, dict):
+        return {}
+    payload = build_city_weather_from_canonical(city, canonical)
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    city_meta = legacy_routes.CITY_REGISTRY.get(city, {}) or {}
+    city_info = legacy_routes.CITIES.get(city, {}) or {}
+    risk = legacy_routes.CITY_RISK_PROFILES.get(city, {}) or {}
+    payload.update(
+        {
+            "detail_depth": detail_depth,
+            "display_name": str(city_meta.get("display_name") or city_meta.get("name") or city.title()),
+            "lat": city_info.get("lat"),
+            "lon": city_info.get("lon"),
+            "temp_symbol": canonical.get("temp_symbol") or payload.get("temp_symbol") or ("°F" if city_info.get("f") else "°C"),
+            "risk": {
+                "level": risk.get("risk_level", "low"),
+                "emoji": risk.get("risk_emoji", "🟢"),
+                "airport": risk.get("airport_name", ""),
+                "icao": risk.get("icao", ""),
+                "distance_km": risk.get("distance_km", 0),
+                "warning": risk.get("warning", ""),
+            },
+            "probabilities": {"mu": None, "distribution": []},
+        }
+    )
+    return payload
 
-            def _cleanup(done: "asyncio.Task[Dict[str, Any]]") -> None:
-                if _CITY_FORCE_REFRESH_INFLIGHT.get(key) is done:
-                    _CITY_FORCE_REFRESH_INFLIGHT.pop(key, None)
-                try:
-                    done.result()
-                except Exception as exc:  # pragma: no cover - defensive background guard
-                    logger.warning("city force refresh failed key={}: {}", key, exc)
 
-            task.add_done_callback(_cleanup)
-        return task, started
+def _enqueue_collector_refresh_request(
+    city: str,
+    kind: str,
+    *,
+    reason: str = "canonical_fallback",
+) -> bool:
+    try:
+        enqueue = getattr(legacy_routes._CACHE_DB, "enqueue_observation_refresh_request", None)
+        if not callable(enqueue):
+            return False
+        return bool(
+            enqueue(
+                city=city,
+                kind=kind,
+                priority="high",
+                reason=reason,
+            )
+        )
+    except Exception as exc:
+        logger.debug("collector refresh enqueue failed city={} kind={}: {}", city, kind, exc)
+        return False
+
+
+def _request_city_cache_refresh(
+    city: str,
+    kind: str,
+) -> None:
+    _enqueue_collector_refresh_request(city, kind)
+
+
+def _request_city_full_refresh(city: str) -> None:
+    _enqueue_collector_refresh_request(city, "full")
+
+
+def _build_initializing_city_payload(city: str, *, detail_depth: str) -> Dict[str, Any]:
+    city_meta = legacy_routes.CITY_REGISTRY.get(city, {}) or {}
+    city_info = legacy_routes.CITIES.get(city, {}) or {}
+    risk = legacy_routes.CITY_RISK_PROFILES.get(city, {}) or {}
+    return {
+        "city": city,
+        "name": city,
+        "display_name": str(city_meta.get("display_name") or city_meta.get("name") or city.title()),
+        "detail_depth": detail_depth,
+        "status": "initializing",
+        "stale": True,
+        "stale_reason": "collector_refresh_queued",
+        "lat": city_info.get("lat"),
+        "lon": city_info.get("lon"),
+        "temp_symbol": "°F" if city_info.get("f") else "°C",
+        "risk": {
+            "level": risk.get("risk_level", "low"),
+            "emoji": risk.get("risk_emoji", "🟢"),
+            "airport": risk.get("airport_name", ""),
+            "icao": risk.get("icao", ""),
+            "distance_km": risk.get("distance_km", 0),
+            "warning": risk.get("warning", ""),
+        },
+        "current": {
+            "temp": None,
+            "source_code": None,
+            "settlement_source": None,
+            "settlement_source_label": None,
+            "obs_time": None,
+            "freshness": {
+                "freshness_status": "missing",
+                "freshness_reason": "collector_refresh_queued",
+            },
+            "observation_status": "initializing",
+        },
+        "airport_current": {},
+        "airport_primary": {},
+        "canonical_temperature": None,
+        "deb": {"prediction": None},
+        "probabilities": {"mu": None, "distribution": []},
+        "hourly": {"times": [], "temps": []},
+        "multi_model_daily": {},
+    }
+
+
+def _queue_and_build_initializing_city_payload(city: str, *, kind: str) -> Dict[str, Any]:
+    _enqueue_collector_refresh_request(city, kind, reason="cold_start")
+    return _build_initializing_city_payload(city, detail_depth=kind)
 
 
 async def _refresh_city_payload_with_stale_timeout(
     city: str,
     kind: str,
-    refresh_factory: Callable[[], Awaitable[Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    task, started = await _get_or_start_city_force_refresh_task(f"{kind}:{city}", refresh_factory)
-    if not started:
-        cached_payload = await _get_cached_city_payload(city, kind)
-        if cached_payload:
+    cached_before_refresh = await _get_cached_city_payload(city, kind)
+    if not cached_before_refresh:
+        canonical_payload = await _get_canonical_city_payload(city, detail_depth=kind)
+        if canonical_payload:
+            _enqueue_collector_refresh_request(city, kind, reason="force_refresh")
             logger.warning(
-                "city force refresh already running city={} kind={}; returning stale cache",
+                "city force refresh returning canonical latest without sync refresh city={} kind={}",
                 city,
                 kind,
             )
-            return await _overlay_cached_wunderground(city, cached_payload)
-    timeout_sec = _city_force_refresh_timeout_sec()
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_sec)
-    except asyncio.TimeoutError:
-        cached_payload = await _get_cached_city_payload(city, kind)
-        if cached_payload:
-            logger.warning(
-                "city force refresh timed out city={} kind={} timeout_sec={}; returning stale cache",
-                city,
-                kind,
-                timeout_sec,
-            )
-            return await _overlay_cached_wunderground(city, cached_payload)
-        return await task
-    except Exception:
-        cached_payload = await _get_cached_city_payload(city, kind)
-        if cached_payload:
-            logger.warning("city force refresh failed city={} kind={}; returning stale cache", city, kind)
-            return await _overlay_cached_wunderground(city, cached_payload)
-        raise
+            return canonical_payload
+        return _queue_and_build_initializing_city_payload(city, kind=kind)
+
+    _enqueue_collector_refresh_request(city, kind, reason="force_refresh")
+    logger.warning(
+        "city force refresh queued collector refresh city={} kind={}; returning cached payload",
+        city,
+        kind,
+    )
+    return await _overlay_cached_wunderground(city, cached_before_refresh)
 
 
 async def _refresh_city_cache_with_stale_timeout(
     city: str,
     kind: str,
-    refresh_fn: Callable[[str, bool], Dict[str, Any]],
 ) -> Dict[str, Any]:
     return await _refresh_city_payload_with_stale_timeout(
         city,
         kind,
-        lambda: run_in_threadpool(refresh_fn, city, True),
     )
 
 
 def _start_city_cache_stale_refresh(
     city: str,
     kind: str,
-    refresh_fn: Callable[[str, bool], Dict[str, Any]],
 ) -> None:
     normalized = str(city or "").strip().lower()
     cache_kind = str(kind or "").strip().lower()
     if not normalized or not cache_kind:
         return
-    key = f"{cache_kind}:{normalized}"
-    existing = _CITY_STALE_REFRESH_TASKS.get(key)
-    if existing is not None and not existing.done():
-        return
-
-    async def _run_refresh() -> Dict[str, Any]:
-        return await run_in_threadpool(refresh_fn, normalized, False)
-
-    task = asyncio.create_task(_run_refresh())
-    _CITY_STALE_REFRESH_TASKS[key] = task
-
-    def _cleanup(done: "asyncio.Task[Dict[str, Any]]") -> None:
-        if _CITY_STALE_REFRESH_TASKS.get(key) is done:
-            _CITY_STALE_REFRESH_TASKS.pop(key, None)
-        try:
-            done.result()
-        except Exception as exc:  # pragma: no cover - defensive background guard
-            logger.warning("city stale refresh failed city={} kind={}: {}", normalized, cache_kind, exc)
-
-    task.add_done_callback(_cleanup)
+    _enqueue_collector_refresh_request(normalized, cache_kind, reason="stale_refresh")
 
 
 async def _overlay_cached_wunderground(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -300,74 +351,11 @@ def _overlay_cached_runway_history_from_db(city: str, payload: Dict[str, Any]) -
     return next_payload
 
 
-async def _refresh_city_full_cache_singleflight(city: str, force_refresh: bool) -> Dict[str, Any]:
-    key = f"{city}:{bool(force_refresh)}"
-    async with _CITY_FULL_REFRESH_LOCK:
-        task = _CITY_FULL_REFRESH_INFLIGHT.get(key)
-        if task is None:
-            async def _run_refresh() -> Dict[str, Any]:
-                try:
-                    return await run_in_threadpool(
-                        legacy_routes._refresh_city_full_cache,
-                        city,
-                        force_refresh,
-                    )
-                finally:
-                    await _invalidate_city_detail_payload_cache(city)
-
-            task = asyncio.create_task(_run_refresh())
-            _CITY_FULL_REFRESH_INFLIGHT[key] = task
-    try:
-        return await task
-    finally:
-        if task.done():
-            async with _CITY_FULL_REFRESH_LOCK:
-                if _CITY_FULL_REFRESH_INFLIGHT.get(key) is task:
-                    _CITY_FULL_REFRESH_INFLIGHT.pop(key, None)
-
-
-async def _invalidate_city_detail_payload_cache(city: str) -> None:
-    normalized = str(city or "").strip().lower()
-    if not normalized:
-        return
-    async with _CITY_DETAIL_PAYLOAD_LOCK:
-        _CITY_DETAIL_PAYLOAD_EPOCH[normalized] = _CITY_DETAIL_PAYLOAD_EPOCH.get(normalized, 0) + 1
-        old_keys = [key for key in _CITY_DETAIL_PAYLOAD_CACHE if key[0] == normalized]
-        for key in old_keys:
-            _CITY_DETAIL_PAYLOAD_CACHE.pop(key, None)
-            _CITY_DETAIL_PAYLOAD_CACHE_TS.pop(key, None)
-    async with _CITY_CHART_DETAIL_PAYLOAD_LOCK:
-        old_chart_keys = [key for key in _CITY_CHART_DETAIL_PAYLOAD_CACHE if key[0] == normalized]
-        for key in old_chart_keys:
-            _CITY_CHART_DETAIL_PAYLOAD_CACHE.pop(key, None)
-            _CITY_CHART_DETAIL_PAYLOAD_CACHE_TS.pop(key, None)
-
-
-async def _refresh_city_full_data(city: str, force_refresh: bool) -> Dict[str, Any]:
-    await _invalidate_city_detail_payload_cache(city)
-    return await _refresh_city_full_cache_singleflight(city, force_refresh)
-
-
 def _start_city_full_stale_refresh(city: str) -> None:
     normalized = str(city or "").strip().lower()
     if not normalized:
         return
-    existing = _CITY_FULL_STALE_REFRESH_TASKS.get(normalized)
-    if existing is not None and not existing.done():
-        return
-
-    task = asyncio.create_task(_refresh_city_full_data(city, False))
-    _CITY_FULL_STALE_REFRESH_TASKS[normalized] = task
-
-    def _cleanup(done: "asyncio.Task[Dict[str, Any]]") -> None:
-        if _CITY_FULL_STALE_REFRESH_TASKS.get(normalized) is done:
-            _CITY_FULL_STALE_REFRESH_TASKS.pop(normalized, None)
-        try:
-            done.result()
-        except Exception as exc:  # pragma: no cover - defensive background guard
-            logger.warning("city full stale refresh failed city={}: {}", city, exc)
-
-    task.add_done_callback(_cleanup)
+    _enqueue_collector_refresh_request(normalized, "full", reason="stale_refresh")
 
 
 async def _get_city_full_data(city: str, *, force_refresh: bool) -> Dict[str, Any]:
@@ -375,7 +363,6 @@ async def _get_city_full_data(city: str, *, force_refresh: bool) -> Dict[str, An
         return await _refresh_city_payload_with_stale_timeout(
             city,
             "full",
-            lambda: _refresh_city_full_data(city, True),
         )
     cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "full", city)
     if cached_entry:
@@ -384,9 +371,17 @@ async def _get_city_full_data(city: str, *, force_refresh: bool) -> Dict[str, An
             if payload:
                 _start_city_full_stale_refresh(city)
                 return await _overlay_cached_wunderground(city, payload)
-            return await _refresh_city_full_data(city, False)
+            canonical_payload = await _get_canonical_city_payload(city, detail_depth="full")
+            if canonical_payload:
+                _request_city_full_refresh(city)
+                return canonical_payload
+            return _queue_and_build_initializing_city_payload(city, kind="full")
         return await _overlay_cached_wunderground(city, payload)
-    return await _refresh_city_full_data(city, False)
+    canonical_payload = await _get_canonical_city_payload(city, detail_depth="full")
+    if canonical_payload:
+        _request_city_full_refresh(city)
+        return canonical_payload
+    return _queue_and_build_initializing_city_payload(city, kind="full")
 
 
 async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, Any]:
@@ -705,52 +700,69 @@ async def get_city_detail_payload(
             return await _refresh_city_cache_with_stale_timeout(
                 city,
                 "panel",
-                legacy_routes._refresh_city_panel_cache,
             )
         cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "panel", city)
         if cached_entry:
             if not legacy_routes._city_cache_is_fresh(cached_entry, legacy_routes.CITY_PANEL_CACHE_TTL_SEC):
                 payload = cached_entry.get("payload") or {}
                 if payload:
-                    _start_city_cache_stale_refresh(city, "panel", legacy_routes._refresh_city_panel_cache)
+                    _start_city_cache_stale_refresh(city, "panel")
                     return await _overlay_cached_wunderground(city, payload)
-                return await run_in_threadpool(legacy_routes._refresh_city_panel_cache, city, False)
+                return _queue_and_build_initializing_city_payload(city, kind="panel")
             return await _overlay_cached_wunderground(city, cached_entry.get("payload") or {})
-        return await run_in_threadpool(legacy_routes._refresh_city_panel_cache, city, False)
+        canonical_payload = await _get_canonical_city_payload(city, detail_depth="panel")
+        if canonical_payload:
+            _request_city_cache_refresh(city, "panel")
+            return canonical_payload
+        return _queue_and_build_initializing_city_payload(city, kind="panel")
     if detail_mode == "nearby":
         if force_refresh:
             return await _refresh_city_cache_with_stale_timeout(
                 city,
                 "nearby",
-                legacy_routes._refresh_city_nearby_cache,
             )
         cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "nearby", city)
         if cached_entry:
             if not legacy_routes._city_cache_is_fresh(cached_entry, legacy_routes.CITY_NEARBY_CACHE_TTL_SEC):
                 payload = cached_entry.get("payload") or {}
                 if payload:
-                    _start_city_cache_stale_refresh(city, "nearby", legacy_routes._refresh_city_nearby_cache)
+                    _start_city_cache_stale_refresh(city, "nearby")
                     return await _overlay_cached_wunderground(city, payload)
-                return await run_in_threadpool(legacy_routes._refresh_city_nearby_cache, city, False)
+                canonical_payload = await _get_canonical_city_payload(city, detail_depth="nearby")
+                if canonical_payload:
+                    _request_city_cache_refresh(city, "nearby")
+                    return canonical_payload
+                return _queue_and_build_initializing_city_payload(city, kind="nearby")
             return await _overlay_cached_wunderground(city, cached_entry.get("payload") or {})
-        return await run_in_threadpool(legacy_routes._refresh_city_nearby_cache, city, False)
+        canonical_payload = await _get_canonical_city_payload(city, detail_depth="nearby")
+        if canonical_payload:
+            _request_city_cache_refresh(city, "nearby")
+            return canonical_payload
+        return _queue_and_build_initializing_city_payload(city, kind="nearby")
     if detail_mode == "market":
         if force_refresh:
             return await _refresh_city_cache_with_stale_timeout(
                 city,
                 "market",
-                legacy_routes._refresh_city_market_cache,
             )
         cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "market", city)
         if cached_entry:
             if not legacy_routes._market_analysis_cache_is_fresh(cached_entry):
                 payload = cached_entry.get("payload") or {}
                 if payload:
-                    _start_city_cache_stale_refresh(city, "market", legacy_routes._refresh_city_market_cache)
+                    _start_city_cache_stale_refresh(city, "market")
                     return await _overlay_cached_wunderground(city, payload)
-                return await run_in_threadpool(legacy_routes._refresh_city_market_cache, city, False)
+                canonical_payload = await _get_canonical_city_payload(city, detail_depth="market")
+                if canonical_payload:
+                    _request_city_cache_refresh(city, "market")
+                    return canonical_payload
+                return _queue_and_build_initializing_city_payload(city, kind="market")
             return await _overlay_cached_wunderground(city, cached_entry.get("payload") or {})
-        return await run_in_threadpool(legacy_routes._refresh_city_market_cache, city, False)
+        canonical_payload = await _get_canonical_city_payload(city, detail_depth="market")
+        if canonical_payload:
+            _request_city_cache_refresh(city, "market")
+            return canonical_payload
+        return _queue_and_build_initializing_city_payload(city, kind="market")
     return await run_in_threadpool(legacy_routes._analyze, city, force_refresh, False, detail_mode)
 
 
@@ -765,18 +777,21 @@ async def get_city_summary_payload(
         return await _refresh_city_cache_with_stale_timeout(
             city,
             "summary",
-            legacy_routes._refresh_city_summary_cache,
         )
     cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "summary", city)
     if cached_entry:
         if not legacy_routes._city_cache_is_fresh(cached_entry, legacy_routes.CITY_SUMMARY_CACHE_TTL_SEC):
             payload = cached_entry.get("payload") or {}
             if payload:
-                _start_city_cache_stale_refresh(city, "summary", legacy_routes._refresh_city_summary_cache)
+                _start_city_cache_stale_refresh(city, "summary")
                 return await _overlay_cached_wunderground(city, payload)
-            return await run_in_threadpool(legacy_routes._refresh_city_summary_cache, city, False)
+            return _queue_and_build_initializing_city_payload(city, kind="summary")
         return await _overlay_cached_wunderground(city, cached_entry.get("payload") or {})
-    return await run_in_threadpool(legacy_routes._refresh_city_summary_cache, city, False)
+    canonical_payload = await _get_canonical_city_payload(city, detail_depth="summary")
+    if canonical_payload:
+        _request_city_cache_refresh(city, "summary")
+        return canonical_payload
+    return _queue_and_build_initializing_city_payload(city, kind="summary")
 
 
 async def get_city_detail_aggregate_payload(
@@ -803,6 +818,8 @@ async def get_city_detail_aggregate_payload(
             "full_data",
             lambda: _get_city_full_data(city, force_refresh=force_refresh),
         )
+        if isinstance(data, dict) and data.get("status") == "initializing":
+            return data
 
         return await timer.measure_async(
             "detail_payload",

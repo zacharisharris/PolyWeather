@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from src.analysis.deb_algorithm import load_history
@@ -29,6 +29,10 @@ from web.analysis_service import (
     _build_city_detail_payload,  # noqa: F401 - compatibility export for tests and transitional routers
     _build_city_market_scan_payload,
     _build_city_summary_payload,
+)
+from web.services.canonical_temperature import (
+    attach_canonical_temperature,
+    store_canonical_temperature_from_payload,
 )
 from web.scan_terminal_service import build_scan_terminal_payload  # noqa: F401 - compatibility export for tests and transitional routers
 from web.core import (
@@ -155,9 +159,6 @@ MARKET_SCAN_PAYLOAD_TTL_SEC = max(
     5,
     int(os.getenv("POLYWEATHER_MARKET_SCAN_PAYLOAD_TTL_SEC", "30")),
 )
-CACHE_REFRESH_LOCK_TTL_SEC = max(30, int(os.getenv("POLYWEATHER_CACHE_REFRESH_LOCK_TTL_SEC", "120")))
-
-
 def _city_cache_is_fresh(entry: Optional[dict], ttl_sec: int) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -275,9 +276,23 @@ def _refresh_market_scan_payload_from_cached_analysis(
     return payload.get("market_scan_payload") or {}
 
 
+def _attach_and_store_canonical_temperature(city: str, payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    attach_canonical_temperature(payload, city=city)
+    try:
+        store_canonical_temperature_from_payload(_CACHE_DB, city, payload)
+    except Exception as exc:
+        logger.debug("canonical temperature store skipped city={}: {}", city, exc)
+    return payload
+
+
 def _refresh_city_summary_cache(city: str, force_refresh: bool = False) -> dict:
     data = _analyze_summary(city, force_refresh=force_refresh)
+    _attach_and_store_canonical_temperature(city, data)
     payload = _build_city_summary_payload(data)
+    if data.get("canonical_temperature"):
+        payload["canonical_temperature"] = data["canonical_temperature"]
     _CACHE_DB.set_city_cache(
         "summary",
         city,
@@ -290,6 +305,7 @@ def _refresh_city_summary_cache(city: str, force_refresh: bool = False) -> dict:
 
 def _refresh_city_panel_cache(city: str, force_refresh: bool = False) -> dict:
     payload = _analyze(city, force_refresh=force_refresh, detail_mode="panel")
+    _attach_and_store_canonical_temperature(city, payload)
     _CACHE_DB.set_city_cache(
         "panel",
         city,
@@ -302,6 +318,7 @@ def _refresh_city_panel_cache(city: str, force_refresh: bool = False) -> dict:
 
 def _refresh_city_nearby_cache(city: str, force_refresh: bool = False) -> dict:
     payload = _analyze(city, force_refresh=force_refresh, detail_mode="nearby")
+    _attach_and_store_canonical_temperature(city, payload)
     _CACHE_DB.set_city_cache(
         "nearby",
         city,
@@ -314,6 +331,7 @@ def _refresh_city_nearby_cache(city: str, force_refresh: bool = False) -> dict:
 
 def _refresh_city_market_cache(city: str, force_refresh: bool = False) -> dict:
     payload = _analyze(city, force_refresh=force_refresh, detail_mode="market")
+    _attach_and_store_canonical_temperature(city, payload)
     now_ts = time.time()
     payload["market_analysis_cached_at"] = datetime.now().isoformat()
     payload["market_analysis_cached_at_ts"] = now_ts
@@ -330,6 +348,7 @@ def _refresh_city_market_cache(city: str, force_refresh: bool = False) -> dict:
 
 def _refresh_city_full_cache(city: str, force_refresh: bool = False) -> dict:
     payload = _analyze(city, force_refresh=force_refresh, detail_mode="full")
+    _attach_and_store_canonical_temperature(city, payload)
     _CACHE_DB.set_city_cache(
         "full",
         city,
@@ -384,55 +403,6 @@ def _overlay_latest_wunderground_current(city: str, payload: dict) -> dict:
     if not isinstance(latest_wu, dict) or not latest_wu:
         return deepcopy(payload)
     return _overlay_wunderground_current(payload, latest_wu)
-
-
-
-def _schedule_cache_refresh(
-    background_tasks: BackgroundTasks,
-    *,
-    kind: str,
-    city: str,
-    force_refresh: bool = False,
-) -> bool:
-    normalized_kind = str(kind or "").strip().lower()
-    normalized_city = str(city or "").strip().lower()
-    if normalized_kind not in {"summary", "panel", "nearby", "market", "full"} or not normalized_city:
-        return False
-    cache_key = f"city:{normalized_kind}:{normalized_city}"
-    owner = _CACHE_DB.acquire_cache_refresh_lock(
-        cache_key,
-        ttl_sec=CACHE_REFRESH_LOCK_TTL_SEC,
-    )
-    if not owner:
-        return False
-
-    def _runner() -> None:
-        try:
-            if normalized_kind == "summary":
-                _refresh_city_summary_cache(normalized_city, force_refresh=force_refresh)
-            elif normalized_kind == "panel":
-                _refresh_city_panel_cache(normalized_city, force_refresh=force_refresh)
-            elif normalized_kind == "nearby":
-                _refresh_city_nearby_cache(normalized_city, force_refresh=force_refresh)
-            elif normalized_kind == "market":
-                _refresh_city_market_cache(normalized_city, force_refresh=force_refresh)
-            else:
-                _refresh_city_full_cache(normalized_city, force_refresh=force_refresh)
-        except Exception as exc:
-            logger.warning(
-                "cache refresh failed kind={} city={} force_refresh={}: {}",
-                normalized_kind,
-                normalized_city,
-                force_refresh,
-                exc,
-            )
-        finally:
-            _CACHE_DB.release_cache_refresh_lock(cache_key, owner)
-
-    background_tasks.add_task(_runner)
-    return True
-
-
 
 def _normalize_city_or_404(name: str) -> str:
     city = name.lower().strip().replace("-", " ")
