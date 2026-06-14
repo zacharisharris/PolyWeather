@@ -83,6 +83,10 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
         1,
     )[0]
     collector_block = compose.split("  polyweather_collector:", 1)[1].split(
+        "\n  polyweather_warmer:",
+        1,
+    )[0]
+    warmer_block = compose.split("  polyweather_warmer:", 1)[1].split(
         "\nx-polyweather-base:",
         1,
     )[0]
@@ -90,16 +94,24 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
     assert "POLYWEATHER_SERVICE_ROLE: web" in compose
     assert "POLYWEATHER_SERVICE_ROLE: bot" in compose
     assert "POLYWEATHER_SERVICE_ROLE: collector" in collector_block
+    assert "POLYWEATHER_SERVICE_ROLE: warmer" in warmer_block
+    assert "redis-server --appendonly yes --maxmemory ${POLYWEATHER_REDIS_MAXMEMORY:-512mb} --maxmemory-policy noeviction" in compose
     assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in bot_block
-    assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in web_block
+    assert "POLYWEATHER_EVENT_STORE: ${POLYWEATHER_EVENT_STORE:-redis}" in web_block
+    assert "POLYWEATHER_REDIS_REQUIRED: ${POLYWEATHER_REDIS_REQUIRED:-true}" in web_block
+    assert "POLYWEATHER_REDIS_STREAM_MAXLEN: ${POLYWEATHER_REDIS_STREAM_MAXLEN:-100000}" in web_block
+    assert "POLYWEATHER_SCAN_TERMINAL_REDIS_CACHE_ENABLED: ${POLYWEATHER_SCAN_TERMINAL_REDIS_CACHE_ENABLED:-true}" in web_block
+    assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: ${POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED:-false}" in web_block
     assert "POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC: '30'" in web_block
-    assert "POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS: ${POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS:-1}" in web_block
+    assert "POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS: ${POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS:-4}" in web_block
     assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in collector_block
+    assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in warmer_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in bot_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in web_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'true'" in collector_block
-    assert "POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY:-1}" in web_block
-    assert "POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY:-1}" in web_block
+    assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in warmer_block
+    assert "POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY:-3}" in web_block
+    assert "POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY:-3}" in web_block
     assert "POLYWEATHER_CITY_DETAIL_BATCH_QUEUE_WAIT_MS: ${POLYWEATHER_CITY_DETAIL_BATCH_QUEUE_WAIT_MS:-3000}" in web_block
     assert "POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS: ${POLYWEATHER_CITY_DETAIL_BATCH_PARTIAL_TIMEOUT_MS:-8000}" in web_block
     assert "UVICORN_WORKERS: ${UVICORN_WORKERS:-2}" in web_block
@@ -111,7 +123,15 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
         in collector_block
     )
     assert "command: python -m web.observation_collector_worker" in collector_block
+    assert "command: python -m web.cache_warmer_worker" in warmer_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_AMSC_SEC: ${POLYWEATHER_OBSERVATION_COLLECTOR_AMSC_SEC:-60}" in collector_block
+    assert "POLYWEATHER_OBSERVATION_COLLECTOR_CACHE_REFRESH_WORKERS: ${POLYWEATHER_OBSERVATION_COLLECTOR_CACHE_REFRESH_WORKERS:-2}" in collector_block
+    assert "POLYWEATHER_WARMER_ENABLED: ${POLYWEATHER_WARMER_ENABLED:-true}" in warmer_block
+    assert "POLYWEATHER_WARMER_TICK_SEC: ${POLYWEATHER_WARMER_TICK_SEC:-60}" in warmer_block
+    assert "POLYWEATHER_WARMER_SCAN_INTERVAL_SEC: ${POLYWEATHER_WARMER_SCAN_INTERVAL_SEC:-300}" in warmer_block
+    assert "POLYWEATHER_WARMER_CITY_INTERVAL_SEC: ${POLYWEATHER_WARMER_CITY_INTERVAL_SEC:-60}" in warmer_block
+    assert "POLYWEATHER_WARMER_CITY_BATCH_SIZE: ${POLYWEATHER_WARMER_CITY_BATCH_SIZE:-8}" in warmer_block
+    assert "cpus: ${POLYWEATHER_WARMER_CPUS:-0.75}" in warmer_block
     assert "TELEGRAM_AIRPORT_PUSH_INTERVAL_SEC: ${POLYWEATHER_BOT_AIRPORT_PUSH_INTERVAL_SEC:-60}" in bot_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_MADIS_SEC: ${POLYWEATHER_OBSERVATION_COLLECTOR_MADIS_SEC:-300}" in collector_block
 
@@ -172,12 +192,43 @@ def test_deploy_script_retries_image_pull_for_registry_propagation():
     assert "docker compose pull && pull_ok=1 && break" in script
 
 
+def test_deploy_script_exports_backend_supabase_env_from_env_file():
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "read_env_file_value()" in script
+    assert "resolve_env_value()" in script
+    assert 'resolve_env_value "SUPABASE_URL" "NEXT_PUBLIC_SUPABASE_URL"' in script
+    assert 'resolve_env_value "SUPABASE_ANON_KEY" "NEXT_PUBLIC_SUPABASE_ANON_KEY"' in script
+    assert 'export SUPABASE_URL="$resolved_supabase_url"' in script
+    assert 'export SUPABASE_ANON_KEY="$resolved_supabase_anon_key"' in script
+    assert "unset SUPABASE_URL" in script
+    assert "unset SUPABASE_ANON_KEY" in script
+    assert script.index("read_env_file_value()") < script.index('export IMAGE_TAG="$NEW_TAG"')
+    assert script.index('resolve_env_value "SUPABASE_URL"') < script.index("pull_ok=0")
+
+
+def test_deploy_script_syncs_city_thread_ids_into_runtime_volume():
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "sync_city_thread_ids()" in script
+    assert 'repo_file="$COMPOSE_DIR/data/city_thread_ids.json"' in script
+    assert 'target_file="$runtime_dir/city_thread_ids.json"' in script
+    assert "merged.update(target_data)" in script
+    assert script.index("sync_city_thread_ids") < script.index("Updating Redis dependency")
+
+
 def test_deploy_script_retries_startup_smoke_checks():
     script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
     assert "smoke_check()" in script
+    assert "wait_for_scan_terminal_snapshot()" in script
+    assert '"status":"ready"' in script
+    assert "http=401" in script
+    assert 'wait_for_scan_terminal_snapshot "scan terminal snapshot" "http://127.0.0.1:3001/api/scan/terminal"' in script
+    assert script.index("wait_for_scan_terminal_snapshot") < script.index("run_public_smoke_checks")
     assert 'smoke_check "healthz" "https://api.polyweather.top/healthz" 15 3 5' in script
     assert 'warm_public_route "local cities recent stats" "http://127.0.0.1:8000/api/cities?refresh_deb_recent=1"' in script
+    assert 'warm_public_route "scan terminal" "https://polyweather.top/api/scan/terminal"' in script
     assert 'smoke_check "local cities" "http://127.0.0.1:8000/api/cities" 10 6 3' not in script
     assert 'smoke_check "frontend cities" "https://polyweather.top/api/cities" 20 5 5' in script
     assert 'smoke_check "frontend" "https://www.polyweather.top/" 15 3 5' in script
@@ -201,6 +252,7 @@ def test_deploy_script_retries_compose_recreate_races():
     assert "removal of container .* is already in progress" in script
     assert 'compose_up_retry "backend services" -d --no-deps polyweather_web polyweather' in script
     assert 'compose_up_retry "observation collector" -d --no-deps polyweather_collector' in script
+    assert 'compose_up_retry "cache warmer" -d --no-deps polyweather_warmer' in script
     assert 'compose_up_retry "frontend" -d --no-deps polyweather_frontend' in script
 
 
@@ -219,6 +271,18 @@ def test_deploy_token_is_passed_over_stdin_not_process_args():
     assert 'printf \'%s\\n\' "$GHCR_PAT" | ssh' in workflow
     assert "bash /tmp/deploy.sh '${{ github.sha }}'" in workflow
     assert "bash /tmp/deploy.sh '${{ secrets.GHCR_PAT }}'" not in workflow
+
+
+def test_deployment_helpers_do_not_reference_retired_vps_ip():
+    retired_ip = "38.54.27.70"
+    deploy_ps1 = (ROOT / "deploy.ps1").read_text(encoding="utf-8")
+    cache_script = (ROOT / "scripts" / "validate_frontend_cache.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert retired_ip not in deploy_ps1
+    assert retired_ip not in cache_script
+    assert 'BASE_URL="${1:-https://polyweather.top}"' in cache_script
 
 
 def test_docker_compose_keeps_polyweather_ports_on_loopback():
@@ -247,6 +311,38 @@ def test_frontend_proxy_uses_internal_backend_url_not_public_site():
     assert script.index("export POLYWEATHER_API_BASE_URL=") < script.rindex(
         "validate_frontend_api_base_url"
     )
+
+
+def test_frontend_and_web_share_supabase_forwarded_identity_secrets():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    frontend_block = compose.split("  polyweather_frontend:", 1)[1].split(
+        "\n  polyweather_web:",
+        1,
+    )[0]
+    web_block = compose.split("  polyweather_web:", 1)[1].split(
+        "\n  polyweather_collector:",
+        1,
+    )[0]
+
+    assert (
+        "POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN: ${POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN}"
+        in frontend_block
+    )
+    assert "SUPABASE_URL: ${SUPABASE_URL}" in web_block
+    assert "SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}" in web_block
+    assert "SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}" in web_block
+    assert (
+        "POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN: ${POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN}"
+        in web_block
+    )
+    assert 'resolve_env_value "SUPABASE_URL" "NEXT_PUBLIC_SUPABASE_URL"' in script
+    assert 'export SUPABASE_URL="$resolved_supabase_url"' in script
+    assert (
+        'resolve_env_value "SUPABASE_ANON_KEY" "NEXT_PUBLIC_SUPABASE_ANON_KEY"'
+        in script
+    )
+    assert 'export SUPABASE_ANON_KEY="$resolved_supabase_anon_key"' in script
 
 
 def test_web_container_raises_open_file_limit_for_sse_and_proxy_load():

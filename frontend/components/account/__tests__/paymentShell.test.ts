@@ -152,14 +152,10 @@ export function runTests() {
   );
 
   assert(
-    accountCenterSource.includes(
-      'import { UnlockProOverlay } from "@/components/subscription/UnlockProOverlay";',
-    ),
-    "checkout overlay must be in the account bundle, not lazy-loaded after the user clicks pay",
-  );
-  assert(
-    !/const\s+UnlockProOverlay\s*=\s*dynamic\s*\(/.test(accountCenterSource),
-    "checkout overlay must not be dynamically imported; stale deployments can make the lazy chunk fail at pay time",
+    !accountCenterSource.includes("UnlockProOverlay") &&
+      !accountCenterSource.includes("showOverlay") &&
+      accountCenterSource.includes("focusPaymentManagement"),
+    "account page must use the payment management section as the only checkout surface instead of a fixed Pro overlay",
   );
   assert(
     !/STATIC_ASSETS\s*=\s*\[[^\]]*["']\/_next\//s.test(serviceWorkerSource),
@@ -254,10 +250,28 @@ export function runTests() {
     "account center must distinguish unknown subscription sync state from a confirmed unsubscribed account",
   );
   assert(
+    !accountCenterSource.includes("paymentFeatureReady &&\n      !isSubscriptionUnknown") &&
+      !accountCenterSource.includes("paymentFeatureReady &&\r\n      !isSubscriptionUnknown"),
+    "account center must not block checkout when an authenticated user's subscription status is temporarily unknown",
+  );
+  assert(
+    accountFeatureSource.includes("状态待确认") &&
+      accountFeatureSource.includes("刷新或直接续费") &&
+      !accountFeatureSource.includes("订阅状态正在同步，请稍后刷新。"),
+    "account unknown subscription copy must tell users to refresh or renew instead of waiting indefinitely",
+  );
+  assert(
     hookSource.includes("backendJson.authenticated === false") &&
       hookSource.includes("refreshSession()") &&
       hookSource.includes("retriedBackendJson"),
     "account snapshot loader must retry with a refreshed Supabase token when local user exists but /api/auth/me reports unauthenticated",
+  );
+  assert(
+    hookSource.includes("shouldResolveAccountUnknownWithFullProfile") &&
+      hookSource.includes("backendJson = await readAuthSnapshot(latestHeaders);") &&
+      hookSource.indexOf("shouldResolveAccountUnknownWithFullProfile") <
+        hookSource.indexOf("setBackend((previous) => mergeAccountAuthSnapshot(previous, backendJson))"),
+    "account snapshot loader must resolve unknown entitlement-scope results through full auth/me before rendering account status",
   );
   assert(
     hookSource.includes("refreshEntitlementAfterPayment") &&
@@ -397,6 +411,12 @@ export function runTests() {
     (paymentFlowSource.match(/await buildAuthedHeaders\(true, true\);/g) || [])
       .length >= 3,
     "manual payment mutations must require a valid Supabase bearer token instead of forwarding unauthenticated requests that surface raw backend JSON",
+  );
+  assert(
+    accountCenterSource.includes("manualTxHashReady") &&
+      accountCenterSource.includes("/^0x[a-fA-F0-9]{64}$/") &&
+      !accountCenterSource.includes("txValidation.valid === true)"),
+    "manual transfer submit button must allow a well-formed tx hash even when advisory pre-validation is unavailable",
   );
   assert(
     paymentFlowSource.includes("verifyPaymentAuthReady") &&

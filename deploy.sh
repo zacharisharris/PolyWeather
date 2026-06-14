@@ -29,6 +29,61 @@ unset GHCR_PAT
 cd "$COMPOSE_DIR"
 git fetch origin main && git reset --hard origin/main
 
+sync_city_thread_ids() {
+    local runtime_dir="${POLYWEATHER_RUNTIME_DATA_DIR:-/var/lib/polyweather}"
+    local repo_file="$COMPOSE_DIR/data/city_thread_ids.json"
+    local target_file="$runtime_dir/city_thread_ids.json"
+
+    if [ ! -f "$repo_file" ]; then
+        echo "No repository city_thread_ids.json to sync"
+        return 0
+    fi
+
+    mkdir -p "$runtime_dir"
+    REPO_CITY_THREAD_IDS_FILE="$repo_file" TARGET_CITY_THREAD_IDS_FILE="$target_file" python3 - <<'PY'
+import json
+import os
+import time
+
+repo_file = os.environ["REPO_CITY_THREAD_IDS_FILE"]
+target_file = os.environ["TARGET_CITY_THREAD_IDS_FILE"]
+
+with open(repo_file, "r", encoding="utf-8") as f:
+    repo_data = json.load(f)
+if not isinstance(repo_data, dict):
+    raise SystemExit("repository city_thread_ids.json must contain an object")
+
+target_data = {}
+if os.path.isfile(target_file) and os.path.getsize(target_file) > 0:
+    try:
+        with open(target_file, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            target_data = loaded
+        else:
+            raise ValueError("target file is not an object")
+    except Exception as exc:
+        backup = f"{target_file}.invalid.{int(time.time())}"
+        os.replace(target_file, backup)
+        print(f"Backed up invalid city_thread_ids.json to {backup}: {exc}")
+
+merged = dict(repo_data)
+merged.update(target_data)
+
+if merged != target_data:
+    tmp_file = f"{target_file}.tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp_file, target_file)
+    print(f"Synced city_thread_ids.json: {len(target_data)} -> {len(merged)} cities")
+else:
+    print(f"city_thread_ids.json already up to date: {len(target_data)} cities")
+PY
+}
+
+sync_city_thread_ids
+
 PREVIOUS_TAG=""
 if [ -f "$TAG_FILE" ]; then
     PREVIOUS_TAG=$(cat "$TAG_FILE")
@@ -72,8 +127,54 @@ compose_up_retry() {
     return 1
 }
 
+read_env_file_value() {
+    local key="$1"
+    if [ ! -f ".env" ]; then
+        return 0
+    fi
+    awk -F= -v key="$key" '
+        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value=$0
+            sub("^[^=]*=", "", value)
+            gsub("^[[:space:]]+|[[:space:]]+$", "", value)
+            gsub(/^["'"'"']|["'"'"']$/, "", value)
+            print value
+        }
+    ' .env | tail -n 1
+}
+
+resolve_env_value() {
+    local primary_key="$1"
+    local fallback_key="${2:-}"
+    local value="${!primary_key:-}"
+
+    if [ -z "$value" ]; then
+        value="$(read_env_file_value "$primary_key")"
+    fi
+    if [ -z "$value" ] && [ -n "$fallback_key" ]; then
+        value="${!fallback_key:-}"
+        if [ -z "$value" ]; then
+            value="$(read_env_file_value "$fallback_key")"
+        fi
+    fi
+
+    printf '%s' "$value"
+}
+
 export IMAGE_TAG="$NEW_TAG"
 export POLYWEATHER_API_BASE_URL="${POLYWEATHER_FRONTEND_INTERNAL_API_BASE_URL:-http://polyweather_web:8000}"
+resolved_supabase_url="$(resolve_env_value "SUPABASE_URL" "NEXT_PUBLIC_SUPABASE_URL")"
+resolved_supabase_anon_key="$(resolve_env_value "SUPABASE_ANON_KEY" "NEXT_PUBLIC_SUPABASE_ANON_KEY")"
+if [ -n "$resolved_supabase_url" ]; then
+    export SUPABASE_URL="$resolved_supabase_url"
+else
+    unset SUPABASE_URL
+fi
+if [ -n "$resolved_supabase_anon_key" ]; then
+    export SUPABASE_ANON_KEY="$resolved_supabase_anon_key"
+else
+    unset SUPABASE_ANON_KEY
+fi
 pull_ok=0
 for pull_attempt in $(seq 1 6); do
     docker compose pull && pull_ok=1 && break
@@ -152,20 +253,43 @@ warm_public_route() {
     return 0
 }
 
-read_env_file_value() {
-    local key="$1"
-    if [ ! -f ".env" ]; then
-        return 0
-    fi
-    awk -F= -v key="$key" '
-        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-            value=$0
-            sub("^[^=]*=", "", value)
-            gsub("^[[:space:]]+|[[:space:]]+$", "", value)
-            gsub(/^["'"'"']|["'"'"']$/, "", value)
-            print value
-        }
-    ' .env | tail -n 1
+wait_for_scan_terminal_snapshot() {
+    local name="$1"
+    local url="$2"
+    local timeout="${3:-35}"
+    local attempts="${4:-8}"
+    local delay="${5:-5}"
+    local output=""
+    local body=""
+    local compact=""
+    local http_status=""
+    local status=""
+
+    for i in $(seq 1 "$attempts"); do
+        if output=$(curl -sS -w "\nhttp=%{http_code}" --max-time "$timeout" "$url" 2>&1); then
+            http_status="$(printf '%s\n' "$output" | sed -n 's/^http=//p' | tail -n 1)"
+            body="$(printf '%s\n' "$output" | sed '$d')"
+            if [ "$http_status" = "401" ]; then
+                echo "✅ $name protected after attempt $i/$attempts (http=401)"
+                return 0
+            fi
+            compact="$(printf '%s' "$body" | tr -d '\n\r\t ')"
+            if printf '%s' "$compact" | grep -q '"status":"ready"'; then
+                echo "✅ $name ready after attempt $i/$attempts"
+                return 0
+            fi
+            status="$(printf '%s' "$compact" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' | head -n 1)"
+            echo "   $name not ready attempt $i/$attempts http=${http_status:-unknown} status=${status:-unknown}"
+        else
+            echo "   $name request failed attempt $i/$attempts ($output)"
+        fi
+        if [ "$i" != "$attempts" ]; then
+            sleep "$delay"
+        fi
+    done
+
+    echo "❌ $name did not return status=ready or http=401"
+    return 1
 }
 
 validate_frontend_api_base_url() {
@@ -223,12 +347,16 @@ fi
 echo "Updating observation collector..."
 compose_up_retry "observation collector" -d --no-deps polyweather_collector
 
+echo "Updating cache warmer..."
+compose_up_retry "cache warmer" -d --no-deps polyweather_warmer
+
 echo "Updating frontend..."
 compose_up_retry "frontend" -d --no-deps polyweather_frontend
 
 echo "Waiting for frontend..."
 wait_for_local_service "frontend root" "http://127.0.0.1:3001/" 5 40 2 || FAILED_FRONTEND=1
 wait_for_local_service "frontend terminal" "http://127.0.0.1:3001/terminal" 10 20 2 || FAILED_FRONTEND=1
+wait_for_scan_terminal_snapshot "scan terminal snapshot" "http://127.0.0.1:3001/api/scan/terminal" 35 8 5 || FAILED_FRONTEND=1
 FAILED_FRONTEND="${FAILED_FRONTEND:-0}"
 if [ "$FAILED_FRONTEND" = "1" ]; then
     echo "❌ Frontend did not become healthy"
@@ -237,6 +365,7 @@ if [ "$FAILED_FRONTEND" = "1" ]; then
 fi
 
 warm_public_route "terminal" "https://polyweather.top/terminal" 20 4 3
+warm_public_route "scan terminal" "https://polyweather.top/api/scan/terminal" 35 3 2
 warm_public_route "auth snapshot" "https://polyweather.top/api/auth/me?prefer_snapshot=1" 10 3 2
 warm_public_route "local cities recent stats" "http://127.0.0.1:8000/api/cities?refresh_deb_recent=1" 15 2 2
 warm_public_route "cities" "https://polyweather.top/api/cities" 20 3 2

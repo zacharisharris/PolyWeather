@@ -109,6 +109,20 @@ export async function runTests() {
     "terminal screen should preload the chart chunk once access is confirmed on the chart tab",
   );
   assert(
+    dashboardSource.includes("terminalActivationRefreshKey") &&
+      dashboardSource.includes("setTerminalActivationRefreshKey") &&
+      querySource.includes("terminalActivationRefreshKey") &&
+      querySource.includes("handleTerminalActivationRefresh") &&
+      querySource.includes("fetchScanTerminal({ forceRefresh: false, showLoading: false })"),
+    "switching back to the terminal tab should trigger a lightweight scan refresh without waiting for browser focus events",
+  );
+  assert(
+    chartSource.includes("activationRefreshKey") &&
+      chartSource.includes("refreshActivatedCachedDetail") &&
+      chartSource.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })"),
+    "switching back to the terminal tab should refresh visible chart detail through cached backend data without forcing external sources",
+  );
+  assert(
     chartSource.includes("fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })") &&
       chartSource.includes("setHourly((prev) => mergeHourlyWithLiveObservations(dataWithCurrentRow, prev, row))"),
     "visible chart fallback must refresh full city detail at the current chart resolution while preserving newer live observations",
@@ -298,6 +312,13 @@ export async function runTests() {
       chartCanvasSourceIncludes(chartSource, "详情暂不可用") &&
       chartCanvasSourceIncludes(chartSource, "handleRetryDetail"),
     "city detail charts should show stale cache first and expose a retryable unavailable state",
+  );
+  assert(
+    chartSource.includes("TRANSIENT_DETAIL_RETRY_DELAY_MS") &&
+      chartSource.includes("scheduleTransientDetailRetry") &&
+      chartSource.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })") &&
+      chartSource.includes("!retryScheduled"),
+    "cold partial detail-batch misses should stay in loading state and retry cached detail once before showing unavailable",
   );
   const successfulHourlyDetailBlock =
     /const applySuccessfulHourlyDetail = useCallback\([\s\S]*?\n  \}, \[row\]\);/.exec(chartSource)?.[0] || "";

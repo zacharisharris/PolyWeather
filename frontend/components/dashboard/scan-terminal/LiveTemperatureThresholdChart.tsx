@@ -64,6 +64,7 @@ const PROBABILITY_REFRESH_AFTER_PATCH_MS = DASHBOARD_REFRESH_POLICY_MS.metar;
 const FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS = 90_000;
 const NO_PATCH_CACHED_DETAIL_REFRESH_MS = DASHBOARD_REFRESH_POLICY_MS.observation;
 const DETAIL_LOAD_BATCH_DELAY_MS = 0;
+const TRANSIENT_DETAIL_RETRY_DELAY_MS = 3_000;
 const INITIAL_DETAIL_LOAD_SLOTS = 3;
 const DEFERRED_DETAIL_LOAD_DELAY_MS = 1_200;
 const DEFERRED_DETAIL_LOAD_GROUP_SIZE = 3;
@@ -541,6 +542,7 @@ export function LiveTemperatureThresholdChart({
   isMaximized = false,
   disableClose = false,
   isActive = !compact,
+  activationRefreshKey = 0,
   slotIndex = 0,
 }: {
   isEn: boolean;
@@ -554,6 +556,7 @@ export function LiveTemperatureThresholdChart({
   isMaximized?: boolean;
   disableClose?: boolean;
   isActive?: boolean;
+  activationRefreshKey?: number;
   slotIndex?: number;
 }) {
   const [hourly, setHourly] = useState<HourlyForecast>(null);
@@ -792,13 +795,41 @@ export function LiveTemperatureThresholdChart({
     setIsHourlyLoading(true);
     markDetailRequest("network");
     let cancelled = false;
+    let retryScheduled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleTransientDetailRetry = () => {
+      retryScheduled = true;
+      markDetailDegraded();
+      retryTimer = setTimeout(() => {
+        if (cancelled) return;
+        markDetailRequest("network");
+        fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })
+          .then((data) => {
+            if (cancelled) return;
+            if (!data) {
+              markDetailDegraded({ showUserError: true });
+              return;
+            }
+            applySuccessfulHourlyDetail(data);
+          })
+          .catch(() => {
+            if (!cancelled) {
+              markDetailDegraded({ showUserError: true });
+            }
+          })
+          .finally(() => {
+            if (!cancelled) setIsHourlyLoading(false);
+          });
+      }, TRANSIENT_DETAIL_RETRY_DELAY_MS);
+    };
 
     const timer = setTimeout(() => {
       fetchHourlyForecastForCity(city, { resolution: targetResolution })
         .then((data) => {
           if (cancelled) return;
           if (!data) {
-            markDetailDegraded({ showUserError: true });
+            scheduleTransientDetailRetry();
             return;
           }
           applySuccessfulHourlyDetail(data);
@@ -809,13 +840,14 @@ export function LiveTemperatureThresholdChart({
           }
         })
         .finally(() => {
-          if (!cancelled) setIsHourlyLoading(false);
+          if (!cancelled && !retryScheduled) setIsHourlyLoading(false);
         });
     }, DETAIL_LOAD_BATCH_DELAY_MS);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      if (retryTimer !== null) clearTimeout(retryTimer);
     };
   }, [
     city,
@@ -957,6 +989,56 @@ export function LiveTemperatureThresholdChart({
   }, [city, compact, isActive, isMaximized, targetResolution, markDetailDegraded, markDetailRequest, applySuccessfulHourlyDetail]);
 
   useEffect(() => {
+    if (!activationRefreshKey) return;
+    if (!shouldPollLiveChart({ city, compact, isActive, isMaximized })) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+
+    let cancelled = false;
+
+    const refreshActivatedCachedDetail = () => {
+      const now = Date.now();
+      if (now - lastForegroundRefreshAtRef.current < 10_000) return;
+
+      lastForegroundRefreshAtRef.current = now;
+      lastPatchAtRef.current = now;
+      markDetailRequest("network");
+
+      fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })
+        .then((data) => {
+          if (cancelled) return;
+          if (!data) {
+            markDetailDegraded();
+            return;
+          }
+          applySuccessfulHourlyDetail(data, { updateLiveTemp: true });
+        })
+        .catch(() => {
+          if (!cancelled) {
+            markDetailDegraded();
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsHourlyLoading(false);
+        });
+    };
+
+    refreshActivatedCachedDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activationRefreshKey,
+    city,
+    compact,
+    isActive,
+    isMaximized,
+    targetResolution,
+    markDetailDegraded,
+    markDetailRequest,
+    applySuccessfulHourlyDetail,
+  ]);
+
+  useEffect(() => {
     if (!shouldPollLiveChart({ city, compact, isActive, isMaximized })) return;
     let cancelled = false;
 
@@ -974,9 +1056,9 @@ export function LiveTemperatureThresholdChart({
 
       lastForegroundRefreshAtRef.current = now;
       lastPatchAtRef.current = now;
-      markDetailRequest("force_refresh");
+      markDetailRequest("network");
 
-      fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })
+      fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })
         .then((data) => {
           if (cancelled) return;
           if (!data) {
