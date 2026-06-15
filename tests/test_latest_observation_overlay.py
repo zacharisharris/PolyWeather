@@ -48,6 +48,175 @@ def test_overlay_replaces_amos_when_old_local_time_string_looks_later_than_new_u
     assert result["amos"]["runway_obs"]["point_temperatures"][0]["runway"] == "17L/35R"
 
 
+def test_overlay_appends_latest_amsc_points_to_runway_history():
+    runway_writes = []
+
+    class FakeDB:
+        def get_latest_raw_observation(self, source, city):
+            assert (source, city) == ("amsc_awos", "chengdu")
+            return {
+                "observed_at": "2026-06-15T10:51:00+00:00",
+                "fetched_at": "2026-06-15T10:51:30+00:00",
+                "station_code": "ZUUU",
+                "station_name": "Chengdu Shuangliu",
+                "payload": {
+                    "source": "amsc_awos",
+                    "source_label": "AMSC AWOS Chengdu Shuangliu (ZUUU)",
+                    "icao": "ZUUU",
+                    "temp_c": 28.4,
+                    "observation_time": "2026-06-15T10:51:00+00:00",
+                    "observation_time_local": "2026-06-15 18:51:00",
+                    "runway_obs": {
+                        "point_temperatures": [
+                            {
+                                "runway": "02L/20R",
+                                "tdz_temp": 28.4,
+                                "end_temp": 28.2,
+                                "target_runway_max": 28.4,
+                            },
+                            {
+                                "runway": "02R/20L",
+                                "tdz_temp": 28.1,
+                                "end_temp": 28.0,
+                                "target_runway_max": 28.1,
+                            },
+                        ],
+                    },
+                },
+            }
+
+        def append_runway_obs(self, **kwargs):
+            runway_writes.append(kwargs)
+
+    stale_payload = {
+        "name": "chengdu",
+        "temp_symbol": "°C",
+        "runway_plate_history": {
+            "02L/20R": [{"time": "2026-06-14T10:44:00+00:00", "temp": 31.6}],
+        },
+        "amos": {
+            "source": "amsc_awos",
+            "observation_time": "2026-06-14T10:44:00+00:00",
+        },
+    }
+
+    result = overlay_latest_amsc_observation(FakeDB(), "chengdu", stale_payload)
+
+    assert result["runway_plate_history"]["02L/20R"][-1] == {
+        "time": "2026-06-15T10:51:00+00:00",
+        "temp": 28.4,
+    }
+    assert result["runway_plate_history"]["02R/20L"][-1] == {
+        "time": "2026-06-15T10:51:00+00:00",
+        "temp": 28.1,
+    }
+    assert [(row["icao"], row["runway"], row["otime_utc"]) for row in runway_writes] == [
+        ("ZUUU", "02L/20R", "2026-06-15T10:51:00+00:00"),
+        ("ZUUU", "02R/20L", "2026-06-15T10:51:00+00:00"),
+    ]
+    assert runway_writes[0]["target_runway_max"] == 28.4
+
+
+def test_overlay_builds_amsc_runway_history_from_raw_store():
+    def raw_row(observed_at, temp):
+        return {
+            "observed_at": observed_at,
+            "payload": {
+                "source": "amsc_awos",
+                "icao": "ZUUU",
+                "temp_c": temp,
+                "observation_time": observed_at,
+                "runway_obs": {
+                    "point_temperatures": [
+                        {
+                            "runway": "02L/20R",
+                            "target_runway_max": temp,
+                        },
+                    ],
+                },
+            },
+        }
+
+    class FakeDB:
+        def get_latest_raw_observation(self, source, city):
+            assert (source, city) == ("amsc_awos", "chengdu")
+            return raw_row("2026-06-15T11:08:00+00:00", 25.4)
+
+        def list_raw_observation_history(self, source, city, *, minutes=60, limit=1000):
+            assert (source, city) == ("amsc_awos", "chengdu")
+            return [
+                raw_row("2026-06-15T11:04:00+00:00", 25.6),
+                raw_row("2026-06-15T11:08:00+00:00", 25.4),
+            ]
+
+    result = overlay_latest_amsc_observation(
+        FakeDB(),
+        "chengdu",
+        {
+            "name": "chengdu",
+            "temp_symbol": "°C",
+            "runway_plate_history": {
+                "02L/20R": [{"time": "2026-06-12T10:44:00+00:00", "temp": 31.6}],
+            },
+        },
+    )
+
+    assert result["runway_plate_history"]["02L/20R"] == [
+        {"time": "2026-06-15T11:04:00+00:00", "temp": 25.6},
+        {"time": "2026-06-15T11:08:00+00:00", "temp": 25.4},
+    ]
+
+
+def test_overlay_skips_raw_store_when_runway_history_already_has_points():
+    existing_points = [
+        {"time": f"2026-06-15T{hour:02d}:00:00+00:00", "temp": 25.0 + hour / 10}
+        for hour in range(0, 15)
+        for _ in range(2)
+    ]
+
+    class FakeDB:
+        def get_latest_raw_observation(self, source, city):
+            assert (source, city) == ("amsc_awos", "chengdu")
+            return {
+                "observed_at": "2026-06-15T14:30:00+00:00",
+                "station_code": "ZUUU",
+                "payload": {
+                    "source": "amsc_awos",
+                    "icao": "ZUUU",
+                    "temp_c": 25.4,
+                    "observation_time": "2026-06-15T14:30:00+00:00",
+                    "runway_obs": {
+                        "point_temperatures": [
+                            {
+                                "runway": "02L/20R",
+                                "target_runway_max": 25.4,
+                            },
+                        ],
+                    },
+                },
+            }
+
+        def list_raw_observation_history(self, source, city, *, minutes=60, limit=1000):
+            raise AssertionError("raw store history should not be read for populated runway history")
+
+    result = overlay_latest_amsc_observation(
+        FakeDB(),
+        "chengdu",
+        {
+            "name": "chengdu",
+            "temp_symbol": "°C",
+            "runway_plate_history": {
+                "02L/20R": existing_points,
+            },
+        },
+    )
+
+    assert result["runway_plate_history"]["02L/20R"][-1] == {
+        "time": "2026-06-15T14:30:00+00:00",
+        "temp": 25.4,
+    }
+
+
 def test_overlay_uses_latest_success_when_newer_status_row_has_no_observation():
     class FakeDB:
         def get_latest_raw_observation(self, source, city):
