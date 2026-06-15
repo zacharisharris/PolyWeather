@@ -109,6 +109,10 @@ multidict==6.7.1
 netcdf4==1.7.4
     # via -r requirements.txt
 numpy==2.4.6
+
+torch
+typing_extensions==4.15.0
+    # via torch
     # via
     #   -r requirements.txt
     #   cftime

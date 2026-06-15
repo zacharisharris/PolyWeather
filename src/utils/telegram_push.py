@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests as requests_lib
@@ -19,6 +19,7 @@ from src.database.runtime_state import (
 )
 from src.data_collection.city_registry import ALIASES
 from src.data_collection.city_registry import CITY_REGISTRY
+from src.data_collection.city_time import get_city_utc_offset_seconds
 from src.utils.telegram_chat_ids import get_telegram_chat_ids_from_env, parse_telegram_chat_ids
 from src.utils.telegram_i18n import (
     copy_text as _copy,
@@ -1471,7 +1472,18 @@ def _build_airport_status_message(
 
 
 def _get_airport_daily_high(city_weather: Dict[str, Any]):
-    """Get today's observed high from METAR/AMOS airport history."""
+    """Get today's observed high from METAR/AMOS airport history.
+
+    For runway cities, prefers the settlement runway's max from runway_plate_history.
+    Otherwise falls back to airport_current.max_so_far.
+    """
+    amos = city_weather.get("amos") or {}
+    has_runway = bool((amos.get("runway_obs") or {}).get("point_temperatures"))
+    if has_runway:
+        runway_max = _runway_history_daily_max(city_weather, city_weather.get("city") or "")
+        if runway_max is not None:
+            return runway_max, None
+
     airport = city_weather.get("airport_current") or {}
     max_so_far = airport.get("max_so_far")
     max_time = airport.get("max_temp_time")
@@ -1481,6 +1493,94 @@ def _get_airport_daily_high(city_weather: Dict[str, Any]):
         except Exception:
             max_so_far = None
     return max_so_far, max_time
+
+
+def _runway_history_point_local_date(point: Dict[str, Any], utc_offset_seconds: int) -> str:
+    raw_time = (
+        point.get("time")
+        or point.get("timestamp")
+        or point.get("observed_at")
+        or point.get("otime_utc")
+        or ""
+    )
+    parsed = _parse_iso_datetime_utc(raw_time)
+    if parsed is None:
+        return ""
+    return (parsed + timedelta(seconds=utc_offset_seconds)).date().isoformat()
+
+
+def _today_runway_history_points(
+    points: Any,
+    *,
+    local_date: str,
+    utc_offset_seconds: int,
+) -> List[Dict[str, Any]]:
+    if not isinstance(points, list):
+        return []
+    if not local_date:
+        return [p for p in points if isinstance(p, dict)]
+    return [
+        p
+        for p in points
+        if isinstance(p, dict)
+        and _runway_history_point_local_date(p, utc_offset_seconds) == local_date
+    ]
+
+
+def _runway_history_context(city_weather: Dict[str, Any], city: str) -> Tuple[str, int]:
+    local_date = str(city_weather.get("local_date") or "").strip()
+    anchor_values = [
+        (city_weather.get("amos") or {}).get("observation_time"),
+        (city_weather.get("airport_primary") or {}).get("obs_time"),
+        (city_weather.get("airport_current") or {}).get("obs_time"),
+        (city_weather.get("current") or {}).get("observed_at"),
+        (city_weather.get("canonical_temperature") or {}).get("observed_at"),
+    ]
+    anchor_dt = next(
+        (parsed for parsed in (_parse_iso_datetime_utc(value) for value in anchor_values) if parsed is not None),
+        None,
+    )
+    try:
+        utc_offset_seconds = int(
+            city_weather.get("utc_offset_seconds")
+            if city_weather.get("utc_offset_seconds") is not None
+            else get_city_utc_offset_seconds(city, anchor_dt),
+        )
+    except Exception:
+        utc_offset_seconds = 0
+    if not local_date and anchor_dt is not None:
+        local_date = (anchor_dt + timedelta(seconds=utc_offset_seconds)).date().isoformat()
+    return local_date, utc_offset_seconds
+
+
+def _runway_history_daily_max(city_weather: Dict[str, Any], city: str) -> Optional[float]:
+    """Compute today's local-date runway high from runway_plate_history."""
+    history = city_weather.get("runway_plate_history")
+    if not isinstance(history, dict) or not history:
+        return None
+    local_date, utc_offset_seconds = _runway_history_context(city_weather, city)
+    settlement_pair = _settlement_runway_for_city(city)
+    if settlement_pair:
+        settlement_key = f"{settlement_pair[0]}/{settlement_pair[1]}"
+        settlement_pts = _today_runway_history_points(
+            history.get(settlement_key),
+            local_date=local_date,
+            utc_offset_seconds=utc_offset_seconds,
+        )
+        if settlement_pts:
+            temps = [p.get("temp") for p in settlement_pts if isinstance(p, dict) and p.get("temp") is not None]
+            if temps:
+                return round(max(temps), 1)
+    # Fallback: max across all runways
+    all_temps = []
+    for pts in history.values():
+        today_pts = _today_runway_history_points(
+            pts,
+            local_date=local_date,
+            utc_offset_seconds=utc_offset_seconds,
+        )
+        all_temps.extend(p.get("temp") for p in today_pts if p.get("temp") is not None)
+    return round(max(all_temps), 1) if all_temps else None
 
 
 # Per-city push interval. The loop wakes every minute, but Telegram should
