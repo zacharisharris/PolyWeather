@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from datetime import datetime, timedelta, timezone
 import sqlite3
 import threading
 import time
@@ -181,6 +182,42 @@ def test_raw_observation_store_records_latest_observation(tmp_path):
     assert latest["payload"]["temp_c"] == 24.0
 
 
+def test_raw_observation_store_lists_source_city_history(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from src.database.db_manager import DBManager
+
+    db = DBManager(str(tmp_path / "polyweather.db"))
+    first_observed_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0).isoformat()
+    second_observed_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microsecond=0).isoformat()
+    db.append_raw_observation(
+        source="amsc_awos",
+        city="Chengdu",
+        value=25.6,
+        observed_at=first_observed_at,
+        fetched_at=first_observed_at,
+        station_code="ZUUU",
+        payload={"temp_c": 25.6},
+    )
+    db.append_raw_observation(
+        source="amsc_awos",
+        city="chengdu",
+        value=25.4,
+        observed_at=second_observed_at,
+        fetched_at=second_observed_at,
+        station_code="ZUUU",
+        payload={"temp_c": 25.4},
+    )
+
+    rows = db.list_raw_observation_history("amsc_awos", "chengdu", minutes=60, limit=10)
+
+    assert [row["observed_at"] for row in rows] == [
+        first_observed_at,
+        second_observed_at,
+    ]
+    assert rows[-1]["payload"]["temp_c"] == 25.4
+
+
 def test_observation_collector_aligns_amsc_payload_time_with_record_observed_at(tmp_path):
     from src.database.db_manager import DBManager
     from web.observation_collector_service import ObservationCollector
@@ -220,6 +257,96 @@ def test_observation_collector_aligns_amsc_payload_time_with_record_observed_at(
     assert latest["observed_at"] == "2026-06-14T15:43:00+00:00"
     assert latest["payload"]["observation_time"] == "2026-06-14T15:43:00+00:00"
     assert latest["payload"]["observation_time_local"] == "2026-06-14 23:43:00"
+
+
+def test_observation_collector_persists_amsc_runway_history(tmp_path):
+    from src.database.db_manager import DBManager
+    from web.observation_collector_service import ObservationCollector
+    from web.services.observation_source_adapters import ObservationRecord
+
+    db = DBManager(str(tmp_path / "polyweather.db"))
+    collector = ObservationCollector(
+        weather=object(),
+        profiles=[],
+        observation_store=db,
+    )
+
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    record = ObservationRecord(
+        source="amsc_awos",
+        city="chengdu",
+        value=28.4,
+        observed_at=observed_at,
+        observed_at_local="2026-06-15 18:51:00",
+        station_code="ZUUU",
+        station_name="Chengdu Shuangliu",
+        runway="",
+        value_unit="c",
+        source_label="AMSC AWOS Chengdu Shuangliu (ZUUU)",
+        payload={
+            "source": "amsc_awos",
+            "icao": "ZUUU",
+            "temp_c": 28.4,
+            "runway_obs": {
+                "point_temperatures": [
+                    {
+                        "runway": "02L/20R",
+                        "tdz_temp": 28.4,
+                        "mid_temp": None,
+                        "end_temp": 28.2,
+                        "target_runway_max": 28.4,
+                        "wind_dir": 130,
+                        "wind_speed": 4.0,
+                    },
+                    {
+                        "runway": "02R/20L",
+                        "tdz_temp": 28.1,
+                        "mid_temp": None,
+                        "end_temp": 28.0,
+                        "target_runway_max": 28.1,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert collector._store_raw_observations([record]) == 1
+
+    rows = db.get_runway_obs_recent("ZUUU", minutes=60)
+
+    assert [row["runway"] for row in rows] == ["02L/20R", "02R/20L"]
+    assert rows[0]["otime_utc"] == observed_at
+    assert rows[0]["target_runway_max"] == 28.4
+    assert rows[0]["wind_dir"] == 130
+
+
+def test_runway_obs_recent_filters_by_observation_time_not_insert_time(tmp_path):
+    from src.database.db_manager import DBManager
+
+    db = DBManager(str(tmp_path / "polyweather.db"))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stale_observed_at = (now - timedelta(hours=3)).isoformat()
+    fresh_observed_at = now.isoformat()
+
+    db.append_runway_obs(
+        icao="ZUUU",
+        city="chengdu",
+        runway="02L/20R",
+        target_runway_max=24.0,
+        otime_utc=stale_observed_at,
+    )
+    db.append_runway_obs(
+        icao="ZUUU",
+        city="chengdu",
+        runway="02R/20L",
+        target_runway_max=25.0,
+        otime_utc=fresh_observed_at,
+    )
+
+    rows = db.get_runway_obs_recent("ZUUU", minutes=60)
+
+    assert [row["runway"] for row in rows] == ["02R/20L"]
+    assert rows[0]["otime_utc"] == fresh_observed_at
 
 
 def test_raw_observation_failure_preserves_last_success_and_increments_errors(tmp_path):

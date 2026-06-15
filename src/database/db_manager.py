@@ -1293,6 +1293,69 @@ class DBManager:
             )
         return out
 
+    def list_raw_observation_history(
+        self,
+        source: str,
+        city: str,
+        *,
+        minutes: int = 60,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        normalized_source = str(source or "").strip().lower()
+        normalized_city = str(city or "").strip().lower()
+        if not normalized_source or not normalized_city:
+            return []
+        safe_limit = max(1, min(int(limit or 1000), 5000))
+        safe_minutes = max(1, min(int(minutes or 60), 7 * 24 * 60))
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=safe_minutes)
+        cutoff_observed_at = cutoff_dt.replace(microsecond=0).isoformat()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM raw_observation_store
+                    WHERE source = ?
+                      AND city = ?
+                      AND observed_at >= ?
+                    ORDER BY observed_at DESC, fetched_at DESC, created_at_ts DESC
+                    LIMIT ?
+                )
+                ORDER BY observed_at ASC, fetched_at ASC, created_at_ts ASC
+                """,
+                (normalized_source, normalized_city, cutoff_observed_at, safe_limit),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            out.append(
+                {
+                    "source": str(row["source"] or ""),
+                    "city": str(row["city"] or ""),
+                    "station_code": str(row["station_code"] or ""),
+                    "station_name": str(row["station_name"] or ""),
+                    "runway": str(row["runway"] or ""),
+                    "value": self._float_or_none(row["value"]),
+                    "value_unit": str(row["value_unit"] or ""),
+                    "observed_at": str(row["observed_at"] or ""),
+                    "fetched_at": str(row["fetched_at"] or ""),
+                    "source_latency_sec": self._float_or_none(row["source_latency_sec"]),
+                    "status": str(row["status"] or ""),
+                    "error_count": int(row["error_count"] or 0),
+                    "last_success_at": str(row["last_success_at"] or ""),
+                    "payload": payload,
+                    "created_at_ts": float(row["created_at_ts"] or 0.0),
+                }
+            )
+        return out
+
     def enqueue_observation_refresh_request(
         self,
         *,
@@ -4194,8 +4257,11 @@ class DBManager:
                        wind_dir, wind_speed, rvr, mor, humidity,
                        otime_utc, created_at
                 FROM runway_obs_log
-                WHERE icao = ? AND created_at >= datetime('now', ? || ' minutes')
-                ORDER BY created_at ASC
+                WHERE icao = ?
+                  AND datetime(COALESCE(NULLIF(otime_utc, ''), created_at))
+                      >= datetime('now', ? || ' minutes')
+                ORDER BY datetime(COALESCE(NULLIF(otime_utc, ''), created_at)) ASC,
+                         created_at ASC
                 """,
                 (str(icao).strip().upper(), str(-int(minutes))),
             ).fetchall()

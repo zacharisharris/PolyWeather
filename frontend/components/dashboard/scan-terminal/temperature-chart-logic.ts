@@ -466,6 +466,18 @@ function writeSessionCache(city: string, data: HourlyForecast) {
   } catch {}
 }
 
+function rememberHourlyDetailSnapshot(
+  city: string,
+  resolution: string,
+  data: HourlyForecast,
+) {
+  const cityKey = normalizeCityKey(city);
+  if (!cityKey || !data || !hasFullHourlyDetailPayload(data)) return;
+  const cacheKey = `${cityKey}:${resolution || "10m"}`;
+  _hourlyCache.set(cacheKey, { ts: Date.now(), data });
+  writeSessionCache(cacheKey, data);
+}
+
 function drainHourlyDetailRequestQueue() {
   while (
     _hourlyActiveDetailRequests < MAX_HOURLY_DETAIL_CONCURRENT_REQUESTS &&
@@ -763,8 +775,12 @@ function airportPrimarySeriesLabel(
   row?: ScanOpportunityRow | null,
 ) {
   if (isHKO) return "HKO";
+  const cityKey = normalizeCityKey(row?.city);
   const canonicalLabel = canonicalAirportPrimarySourceLabel(hourly);
   if (canonicalLabel === "MGM") return canonicalLabel;
+  if ((cityKey === "ankara" || cityKey === "istanbul") && (!canonicalLabel || canonicalLabel === "NOAA MADIS")) {
+    return "MGM";
+  }
   const payloadLabel = String(hourly?.airportPrimary?.source_label || "").trim();
   if (payloadLabel && !isGenericAirportPrimaryLabel(payloadLabel)) return payloadLabel;
   if (canonicalLabel === "NOAA MADIS" && !isUsAirportCode(airportCodeForSeriesLabel(hourly, row))) {
@@ -1578,14 +1594,37 @@ function parseHourlyForecastFromCityDetail(json: CityDetail | null): HourlyForec
   };
 }
 
+function preserveCachedRunwayHistory(cacheKey: string, data: HourlyForecast) {
+  if (!data) return data;
+  const cached = readHourlyCacheEntry(cacheKey, { allowStale: true })?.data;
+  if (!cached || hourlyLocalDatesConflict(cached, data, null)) return data;
+  const cachedHistory =
+    cached.runwayPlateHistory ||
+    ((cached.amos as any)?.runway_plate_history as Record<string, Array<Record<string, unknown>>> | undefined);
+  const incomingHistory =
+    data.runwayPlateHistory ||
+    ((data.amos as any)?.runway_plate_history as Record<string, Array<Record<string, unknown>>> | undefined);
+  const runwayPlateHistory = mergeRunwayPlateHistory(cachedHistory, incomingHistory);
+  if (!runwayPlateHistory) return data;
+  return {
+    ...data,
+    runwayPlateHistory,
+    amos: {
+      ...(data.amos || {}),
+      runway_plate_history: runwayPlateHistory,
+    } as AmosData,
+  };
+}
+
 function primeCityDetailCache(
   city: string,
   resolution: string,
   detail: CityDetail | null | undefined,
 ): HourlyForecast {
-  const data = parseHourlyForecastFromCityDetail(detail || null);
+  let data = parseHourlyForecastFromCityDetail(detail || null);
   if (!data) return null;
   const cacheKey = `${city}:${resolution}`;
+  data = preserveCachedRunwayHistory(cacheKey, data);
   _hourlyCache.set(cacheKey, { ts: Date.now(), data });
   writeSessionCache(cacheKey, data);
   return data;
@@ -3086,6 +3125,7 @@ export {
   prefersHighFrequencyRunwayResolution,
   readCityDetailBatchDiagnostics,
   readSessionCache,
+  rememberHourlyDetailSnapshot,
   selectCompactSecondaryTemp,
   selectDisplayRunwayTemp,
   selectInitialHourlyForRowChange,
