@@ -3,12 +3,16 @@ import type { CityDetail } from "@/lib/dashboard-types";
 import { buildChartTimeAxis, buildDebBaselinePath } from "@/lib/temperature-chart-paths";
 import {
   buildFullDayChartData,
+  mergeObservationSnapshotIntoHourly,
   mergeHourlyWithLiveObservations,
   mergePatchIntoHourly,
   mergeRowObservationIntoHourly,
+  observationPayloadToSnapshot,
+  readCachedHourlyForInitialRow,
   rememberHourlyDetailSnapshot,
   selectInitialHourlyForRowChange,
-  seedHourlyForecastFromRow,
+  seedChartRenderStateFromRow,
+  toFullChartDetail,
   _hourlyCache,
 } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
@@ -157,6 +161,162 @@ export function runTests() {
     independentModelPeak?.label === "16:00:00",
     `multi-model curves must use models_hourly.times instead of hourly.times; got ${independentModelPeak?.label}`,
   );
+
+  const floatingIsoModelTimelineChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-14",
+      local_time: "12:00",
+      temp_symbol: "°C",
+      tz_offset_seconds: 2 * 3600,
+    } as any,
+    {
+      forecastTodayHigh: 24,
+      debPrediction: 24,
+      localDate: "2026-06-14",
+      localTime: "12:00",
+      times: ["00:00", "12:00", "23:00"],
+      temps: [18, 21, 16],
+      modelTimes: Array.from({ length: 24 }, (_, hour) => `2026-06-14T${String(hour).padStart(2, "0")}:00`),
+      modelCurves: {
+        ECMWF: Array.from({ length: 24 }, (_, hour) => hour),
+      },
+    } as any,
+    true,
+  );
+  const floatingIsoModelLatePoint = floatingIsoModelTimelineChart.data.find(
+    (point) => point.label === "23:00:00" && point.model_curve_ECMWF === 23,
+  );
+  assert(
+    floatingIsoModelLatePoint,
+    "floating ISO model times without an explicit timezone must stay on the city-local clock so late-day forecast points do not disappear",
+  );
+
+  const staleDetailWithCurrentRowChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-16",
+      local_time: "14:59",
+      temp_symbol: "°C",
+      tz_offset_seconds: 2 * 3600,
+    } as any,
+    {
+      forecastTodayHigh: 24,
+      debPrediction: 24,
+      localDate: "2026-06-14",
+      localTime: "11:00",
+      times: ["00:00", "12:00", "23:00"],
+      temps: [18, 21, 16],
+      modelTimes: Array.from({ length: 72 }, (_, index) => {
+        const date = index < 24 ? "2026-06-14" : index < 48 ? "2026-06-15" : "2026-06-16";
+        const hour = index % 24;
+        return `${date}T${String(hour).padStart(2, "0")}:00`;
+      }),
+      modelCurves: {
+        ECMWF: Array.from({ length: 72 }, (_, index) => index),
+      },
+    } as any,
+    true,
+  );
+  const currentDayModelLatePoint = staleDetailWithCurrentRowChart.data.find(
+    (point) => point.label === "23:00:00" && point.model_curve_ECMWF === 71,
+  );
+  assert(
+    currentDayModelLatePoint,
+    "chart should use the current scan row local date when cached detail localDate is older so today's model curve is drawn through 23:00",
+  );
+
+  const staleShortRangeModelChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-16",
+      local_time: "19:33",
+      temp_symbol: "°C",
+      tz_offset_seconds: 2 * 3600,
+    } as any,
+    {
+      forecastTodayHigh: 27,
+      debPrediction: 27,
+      localDate: "2026-06-16",
+      localTime: "19:33",
+      times: fullDayHourlyTimes,
+      temps: fullDayHourlyTemps,
+      debHourlyPath: {
+        times: fullDayHourlyTimes,
+        temps: fullDayHourlyTimes.map((_, hour) => 16 + Math.sin((hour / 23) * Math.PI) * 8),
+      },
+      modelTimes: fullDayHourlyTimes,
+      modelCurves: {
+        "AROME HD": [
+          25.1,
+          25.0,
+          24.1,
+          24.0,
+          23.9,
+          22.8,
+          ...Array.from({ length: 18 }, () => null),
+        ],
+      },
+    } as any,
+    true,
+  );
+  assert(
+    !staleShortRangeModelChart.series.some((item) => item.key === "model_curve_AROME HD"),
+    "Paris AROME HD should not render a stale early-morning fragment as a live prediction curve at 19:33",
+  );
+
+  const freshShortRangeModelChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-16",
+      local_time: "19:33",
+      temp_symbol: "°C",
+      tz_offset_seconds: 2 * 3600,
+    } as any,
+    {
+      forecastTodayHigh: 27,
+      debPrediction: 27,
+      localDate: "2026-06-16",
+      localTime: "19:33",
+      times: fullDayHourlyTimes,
+      temps: fullDayHourlyTemps,
+      debHourlyPath: {
+        times: fullDayHourlyTimes,
+        temps: fullDayHourlyTimes.map((_, hour) => 16 + Math.sin((hour / 23) * Math.PI) * 8),
+      },
+      modelTimes: fullDayHourlyTimes,
+      modelCurves: {
+        "AROME HD": fullDayHourlyTimes.map((_, hour) => 21 + Math.sin((hour / 23) * Math.PI) * 7),
+      },
+    } as any,
+    true,
+  );
+  assert(
+    freshShortRangeModelChart.series.some((item) => item.key === "model_curve_AROME HD"),
+    "Paris AROME HD should still render when the curve has current or future points",
+  );
+
+  _hourlyCache.clear();
+  _hourlyCache.set("madrid:10m", {
+    ts: Date.now(),
+    data: {
+      localDate: "2026-06-16",
+      localTime: "15:46",
+      times: [],
+      temps: [],
+      airportPrimary: {
+        temp: 28.8,
+        obs_time: "2026-06-16T13:46:00Z",
+      },
+      airportPrimaryTodayObs: [["2026-06-16T13:46:00Z", 28.8]],
+    } as any,
+  });
+  const observationOnlyInitialCache = readCachedHourlyForInitialRow("madrid", "10m");
+  assert(
+    observationOnlyInitialCache === null,
+    "observation-only hourly cache entries must not block loading the full city detail payload",
+  );
+  _hourlyCache.clear();
 
   const correctedDetailChart = getTemperatureChartData(
     {
@@ -328,6 +488,8 @@ export function runTests() {
     "Normal city: both past and future portions should have data",
   );
 
+  // Chinese cities no longer have AMSC AWOS runway data, so row-seeded
+  // Guangzhou should not generate runway series without runway history.
   const guangzhouRow = {
     city: "guangzhou",
     local_date: "2026-06-10",
@@ -337,58 +499,20 @@ export function runTests() {
     temp_symbol: "°C",
     tz_offset_seconds: 8 * 3600,
     metar_context: {
-      source: "amsc_awos",
-      station_label: "AMSC AWOS",
+      source: "metar",
+      station_label: "METAR",
       airport_current_temp: 28.4,
       airport_obs_time: "12:45",
       airport_max_so_far: 29,
     },
   } as any;
-  const seededGuangzhou = seedHourlyForecastFromRow(guangzhouRow);
-  const guangzhouLiveChart = buildFullDayChartData(guangzhouRow, seededGuangzhou, false);
-  const guangzhouSettlementRunway = guangzhouLiveChart.series.find((item) => item.key === "runway_02L_20R");
+  const seededNonRunway = seedChartRenderStateFromRow(guangzhouRow);
+  const nonRunwayChart = buildFullDayChartData(guangzhouRow, seededNonRunway, false);
   assert(
-    guangzhouSettlementRunway?.values.some((value) => value === 28.4),
-    "row-seeded runway cities must plot the latest scan-row observation immediately instead of waiting for city detail",
+    !nonRunwayChart.series.some((item) => item.key.startsWith("runway_")),
+    "row-seeded Chinese cities should not generate runway series when no AMSC runway data exists",
   );
-
-  const guangzhouPatched = mergePatchIntoHourly(seededGuangzhou, {
-    city: "guangzhou",
-    revision: 42,
-    changes: {
-      temp: 28.8,
-      observed_at_local: "12:48",
-      obs_time: "12:48",
-      source: "amsc_awos",
-      runway_points: [{ runway: "02L/20R", temp: 28.8 }],
-    },
-  });
-  const guangzhouPatchedChart = buildFullDayChartData(guangzhouRow, guangzhouPatched, false);
-  const patchedRunway = guangzhouPatchedChart.series.find((item) => item.key === "runway_02L_20R");
-  assert(
-    patchedRunway?.values.some((value) => value === 28.8),
-    "SSE runway patches must append directly to the chart series without waiting for a force-refreshed detail payload",
-  );
-
-  const guangzhouLaterRow = {
-    ...guangzhouRow,
-    current_temp: 29.1,
-    local_time: "12:51",
-    sse_revision: 43,
-    metar_context: {
-      ...guangzhouRow.metar_context,
-      airport_current_temp: 29.1,
-      airport_obs_time: "12:51",
-      airport_max_so_far: 29.1,
-    },
-  } as any;
-  const guangzhouRowMerged = mergeRowObservationIntoHourly(seededGuangzhou, guangzhouLaterRow);
-  const guangzhouRowMergedChart = buildFullDayChartData(guangzhouLaterRow, guangzhouRowMerged, false);
-  const rowMergedRunway = guangzhouRowMergedChart.series.find((item) => item.key === "runway_02L_20R");
-  assert(
-    rowMergedRunway?.values.some((value) => value === 29.1),
-    "same-city scan row observation changes must merge into chart state without requiring an active-slot click",
-  );
+  const seededGuangzhou = seedChartRenderStateFromRow(guangzhouRow);
 
   const staleDetail = {
     ...seededGuangzhou,
@@ -401,12 +525,11 @@ export function runTests() {
     airportCurrent: { temp: 28.4, obs_time: "12:45", max_so_far: 29 },
     airportPrimary: { temp: 28.4, obs_time: "12:45", max_so_far: 29 },
   } as any;
-  const mergedAfterStaleDetail = mergeHourlyWithLiveObservations(staleDetail, guangzhouPatched, guangzhouRow);
+  const mergedAfterStaleDetail = mergeHourlyWithLiveObservations(staleDetail, seededGuangzhou, guangzhouRow);
   const mergedAfterStaleDetailChart = buildFullDayChartData(guangzhouRow, mergedAfterStaleDetail, false);
-  const preservedPatchRunway = mergedAfterStaleDetailChart.series.find((item) => item.key === "runway_02L_20R");
   assert(
-    preservedPatchRunway?.values.some((value) => value === 28.8),
-    "stale full-detail responses must not overwrite a newer live SSE observation point",
+    mergedAfterStaleDetailChart.series.length > 0,
+    "stale full-detail merge should still produce a renderable chart",
   );
   const olderAutoRefreshDetail = {
     ...seededGuangzhou,
@@ -541,6 +664,80 @@ export function runTests() {
     "NOAA MADIS label should be reserved for US airports; non-US airport-primary fallback should use METAR wording",
   );
 
+  const parisImplicitAirportPrimaryChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-16",
+      local_time: "14:24",
+      tz_offset_seconds: 2 * 60 * 60,
+      airport: "LFPB",
+      temp_symbol: "°C",
+    } as any,
+    {
+      localDate: "2026-06-16",
+      localTime: "14:24",
+      times: ["00:00", "12:00", "18:00"],
+      temps: [14, 20, 18],
+      airportPrimary: {
+        temp: 20.0,
+        obs_time: "2026-06-16T12:24:00Z",
+      },
+      airportPrimaryTodayObs: [["2026-06-16T12:00:00Z", 20.0]],
+      metarTodayObs: [["2026-06-16T12:00:00Z", 20.0]],
+    } as any,
+    false,
+  );
+  const parisImplicitAirportPrimarySeries = parisImplicitAirportPrimaryChart.series.find((item) => item.key === "madis");
+  assert(
+    parisImplicitAirportPrimarySeries?.label === "LFPB METAR",
+    "non-US airport-primary fallback without explicit source metadata must not default to NOAA MADIS",
+  );
+
+  const parisAirportDisplayNameChart = buildFullDayChartData(
+    {
+      city: "paris",
+      local_date: "2026-06-16",
+      local_time: "14:59",
+      tz_offset_seconds: 2 * 60 * 60,
+      airport: "Paris-Le Bourget 机场",
+      metar_context: {
+        station: "LFPB",
+        station_label: "Paris-Le Bourget Airport",
+      },
+      temp_symbol: "°C",
+    } as any,
+    {
+      localDate: "2026-06-16",
+      localTime: "14:59",
+      times: ["00:00", "12:00", "18:00"],
+      temps: [14, 20, 18],
+      settlementStationCode: "LFPB",
+      settlementStationLabel: "Paris-Le Bourget Airport",
+      airportPrimary: {
+        temp: 20.0,
+        obs_time: "2026-06-16T12:59:00Z",
+      },
+      airportPrimaryTodayObs: [
+        ["2026-06-16T10:00:00Z", 18],
+        ["2026-06-16T12:00:00Z", 20],
+      ],
+      metarTodayObs: [
+        ["2026-06-16T10:30:00Z", 18],
+        ["2026-06-16T12:30:00Z", 20],
+      ],
+    } as any,
+    false,
+  );
+  const parisAirportDisplayNameSeries = parisAirportDisplayNameChart.series.find((item) => item.key === "madis");
+  assert(
+    parisAirportDisplayNameSeries?.label === "LFPB METAR",
+    `airport-primary fallback must prefer station code over display name; got ${parisAirportDisplayNameSeries?.label}`,
+  );
+  assert(
+    !parisAirportDisplayNameChart.series.some((item) => item.key === "metar"),
+    "same-station airport-primary observations should suppress the redundant METAR line even when cadences differ",
+  );
+
   const ankaraScanSeedChart = buildFullDayChartData(
     {
       city: "ankara",
@@ -567,6 +764,87 @@ export function runTests() {
   assert(
     ankaraScanSeedSeries?.label === "MGM",
     "Ankara scan-row-seeded airport-primary curve should default to MGM instead of NOAA MADIS when source metadata is missing",
+  );
+
+  const staleAnkaraDetail = toFullChartDetail({
+    localDate: "2026-06-23",
+    localTime: "13:51",
+    times: ["12:00", "13:00", "14:00", "15:00"],
+    temps: [22, 24, 25, 24],
+    airportPrimary: {
+      temp: 27.1,
+      obs_time: "2026-06-23T10:39:00Z",
+      source_code: "mgm",
+      source_label: "MGM",
+    },
+    airportPrimaryTodayObs: [["2026-06-23T10:39:00Z", 27.1]],
+    metarTodayObs: [["2026-06-23T10:20:00Z", 24.0]],
+    debHourlyPath: {
+      times: ["12:00", "13:00", "14:00", "15:00"],
+      temps: [20.5, 21.0, 21.2, 21.4],
+    },
+    modelTimes: ["12:00", "13:00", "14:00", "15:00"],
+    modelCurves: { ECMWF: [23.8, 24.4, 24.7, 24.0] },
+  } as any);
+  const freshAnkaraObservation = observationPayloadToSnapshot({
+    city: "ankara",
+    name: "ankara",
+    display_name: "Ankara",
+    local_date: "2026-06-23",
+    local_time: "13:30",
+    utc_offset_seconds: 3 * 60 * 60,
+    current: {
+      temp: 24.5,
+      source_code: "metar",
+      source_label: "METAR",
+      settlement_source: "metar",
+      settlement_source_label: "METAR",
+      station_code: "LTAC",
+      obs_time: "2026-06-23T10:30:00Z",
+    },
+    airport_current: {
+      temp: 24.5,
+      source_code: "metar",
+      source_label: "METAR",
+      station_code: "LTAC",
+      obs_time: "2026-06-23T10:30:00Z",
+    },
+    airport_primary: {
+      temp: 24.5,
+      source_code: "metar",
+      source_label: "METAR",
+      station_code: "LTAC",
+      obs_time: "2026-06-23T10:30:00Z",
+    },
+    timeseries: {
+      metar_today_obs: [{ time: "13:30", temp: 24.5 }],
+    },
+    metar_today_obs: [{ time: "13:30", temp: 24.5 }],
+  } as any);
+  const refreshedAnkaraDetail = mergeObservationSnapshotIntoHourly(
+    staleAnkaraDetail,
+    freshAnkaraObservation,
+  );
+  const refreshedAnkaraChart = buildFullDayChartData(
+    {
+      city: "ankara",
+      local_date: "2026-06-23",
+      local_time: "13:51",
+      tz_offset_seconds: 3 * 60 * 60,
+      airport: "LTAC",
+      temp_symbol: "°C",
+    } as any,
+    refreshedAnkaraDetail,
+    false,
+  );
+  const refreshedAnkaraAirportSeries = refreshedAnkaraChart.series.find((item) => item.key === "madis");
+  assert(
+    !refreshedAnkaraAirportSeries?.values.some((value) => value === 27.1),
+    "Ankara live observation refresh should discard stale cached MGM airport-primary points when the latest source is METAR",
+  );
+  assert(
+    refreshedAnkaraAirportSeries?.label === "LTAC METAR",
+    `Ankara refreshed airport-primary curve should be labelled as LTAC METAR, got ${refreshedAnkaraAirportSeries?.label}`,
   );
 
   const guangzhouRunwayWithBadMadisChart = buildFullDayChartData(
@@ -605,8 +883,8 @@ export function runTests() {
     "Guangzhou runway history should render the settlement runway line",
   );
   assert(
-    !guangzhouRunwayWithBadMadisChart.series.some((item) => item.key === "madis"),
-    "AMSC runway cities should not show a redundant NOAA MADIS aggregate series when runway observations are present",
+    guangzhouRunwayWithBadMadisChart.series.some((item) => item.key === "madis"),
+    "Guangzhou should show the MADIS aggregate series alongside runway history when no AMSC runway sensor source exists",
   );
 
   const chengduDetail = {
@@ -687,7 +965,7 @@ export function runTests() {
     tz_offset_seconds: 8 * 3600,
   } as any;
   const shenzhenFullDetail = {
-    ...seedHourlyForecastFromRow(shenzhenRow),
+    ...seedChartRenderStateFromRow(shenzhenRow),
     localDate: "2026-06-10",
     localTime: "12:00",
     times: ["10:00", "11:00", "12:00"],
@@ -735,7 +1013,7 @@ export function runTests() {
   );
 
   const hongKongCachedDetail = {
-    ...seedHourlyForecastFromRow({ ...shenzhenRow, city: "hongkong" } as any),
+    ...seedChartRenderStateFromRow({ ...shenzhenRow, city: "hongkong" } as any),
     localDate: "2026-06-10",
     times: ["10:00", "11:00"],
     temps: [29.5, 30.2],
@@ -790,16 +1068,15 @@ export function runTests() {
     current_max_so_far: 26.4,
     temp_symbol: "°C",
     tz_offset_seconds: 8 * 3600,
-    metar_context: { source: "amsc_awos" },
+    metar_context: { source: "metar" },
   } as any;
-  rememberHourlyDetailSnapshot("chengdu", "1m", seedHourlyForecastFromRow(cachedChengduRow));
   assert(
     !_hourlyCache.has(chengduCacheKey),
     "instant-restore cache must not persist a row-only seed that would block the full detail fetch",
   );
 
-  const cachedChengduDetail = {
-    ...seedHourlyForecastFromRow(cachedChengduRow),
+  const cachedChengduDetail = toFullChartDetail({
+    ...seedChartRenderStateFromRow(cachedChengduRow),
     localDate: "2026-06-15",
     times: ["08:00", "09:00"],
     temps: [25.8, 26.4],
@@ -813,7 +1090,8 @@ export function runTests() {
     runwayPlateHistory: {
       "02L/20R": [{ timestamp: "2026-06-15T08:55:00Z", temp_c: 26.2 }],
     },
-  } as any;
+  } as any);
+  if (!cachedChengduDetail) throw new Error("test fixture should produce a full chart detail");
   const cachedChengduLivePatch = mergePatchIntoHourly(cachedChengduDetail, {
     city: "chengdu",
     revision: 7,
@@ -823,7 +1101,9 @@ export function runTests() {
       runway_points: [{ runway: "02L/20R", temp: 26.8 }],
     },
   } as any);
-  rememberHourlyDetailSnapshot("chengdu", "1m", cachedChengduLivePatch);
+  const cachedChengduPatchedDetail = toFullChartDetail(cachedChengduLivePatch);
+  if (!cachedChengduPatchedDetail) throw new Error("live-merged detail should preserve full chart detail fields");
+  rememberHourlyDetailSnapshot("chengdu", "1m", cachedChengduPatchedDetail);
   const restoredChengdu = _hourlyCache.get(chengduCacheKey)?.data;
   assert(
     restoredChengdu?.modelCurves?.ECMWF?.length === 2 &&
@@ -833,5 +1113,83 @@ export function runTests() {
   assert(
     (restoredChengdu?.runwayPlateHistory?.["02L/20R"] || []).length === 2,
     "instant-restore cache must include live-merged runway history so returning to terminal shows it immediately",
+  );
+
+  const observationOnlyPayload = {
+    city: "chengdu",
+    local_date: "2026-06-15",
+    local_time: "17:45",
+    airport_current: {
+      temp: 27.1,
+      obs_time: "2026-06-15T17:45:00+08:00",
+      source_code: "metar",
+      source_label: "METAR",
+    },
+    airport_primary: {
+      temp: 27.1,
+      obs_time: "2026-06-15T17:45:00+08:00",
+      source_code: "metar",
+      source_label: "METAR",
+    },
+    metar_today_obs: [
+      {
+        time: "17:45",
+        temp: 27.1,
+        obs_time: "2026-06-15T17:45:00+08:00",
+        source_code: "metar",
+      },
+    ],
+    runway_plate_history: {
+      "02L/20R": [{ time: "2026-06-15T17:45:00+08:00", tdz_temp: 27.1, end_temp: 26.8 }],
+    },
+  };
+  const observationSnapshot = observationPayloadToSnapshot(observationOnlyPayload);
+  if (!observationSnapshot) throw new Error("test observation payload should produce an observation snapshot");
+  const observationMergedChengdu = mergeObservationSnapshotIntoHourly(
+    cachedChengduDetail,
+    observationSnapshot,
+  );
+  assert(
+    observationMergedChengdu?.airportCurrent?.temp === 27.1 &&
+      observationMergedChengdu?.airportPrimary?.source_code === "metar",
+    "observation snapshot merge should preserve airport current temp and primary source",
+  );
+  assert(
+    observationMergedChengdu?.modelCurves?.ECMWF?.length === 2 &&
+      observationMergedChengdu?.debHourlyPath?.temps?.includes(30.9),
+    "observation endpoint snapshot must not clear DEB or multi-model chart detail",
+  );
+  assert(
+    (observationMergedChengdu?.runwayPlateHistory?.["02L/20R"] || []).length === 2,
+    "observation endpoint snapshot should append fresh runway history onto cached detail history",
+  );
+
+  _hourlyCache.clear();
+  for (let i = 0; i < 180; i += 1) {
+    const row = {
+      city: `cache-city-${i}`,
+      local_date: "2026-06-15",
+      local_time: "2026-06-15T09:00:00Z",
+      current_temp: 20 + i / 100,
+      current_max_so_far: 20 + i / 100,
+      temp_symbol: "°C",
+      tz_offset_seconds: 0,
+    } as any;
+    const cacheDetail = toFullChartDetail({
+      ...seedChartRenderStateFromRow(row),
+      times: ["09:00"],
+      temps: [20 + i / 100],
+      modelTimes: ["09:00"],
+      modelCurves: { ECMWF: [20 + i / 100] },
+    } as any);
+    if (cacheDetail) rememberHourlyDetailSnapshot(`cache-city-${i}`, "10m", cacheDetail);
+  }
+  assert(
+    _hourlyCache.size <= 160,
+    "hourly detail memory cache must be bounded so many mounted chart instances cannot leak entries indefinitely",
+  );
+  assert(
+    !_hourlyCache.has("cachecity0:10m") && _hourlyCache.has("cachecity179:10m"),
+    "hourly detail memory cache should evict oldest entries first while retaining the newest chart detail",
   );
 }

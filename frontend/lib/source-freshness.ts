@@ -32,15 +32,6 @@ const DEFAULT_SOURCE_PROFILE: SourceProfile = {
 };
 
 const SOURCE_PROFILES: Record<string, SourceProfile> = {
-  amsc_awos: {
-    code: "amsc_awos",
-    label: "AMSC AWOS",
-    nativeUpdateIntervalSec: 180,
-    freshWindowSec: 180,
-    expectedGraceSec: 180,
-    staleAfterSec: 900,
-    pollIntervalSec: 180,
-  },
   amos: {
     code: "amos",
     label: "AMOS",
@@ -86,15 +77,6 @@ const SOURCE_PROFILES: Record<string, SourceProfile> = {
     staleAfterSec: 900,
     pollIntervalSec: DASHBOARD_REFRESH_POLICY_SEC.observation,
   },
-  cwa: {
-    code: "cwa",
-    label: "CWA",
-    nativeUpdateIntervalSec: 600,
-    freshWindowSec: 900,
-    expectedGraceSec: 600,
-    staleAfterSec: 2700,
-    pollIntervalSec: 300,
-  },
   mgm: {
     code: "mgm",
     label: "MGM",
@@ -121,13 +103,11 @@ const SOURCE_PROFILES: Record<string, SourceProfile> = {
 function canonicalSourceCode(value?: string | null) {
   const code = normalizeObservationSourceCode(value || "metar");
   if (!code) return "metar";
-  if (code.includes("amsc")) return "amsc_awos";
   if (code.includes("amos")) return "amos";
   if (code.includes("jma")) return "jma";
   if (code.includes("fmi")) return "fmi";
   if (code.includes("knmi")) return "knmi";
   if (code.includes("hko")) return "hko";
-  if (code.includes("cwa")) return "cwa";
   if (code.includes("mgm")) return "mgm";
   if (code.includes("noaa")) return "noaa";
   if (code.includes("nmc")) return "nmc";
@@ -218,7 +198,7 @@ export function getObservationFreshness(detail?: CityDetail | null) {
   const hasAmosRunway =
     (detail.amos?.runway_obs?.temperatures?.length || 0) > 0 ||
     (detail.amos?.runway_temps?.length || 0) > 0;
-  if (hasAmosRunway || detail.amos?.source === "amos" || detail.amos?.source === "amsc_awos") {
+  if (hasAmosRunway || detail.amos?.source === "amos") {
     return buildObservationFreshness({
       observedAt: detail.amos?.observation_time || null,
       observedAtLocal:
@@ -227,7 +207,7 @@ export function getObservationFreshness(detail?: CityDetail | null) {
         detail.current?.obs_time ||
         null,
       sourceCode: detail.amos?.source || "amos",
-      sourceLabel: detail.amos?.source_label || (detail.amos?.source === "amsc_awos" ? "AMSC AWOS" : "AMOS"),
+      sourceLabel: detail.amos?.source_label || "AMOS",
     });
   }
   const currentSource = canonicalSourceCode(

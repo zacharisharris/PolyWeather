@@ -1,4 +1,10 @@
-import { __buildDebQualityLabelForTest, __buildTemperatureStatsLabelsForTest } from "@/components/dashboard/scan-terminal/TemperatureStatsBars";
+import {
+  __buildDebEnsembleLabelForTest,
+  __buildDebQualityClassForTest,
+  __buildDebQualityLabelForTest,
+  __buildDebQualityTitleForTest,
+  __buildTemperatureStatsLabelsForTest,
+} from "@/components/dashboard/scan-terminal/TemperatureStatsBars";
 import { temp } from "@/components/dashboard/scan-terminal/utils";
 
 function assert(condition: unknown, message: string) {
@@ -36,17 +42,6 @@ export function runTests() {
   assert(shenzhen.runwayHigh === "HKO Live", "Shenzhen high summary should translate 天文台实测");
   assert(shenzhen.metarHigh === "HKO", "Shenzhen high summary should translate 天文台");
 
-  const shanghai = __buildTemperatureStatsLabelsForTest({
-    isEn: true,
-    isShenzhen: false,
-    runwayHeaderLabel: "跑道实测 (3分钟)",
-    metarHeaderLabel: "METAR 结算 (30分钟)",
-    runwayHighLabel: "跑道实测",
-    metarHighLabel: "METAR 官方",
-  });
-
-  assert(shanghai.primary === "Runway Live (3m)", "AMSC English primary label should match 跑道实测 (3分钟)");
-  assert(shanghai.runwayHigh === "Runway", "AMSC runway high label should remain Runway");
 
   const zh = __buildTemperatureStatsLabelsForTest({
     isEn: false,
@@ -70,5 +65,36 @@ export function runTests() {
   assert(
     __buildDebQualityLabelForTest({ recommendation: "insufficient" }, false) === "样本少",
     "thin-sample DEB should render a Chinese low-sample label",
+  );
+  const supportingSignal = {
+    available: true,
+    stance: "supporting",
+    label_zh: "集合支撑",
+    label_en: "Ensemble support",
+    reason_zh: "集合区间较窄",
+    reason_en: "Ensemble spread is tight",
+  };
+  assert(
+    __buildDebEnsembleLabelForTest(supportingSignal, false) === "集+",
+    "supporting ensemble signal should render a compact Chinese marker",
+  );
+  assert(
+    __buildDebEnsembleLabelForTest({ ...supportingSignal, stance: "caution" }, true) === "Ens!",
+    "caution ensemble signal should render a compact English marker",
+  );
+  assert(
+    __buildDebQualityClassForTest({
+      recommendation: "primary",
+      quality_tier: "high",
+      ensemble_signal: { ...supportingSignal, stance: "caution" },
+    }).includes("amber"),
+    "ensemble caution should override the DEB quality badge color",
+  );
+  assert(
+    __buildDebQualityTitleForTest(
+      { recommendation: "primary", ensemble_signal: supportingSignal },
+      false,
+    ).includes("集合支撑"),
+    "DEB badge title should include the ensemble signal reason",
   );
 }

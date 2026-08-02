@@ -143,6 +143,24 @@ read_env_file_value() {
     ' .env | tail -n 1
 }
 
+stop_existing_bot_receivers() {
+    echo "Stopping existing Telegram bot receivers..."
+    docker compose stop polyweather || true
+
+    local legacy_pattern='python(3)? .*bot_[l]istener\.py'
+    if pgrep -af "$legacy_pattern" >/dev/null 2>&1; then
+        echo "Stopping legacy host bot_listener.py processes..."
+        pkill -TERM -f "$legacy_pattern" || true
+        sleep 3
+        if pgrep -af "$legacy_pattern" >/dev/null 2>&1; then
+            echo "Force-stopping legacy host bot_listener.py processes..."
+            pkill -KILL -f "$legacy_pattern" || true
+        fi
+    else
+        echo "No legacy host bot_listener.py process found"
+    fi
+}
+
 resolve_env_value() {
     local primary_key="$1"
     local fallback_key="${2:-}"
@@ -175,6 +193,7 @@ if [ -n "$resolved_supabase_anon_key" ]; then
 else
     unset SUPABASE_ANON_KEY
 fi
+stop_existing_bot_receivers
 pull_ok=0
 for pull_attempt in $(seq 1 6); do
     docker compose pull && pull_ok=1 && break
@@ -278,6 +297,14 @@ wait_for_scan_terminal_snapshot() {
                 echo "✅ $name ready after attempt $i/$attempts"
                 return 0
             fi
+            if printf '%s' "$compact" | grep -q '"status":"stale"'; then
+                echo "✅ $name stale snapshot available after attempt $i/$attempts"
+                return 0
+            fi
+            if printf '%s' "$compact" | grep -q '"stale_reason":"市场扫描快照正在初始化"'; then
+                echo "✅ $name initializing after attempt $i/$attempts"
+                return 0
+            fi
             status="$(printf '%s' "$compact" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' | head -n 1)"
             echo "   $name not ready attempt $i/$attempts http=${http_status:-unknown} status=${status:-unknown}"
         else
@@ -288,7 +315,7 @@ wait_for_scan_terminal_snapshot() {
         fi
     done
 
-    echo "❌ $name did not return status=ready or http=401"
+    echo "❌ $name did not return status=ready/stale or http=401"
     return 1
 }
 
@@ -349,6 +376,12 @@ compose_up_retry "observation collector" -d --no-deps polyweather_collector
 
 echo "Updating cache warmer..."
 compose_up_retry "cache warmer" -d --no-deps polyweather_warmer
+
+echo "Updating training settlement worker..."
+compose_up_retry "training settlement" -d --no-deps polyweather_training_settlement
+
+echo "Updating WeatherNext2 worker..."
+compose_up_retry "WeatherNext2 worker" -d --no-deps polyweather_weathernext2_worker
 
 echo "Updating frontend..."
 compose_up_retry "frontend" -d --no-deps polyweather_frontend

@@ -6,9 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import Request
-import requests as _requests
 
-from src.utils.runtime_secrets import get_runtime_secret
 from web.services.observation_freshness import (
     build_observation_freshness,
     canonical_observation_source_code,
@@ -33,84 +31,6 @@ def _round_metric(value: Optional[float], digits: int = 1) -> Optional[float]:
     return None if value is None else round(float(value), digits)
 
 
-# ── AMSC AWOS ────────────────────────────────────────────────────────
-
-def _build_amsc_awos_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Referer": os.getenv("AMSC_AWOS_REFERER", "https://www.amsc.net.cn/"),
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-        ),
-    }
-    cookie = get_runtime_secret("POLYWEATHER_AMSC_COOKIE")
-    session_id = get_runtime_secret("POLYWEATHER_AMSC_SESSION_ID")
-    if session_id:
-        headers["sessionId"] = session_id
-        headers["app"] = "AMS"
-    elif cookie:
-        headers["Cookie"] = cookie
-    return headers
-
-
-def _check_amsc_awos_health(timeout: int = 8) -> dict[str, Any]:
-    import time as _time
-
-    from src.data_collection.amsc_awos_sources import _amsc_parse_wind_plate_payload
-
-    amsc_base = str(os.getenv("AMSC_AWOS_BASE_URL") or "").strip()
-    if not amsc_base:
-        return {"ok": False, "error": "not configured"}
-
-    credential_configured = bool(
-        get_runtime_secret("POLYWEATHER_AMSC_COOKIE")
-        or get_runtime_secret("POLYWEATHER_AMSC_SESSION_ID")
-    )
-    try:
-        t0 = _time.perf_counter()
-        response = _requests.get(
-            f"{amsc_base}?cccc=ZSPD",
-            timeout=timeout,
-            verify=False,
-            headers=_build_amsc_awos_headers(),
-        )
-        latency_ms = round((_time.perf_counter() - t0) * 1000)
-        try:
-            payload = response.json() if response.content else {}
-        except ValueError:
-            payload = {}
-        parsed = _amsc_parse_wind_plate_payload(
-            payload if isinstance(payload, dict) else {},
-            city_key="shanghai",
-            icao="ZSPD",
-        )
-        points = (
-            ((parsed or {}).get("runway_obs") or {}).get("point_temperatures")
-            if isinstance(parsed, dict)
-            else []
-        )
-        point_count = len(points or [])
-        ok = bool(response.ok and parsed and point_count > 0)
-        result: dict[str, Any] = {
-            "ok": ok,
-            "status": response.status_code,
-            "latency_ms": latency_ms,
-            "credential_configured": credential_configured,
-            "points": point_count,
-        }
-        if isinstance(parsed, dict):
-            result["sample_city"] = "shanghai"
-            result["observation_time_local"] = parsed.get("observation_time_local")
-        if not ok:
-            result["error"] = "empty_or_unauthorized_response"
-        return result
-    except Exception as exc:
-        return {
-            "ok": False,
-            "credential_configured": credential_configured,
-            "error": str(exc)[:100],
-        }
 
 
 # ── Source health helpers ─────────────────────────────────────────────
@@ -566,30 +486,6 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
     except Exception as e:
         results["singapore_mss"] = {"ok": False, "error": str(e)[:100]}
 
-    # CWA (Taiwan Central Weather Administration)
-    cwa_key = str(
-        _os.getenv("CWA_API_KEY")
-        or _os.getenv("CWA_OPEN_DATA_AUTH")
-        or _os.getenv("CWA_OPEN_DATA_API_KEY")
-        or ""
-    ).strip()
-    if cwa_key:
-        try:
-            t0 = _time.perf_counter()
-            r = _r.get(
-                f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001?Authorization={cwa_key}&limit=1",
-                timeout=timeout,
-            )
-            results["cwa"] = {
-                "ok": r.ok,
-                "status": r.status_code,
-                "latency_ms": round((_time.perf_counter() - t0) * 1000),
-            }
-        except Exception as e:
-            results["cwa"] = {"ok": False, "error": str(e)[:100]}
-    else:
-        results["cwa"] = {"ok": False, "error": "not configured"}
-
     # AMOS (Korea runway sensors)
     try:
         t0 = _time.perf_counter()
@@ -604,8 +500,6 @@ def get_ops_health_check(request: Request) -> dict[str, Any]:
     except Exception as e:
         results["amos"] = {"ok": False, "error": str(e)[:100]}
 
-    # AMSC AWOS (China mainland airports)
-    results["amsc_awos"] = _check_amsc_awos_health(timeout=timeout)
 
     # NOAA WRH (US settlement verification)
     try:

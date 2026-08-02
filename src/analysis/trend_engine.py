@@ -5,29 +5,39 @@ Extracted from bot_listener.py to provide a single source of truth
 for both Telegram bot and web dashboard.
 """
 
-import math
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple, Dict, Any
+
+from loguru import logger
 
 from src.analysis.deb_algorithm import (
     calculate_dynamic_weights,
     calculate_deb_prediction,
-    get_deb_accuracy,
     update_daily_record,
     _is_excluded_model_name,
 )
 from src.analysis.deb_hourly_consensus import build_deb_hourly_consensus_path
-from src.analysis.settlement_rounding import apply_city_settlement, is_exact_settlement_city
+from src.analysis.deb_probability import (
+    _build_deb_normal_probability_payload,
+    _load_deb_normal_stats,
+)
+from src.analysis.settlement_rounding import apply_city_settlement
 from src.data_collection.city_registry import CITY_REGISTRY
 from src.data_collection.city_risk_profiles import get_city_risk_profile
+from src.data_collection.multi_model_freshness import multi_model_forecasts_for_local_date
+
+# Fahrenheit cities (module-level to avoid local-import shadowing inside functions).
+_FAHRENHEIT_CITY_KEYS = {
+    str(c).strip().lower()
+    for c, m in (CITY_REGISTRY or {}).items()
+    if m.get("use_fahrenheit")
+}
 
 SETTLEMENT_SOURCE_LABELS = {
     "metar": "METAR",
     "hko": "HKO",
-    "cwa": "CWA",
     "noaa": "NOAA",
     "mgm": "MGM",
-    "wunderground": "Wunderground",
 }
 
 _CLOUD_RANK_LABELS = {
@@ -49,6 +59,49 @@ def _sf(v):
         return None
 
 
+def _weathernext2_probability_payload(
+    weather_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    source = weather_data.get("weathernext2")
+    if not isinstance(source, dict):
+        return None
+    raw_buckets = source.get("buckets")
+    if not isinstance(raw_buckets, list) or not raw_buckets:
+        return None
+
+    buckets = []
+    for bucket in raw_buckets:
+        if not isinstance(bucket, dict):
+            continue
+        probability = _sf(bucket.get("probability"))
+        if probability is None or probability <= 0:
+            continue
+        copied = dict(bucket)
+        copied["probability"] = round(probability, 3)
+        buckets.append(copied)
+    if not buckets:
+        return None
+
+    summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
+    mu = _sf(summary.get("median"))
+    if mu is None:
+        mu = _sf(summary.get("mean"))
+    if mu is None:
+        top_bucket = max(buckets, key=lambda item: _sf(item.get("probability")) or 0)
+        mu = _sf(top_bucket.get("value"))
+
+    return {
+        "engine": "weathernext2",
+        "mu": mu,
+        "probabilities": sorted(
+            buckets,
+            key=lambda item: _sf(item.get("probability")) or 0,
+            reverse=True,
+        )[:4],
+        "probabilities_all": buckets,
+    }
+
+
 def _median(values: List[float]) -> Optional[float]:
     if not values:
         return None
@@ -57,6 +110,116 @@ def _median(values: List[float]) -> Optional[float]:
     if len(sorted_values) % 2:
         return sorted_values[mid]
     return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+
+
+def _build_deb_ensemble_signal(
+    *,
+    deb_prediction: Optional[float],
+    ens_median: Optional[float],
+    ens_p10: Optional[float],
+    ens_p90: Optional[float],
+    temp_symbol: str,
+) -> Dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "stance": "unavailable",
+        "confidence_delta": 0.0,
+        "median": ens_median,
+        "p10": ens_p10,
+        "p90": ens_p90,
+        "spread": None,
+        "deb_distance": None,
+        "label_zh": "集合缺失",
+        "label_en": "No ensemble",
+        "reason_zh": "集合预报数据不完整，DEB 不做 ensemble 置信度校验。",
+        "reason_en": "Ensemble data is incomplete, so DEB confidence is not ensemble-checked.",
+    }
+    if (
+        deb_prediction is None
+        or ens_median is None
+        or ens_p10 is None
+        or ens_p90 is None
+    ):
+        return unavailable
+
+    low = min(ens_p10, ens_p90)
+    high = max(ens_p10, ens_p90)
+    spread = high - low
+    deb_distance = abs(deb_prediction - ens_median)
+    scale = 1.8 if "F" in str(temp_symbol).upper() else 1.0
+    narrow_spread = 1.5 * scale
+    wide_spread = 3.5 * scale
+    aligned_gap = 0.7 * scale
+    divergent_gap = 1.5 * scale
+
+    rounded_spread = round(spread, 1)
+    rounded_distance = round(deb_distance, 1)
+    unit = temp_symbol or "°"
+
+    if spread >= wide_spread or deb_distance >= max(divergent_gap, spread * 0.45):
+        return {
+            "available": True,
+            "stance": "caution",
+            "confidence_delta": -0.12,
+            "median": round(ens_median, 1),
+            "p10": round(low, 1),
+            "p90": round(high, 1),
+            "spread": rounded_spread,
+            "deb_distance": rounded_distance,
+            "label_zh": "集合分歧",
+            "label_en": "Ensemble caution",
+            "reason_zh": (
+                f"集合区间宽度 {rounded_spread}{unit}，DEB 距集合中位数 "
+                f"{rounded_distance}{unit}，该点位应降低置信度。"
+            ),
+            "reason_en": (
+                f"Ensemble spread is {rounded_spread}{unit}; DEB is "
+                f"{rounded_distance}{unit} from the ensemble median, so confidence is reduced."
+            ),
+        }
+
+    if spread <= narrow_spread and deb_distance <= aligned_gap:
+        return {
+            "available": True,
+            "stance": "supporting",
+            "confidence_delta": 0.08,
+            "median": round(ens_median, 1),
+            "p10": round(low, 1),
+            "p90": round(high, 1),
+            "spread": rounded_spread,
+            "deb_distance": rounded_distance,
+            "label_zh": "集合支撑",
+            "label_en": "Ensemble support",
+            "reason_zh": (
+                f"集合区间较窄，DEB 仅距集合中位数 {rounded_distance}{unit}，"
+                "可作为置信度加分。"
+            ),
+            "reason_en": (
+                f"Ensemble spread is tight and DEB is only {rounded_distance}{unit} "
+                "from the ensemble median, adding confidence."
+            ),
+        }
+
+    return {
+        "available": True,
+        "stance": "neutral",
+        "confidence_delta": 0.0,
+        "median": round(ens_median, 1),
+        "p10": round(low, 1),
+        "p90": round(high, 1),
+        "spread": rounded_spread,
+        "deb_distance": rounded_distance,
+        "label_zh": "集合中性",
+        "label_en": "Ensemble neutral",
+        "reason_zh": (
+            f"集合区间宽度 {rounded_spread}{unit}，DEB 距集合中位数 "
+            f"{rounded_distance}{unit}，暂不调整置信度。"
+        ),
+        "reason_en": (
+            f"Ensemble spread is {rounded_spread}{unit}; DEB is "
+            f"{rounded_distance}{unit} from the median, so confidence is unchanged."
+        ),
+    }
 
 
 def _peak_hours_from_hourly_values(
@@ -298,7 +461,6 @@ def analyze_weather_trend(
     insights: List[str] = []
     ai_features: List[str] = []
     mu = None
-    sorted_probs = []
     _deb_to_save = None
     settlement_source_label = _resolve_settlement_source_label(city_name)
 
@@ -351,13 +513,6 @@ def analyze_weather_trend(
         
     if weather_data.get("hko_forecast") is not None:
         current_forecasts["HKO(港天文)"] = _sf(weather_data.get("hko_forecast"))
-    if weather_data.get("cwa_forecast") is not None:
-        current_forecasts["CWA(台气象)"] = _sf(weather_data.get("cwa_forecast"))
-
-    mm_forecasts = weather_data.get("multi_model", {}).get("forecasts", {})
-    for m_name, m_val in mm_forecasts.items():
-        if m_val is not None and not _is_excluded_model_name(m_name):
-            current_forecasts[m_name] = _sf(m_val)
 
     forecast_highs = [h for h in current_forecasts.values() if h is not None]
     forecast_high = max(forecast_highs) if forecast_highs else None
@@ -435,11 +590,30 @@ def analyze_weather_trend(
                 current_forecasts["Open-Meteo"] = local_day_high
         except Exception:
             pass
-        forecast_highs = [h for h in current_forecasts.values() if h is not None]
-        forecast_high = max(forecast_highs) if forecast_highs else None
-        forecast_median = (
-            sorted(forecast_highs)[len(forecast_highs) // 2] if forecast_highs else None
+    mm_forecasts = multi_model_forecasts_for_local_date(
+        weather_data.get("multi_model", {}),
+        local_date_str,
+    )
+    for m_name, m_val in mm_forecasts.items():
+        if m_val is not None and not _is_excluded_model_name(m_name):
+            current_forecasts[m_name] = _sf(m_val)
+    weathernext2 = weather_data.get("weathernext2")
+    if isinstance(weathernext2, dict):
+        weathernext2_summary = (
+            weathernext2.get("summary")
+            if isinstance(weathernext2.get("summary"), dict)
+            else {}
         )
+        weathernext2_median = _sf(weathernext2_summary.get("median"))
+        if weathernext2_median is None:
+            weathernext2_median = _sf(weathernext2_summary.get("mean"))
+        if weathernext2_median is not None:
+            current_forecasts["WeatherNext 2"] = weathernext2_median
+    forecast_highs = [h for h in current_forecasts.values() if h is not None]
+    forecast_high = max(forecast_highs) if forecast_highs else None
+    forecast_median = (
+        sorted(forecast_highs)[len(forecast_highs) // 2] if forecast_highs else None
+    )
 
     # === DEB ===
     deb_prediction = None
@@ -636,9 +810,13 @@ def analyze_weather_trend(
     ens_p90 = _sf(ensemble.get("p90"))
     ens_median = _sf(ensemble.get("median"))
     ens_data = {"p10": ens_p10, "p90": ens_p90, "median": ens_median}
-
-    sigma = None
-    fallback_sigma = False
+    deb_ensemble_signal = _build_deb_ensemble_signal(
+        deb_prediction=deb_prediction,
+        ens_median=ens_median,
+        ens_p10=ens_p10,
+        ens_p90=ens_p90,
+        temp_symbol=temp_symbol,
+    )
 
     if ens_p10 is not None and ens_p90 is not None and ens_median is not None:
         msg1 = (
@@ -648,6 +826,14 @@ def analyze_weather_trend(
         if not is_cooling:
             insights.append(msg1)
         ai_features.append(msg1)
+        if deb_ensemble_signal.get("available") and deb_prediction is not None:
+            ensemble_deb_msg = (
+                f"🧬 {deb_ensemble_signal['label_zh']}: "
+                f"{deb_ensemble_signal['reason_zh']}"
+            )
+            ai_features.append(ensemble_deb_msg)
+            if deb_ensemble_signal.get("stance") == "caution":
+                insights.append(ensemble_deb_msg)
 
         if om_today is not None:
             if om_today > ens_p90 and (
@@ -665,67 +851,6 @@ def analyze_weather_trend(
                     f"更可能接近 {ens_median}{temp_symbol}。"
                 )
 
-        # === Sigma calculation ===
-        sigma = (ens_p90 - ens_p10) / 2.56
-        if sigma < 0.1:
-            sigma = 0.1
-
-        # MAE floor
-        if city_name:
-            acc = get_deb_accuracy(city_name)
-            if acc:
-                _, hist_mae, _, _ = acc
-                if hist_mae > sigma:
-                    sigma = hist_mae
-
-        # Shock Score
-        shock_score = 0.0
-        if len(recent_obs) >= 2:
-            oldest = recent_obs[-1]
-            newest = recent_obs[0]
-            wdir_old = _sf(oldest.get("wdir"))
-            wdir_new = _sf(newest.get("wdir"))
-            wspd_new = _sf(newest.get("wspd")) or 0
-            if wdir_old is not None and wdir_new is not None:
-                angle_diff = abs(wdir_new - wdir_old)
-                if angle_diff > 180:
-                    angle_diff = 360 - angle_diff
-                wind_weight = min(wspd_new / 15.0, 1.0)
-                shock_score += min(angle_diff / 90.0, 1.0) * wind_weight * 0.4
-            cloud_old = oldest.get("cloud_rank", 0)
-            cloud_new = newest.get("cloud_rank", 0)
-            shock_score += min(abs(cloud_new - cloud_old) / 3.0, 1.0) * 0.35
-            altim_old = _sf(oldest.get("altim"))
-            altim_new = _sf(newest.get("altim"))
-            if altim_old is not None and altim_new is not None:
-                shock_score += min(abs(altim_new - altim_old) / 4.0, 1.0) * 0.25
-
-        if shock_score > 0.05:
-            sigma *= 1 + 0.5 * shock_score
-
-        # Time decay
-        if local_hour_frac > last_peak_h:
-            sigma *= 0.3
-        elif first_peak_h <= local_hour_frac <= last_peak_h:
-            sigma *= 0.7
-    else:
-        # Fallback for sigma when ensemble is missing
-        fallback_sigma = True
-        if forecast_highs and len(forecast_highs) > 1:
-            sigma = max(0.6, (max(forecast_highs) - min(forecast_highs)) / 2.0)
-        else:
-            sigma = 1.0
-            
-        if city_name:
-            acc = get_deb_accuracy(city_name)
-            if acc and acc[1] > sigma:
-                sigma = acc[1]
-
-        if local_hour_frac > last_peak_h:
-            sigma *= 0.3
-        elif first_peak_h <= local_hour_frac <= last_peak_h:
-            sigma *= 0.7
-
     # === Dead Market ===
     is_dead_market = False
     if max_so_far is not None and cur_temp is not None:
@@ -737,9 +862,44 @@ def analyze_weather_trend(
     # === Probability Engine ===
     probabilities: List[Dict[str, Any]] = []
     probabilities_all: List[Dict[str, Any]] = []
+    probability_engine = None
     forecast_miss_deg = 0.0
+    weathernext2_probs = _weathernext2_probability_payload(weather_data)
+
+    # DEB normal distribution engine (primary): mu = deb_prediction + bias(lead),
+    # sigma from lead-stratified residual pool. Anchors on the DEB blend, not on
+    # an absolute climate baseline, so it works for future-dated Polymarket
+    # settlement days even when no historical observations exist for that date.
+    deb_normal_payload = None
+    if deb_prediction is not None:
+        is_f_city = str(city_name or "").strip().lower() in _FAHRENHEIT_CITY_KEYS
+        lead_raw = 1
+        try:
+            target_date_str = weather_data.get("target_date") or weather_data.get("date")
+            if target_date_str:
+                lead_raw = max(
+                    0,
+                    (
+                        datetime.strptime(str(target_date_str)[:10], "%Y-%m-%d").date()
+                        - datetime.now(timezone.utc).date()
+                    ).days,
+                )
+        except Exception:
+            lead_raw = 1
+        try:
+            deb_normal_payload = _build_deb_normal_probability_payload(
+                deb_prediction,
+                lead_raw,
+                temp_symbol,
+                _load_deb_normal_stats(),
+                is_fahrenheit_city=is_f_city,
+                city=city_name,
+            )
+        except Exception:
+            deb_normal_payload = None
 
     if is_dead_market:
+        probability_engine = "dead_market"
         settled_wu = apply_city_settlement(city_name, max_so_far) if max_so_far is not None else 0
         dead_msg = (
             f"🎲 <b>结算预测</b>：已锁定 {settled_wu}{temp_symbol} "
@@ -753,21 +913,67 @@ def analyze_weather_trend(
                 {"value": settled_wu, "range": f"[{settled_wu-0.5}~{settled_wu+0.5})", "probability": 1.0}
             ]
             probabilities_all = probabilities
-    elif (ens_p10 is not None and ens_p90 is not None) or fallback_sigma:
-        # Forecast miss magnitude
+    elif deb_normal_payload:
+        # DEB normal distribution is the primary probability engine.
         if max_so_far is not None and forecast_median is not None:
             forecast_miss_deg = round(forecast_median - max_so_far, 1)
+        probability_engine = "deb_normal"
+        mu = deb_normal_payload.get("mu") or mu
+        probabilities = deb_normal_payload.get("probabilities", [])
+        probabilities_all = deb_normal_payload.get("probabilities_all", probabilities)
+        prob_parts = []
+        for bucket in probabilities[:4]:
+            label = str(bucket.get("label") or bucket.get("range") or bucket.get("value") or "").strip()
+            probability = _sf(bucket.get("probability"))
+            if label and probability is not None:
+                prob_parts.append(f"{label} {probability * 100:.0f}%")
+        if prob_parts:
+            mu_label = f"μ={mu:.1f}" if mu is not None else "μ=--"
+            prob_str = " | ".join(prob_parts)
+            insights.append(f"🎲 <b>DEB 正态概率</b> ({mu_label})：{prob_str}")
+            ai_features.append(f"🎲 DEB 正态概率分布：{prob_str}")
+    elif weathernext2_probs:
+        # WeatherNext2 retained as fallback / reference.
+        if max_so_far is not None and forecast_median is not None:
+            forecast_miss_deg = round(forecast_median - max_so_far, 1)
+        probability_engine = "weathernext2"
+        mu = weathernext2_probs.get("mu") or mu
+        probabilities = weathernext2_probs.get("probabilities", [])
+        probabilities_all = weathernext2_probs.get("probabilities_all", probabilities)
+        prob_parts = []
+        for bucket in probabilities[:4]:
+            label = str(bucket.get("label") or bucket.get("range") or bucket.get("value") or "").strip()
+            probability = _sf(bucket.get("probability"))
+            if label and probability is not None:
+                prob_parts.append(f"{label} {probability * 100:.0f}%")
+        if prob_parts:
+            mu_label = f"μ={mu:.1f}" if mu is not None else "μ=--"
+            prob_str = " | ".join(prob_parts)
+            insights.append(f"🎲 <b>WeatherNext 2 概率</b> ({mu_label})：{prob_str}")
+            ai_features.append(f"🎲 WeatherNext 2 概率分布：{prob_str}")
 
-        fallback_center = forecast_median if forecast_median is not None else (forecast_high if forecast_high is not None else cur_temp)
+    # === Settlement center (mu) ===
+    # When a probability engine (weathernext2 / dead_market) already anchored mu,
+    # keep it. Otherwise blend the deterministic forecast median with the ensemble
+    # center and anchor on the observed max once the peak window is past or a bust.
+    if forecast_miss_deg == 0.0 and max_so_far is not None and forecast_median is not None:
+        forecast_miss_deg = round(forecast_median - max_so_far, 1)
+
+    if mu is None:
+        fallback_center = (
+            forecast_median
+            if forecast_median is not None
+            else (forecast_high if forecast_high is not None else cur_temp)
+        )
         center = ens_median if ens_median is not None else fallback_center
 
-        # Reality-anchored μ
         if (
             max_so_far is not None
             and forecast_median is not None
             and peak_status in ("past", "in_window")
             and max_so_far < forecast_median - 2.0
         ):
+            # Forecast bust: anchor mu on the observed max instead of the forecast.
             if is_cooling or peak_status == "past":
                 mu = max_so_far
             else:
@@ -781,34 +987,15 @@ def analyze_weather_trend(
             if max_so_far is not None and mu is not None and max_so_far > mu:
                 mu = max_so_far + (0.3 if not is_cooling else 0.0)
 
-        # Forecast miss severity for AI
-        if forecast_miss_deg > 2.0 and peak_status in ("past", "in_window"):
-            severity = "重" if forecast_miss_deg > 5.0 else ("中" if forecast_miss_deg > 3.0 else "轻")
-            min_fc = min((v for v in forecast_highs if v is not None), default=None)
-            _trend_dir = "降温" if is_cooling else ("停滞" if "停滞" in trend_desc else "升温")
-            ai_features.append(
-                f"🚨 预报崩盘 [{severity}级失准]: 最低预报 {min_fc}{temp_symbol} vs "
-                f"实测最高 {max_so_far}{temp_symbol}，偏差 {forecast_miss_deg}°。当前趋势: {_trend_dir}。"
-            )
-
-        # Probability (legacy Gaussian buckets)
-        probs_result = calculate_prob_distribution(
-            mu, sigma, max_so_far, temp_symbol, city_name
+    # === Forecast miss severity for AI ===
+    if forecast_miss_deg > 2.0 and peak_status in ("past", "in_window"):
+        severity = "重" if forecast_miss_deg > 5.0 else ("中" if forecast_miss_deg > 3.0 else "轻")
+        min_fc = min((v for v in forecast_highs if v is not None), default=None)
+        _trend_dir = "降温" if is_cooling else ("停滞" if "停滞" in trend_desc else "升温")
+        ai_features.append(
+            f"🚨 预报崩盘 [{severity}级失准]: 最低预报 {min_fc}{temp_symbol} vs "
+            f"实测最高 {max_so_far}{temp_symbol}，偏差 {forecast_miss_deg}°。当前趋势: {_trend_dir}。"
         )
-        mu = probs_result.get("mu", mu)
-        probabilities = probs_result.get("probabilities", [])
-        probabilities_all = probs_result.get("probabilities_all", probabilities)
-        sorted_probs = probs_result.get("sorted_probs", [])
-
-        if sorted_probs:
-            prob_parts = [
-                f"{int(t)}{temp_symbol} [{t - 0.5}~{t + 0.5}) {p * 100:.0f}%"
-                for t, p in sorted_probs[:4]
-            ]
-            if prob_parts:
-                prob_str = " | ".join(prob_parts)
-                insights.append(f"🎲 <b>结算概率</b> (μ={mu:.1f})：{prob_str}")
-                ai_features.append(f"🎲 数学概率分布：{prob_str}")
 
     # === Actual exceeds forecast ===
     if max_so_far is not None and forecast_high is not None:
@@ -828,40 +1015,23 @@ def analyze_weather_trend(
     # === Settlement boundary ===
     if max_so_far is not None:
         settled = apply_city_settlement(city_name, max_so_far)
-        from src.analysis.settlement_rounding import is_exact_settlement_city
-        is_floor = is_exact_settlement_city(str(city_name).lower())
-        
         fractional = max_so_far - int(max_so_far)
-        
-        if is_floor:
-            # For flooring cities like HK, boundary is at 1.0 (approaching next integer)
-            dist_to_next = 1.0 - fractional
-            if dist_to_next <= 0.3:
+        dist_to_boundary = abs(fractional - 0.5)
+        if dist_to_boundary <= 0.3:
+            if fractional < 0.5:
                 msg = (
                     f"⚖️ <b>结算边界</b>：当前最高 {max_so_far}{temp_symbol} → {settlement_source_label} 结算 "
-                    f"<b>{settled}{temp_symbol}</b>，但只差 <b>{dist_to_next:.1f}°</b> "
+                    f"<b>{settled}{temp_symbol}</b>，但只差 {0.5 - fractional:.1f}° "
                     f"就会进位到 {settled + 1}{temp_symbol}！"
                 )
-                insights.append(msg)
-                ai_features.append(msg)
-        else:
-            # Standard rounding boundary at 0.5
-            dist_to_boundary = abs(fractional - 0.5)
-            if dist_to_boundary <= 0.3:
-                if fractional < 0.5:
-                    msg = (
-                        f"⚖️ <b>结算边界</b>：当前最高 {max_so_far}{temp_symbol} → {settlement_source_label} 结算 "
-                        f"<b>{settled}{temp_symbol}</b>，但只差 {0.5 - fractional:.1f}° "
-                        f"就会进位到 {settled + 1}{temp_symbol}！"
-                    )
-                else:
-                    msg = (
-                        f"⚖️ <b>结算边界</b>：当前最高 {max_so_far}{temp_symbol} → {settlement_source_label} 结算 "
-                        f"<b>{settled}{temp_symbol}</b>，刚刚越过进位线，再降 "
-                        f"<b>{fractional - 0.5:.1f}°</b> 就会回落到 {settled - 1}{temp_symbol}。"
-                    )
-                insights.append(msg)
-                ai_features.append(msg)
+            else:
+                msg = (
+                    f"⚖️ <b>结算边界</b>：当前最高 {max_so_far}{temp_symbol} → {settlement_source_label} 结算 "
+                    f"<b>{settled}{temp_symbol}</b>，刚刚越过进位线，再降 "
+                    f"<b>{fractional - 0.5:.1f}°</b> 就会回落到 {settled - 1}{temp_symbol}。"
+                )
+            insights.append(msg)
+            ai_features.append(msg)
 
     # === Peak window AI hints ===
     if peak_hours:
@@ -958,10 +1128,11 @@ def analyze_weather_trend(
     # === Save daily record (with μ + prob snapshot) ===
     try:
         _prob_list = None
-        if sorted_probs:
+        if probabilities_all:
             _prob_list = [
-                {"value": int(t), "probability": round(p, 3)}
-                for t, p in sorted_probs[:4]
+                {"value": int(b.get("value")), "probability": round(float(b.get("probability") or 0), 3)}
+                for b in probabilities_all[:4]
+                if b.get("value") is not None and float(b.get("probability") or 0) > 0
             ]
         elif is_dead_market and max_so_far is not None:
             _prob_list = [{"value": apply_city_settlement(city_name, max_so_far), "probability": 1.0}]
@@ -974,9 +1145,10 @@ def analyze_weather_trend(
             deb_prediction=_deb_to_save,
             mu=mu,
             probabilities=_prob_list,
+            actual_is_final=False,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("update_daily_record failed city={} date={}: {}", city_name, local_date_str, exc)
 
     # === Build recent list for trend_info ===
     recent_list = []
@@ -988,7 +1160,7 @@ def analyze_weather_trend(
         "mu": mu,
         "probabilities": probabilities,
         "probabilities_all": probabilities_all or probabilities,
-        "probability_engine": "legacy",
+        "probability_engine": probability_engine,
         "trend_info": {
             "direction": trend_direction if 'trend_direction' in dir() else "unknown",
             "recent": recent_list,
@@ -1007,12 +1179,13 @@ def analyze_weather_trend(
         "deb_bias_samples": deb_bias_samples,
         "deb_weights": deb_weights,
         "deb_quality": deb_quality,
+        "deb_ensemble_signal": deb_ensemble_signal,
         "current_forecasts": current_forecasts,
         "ens_data": ens_data,
         "forecast_miss_deg": forecast_miss_deg,
         "max_so_far": max_so_far,
         "cur_temp": cur_temp,
-        "wu_settle": apply_city_settlement(city_name, max_so_far) if max_so_far is not None else None,
+        "settlement": apply_city_settlement(city_name, max_so_far) if max_so_far is not None else None,
         "dynamic_commentary": {
             "summary": dynamic_summary,
             "notes": dynamic_notes,
@@ -1020,65 +1193,3 @@ def analyze_weather_trend(
     }
     display_str = "\n".join(insights) if insights else ""
     return display_str, "\n".join(ai_features), structured
-
-
-def calculate_prob_distribution(
-    mu: float, sigma: float, max_so_far: Optional[float], temp_symbol: str, city_name: str = ""
-) -> Dict[str, Any]:
-    """
-    Generalized Gaussian probability distribution calculation.
-    """
-    if mu is None or sigma is None:
-        return {}
-
-    def _norm_cdf(x, m, s):
-        # 0.5 * (1 + erf( (x-m)/(s*sqrt(2)) ))
-        return 0.5 * (1 + math.erf((x - m) / (s * math.sqrt(2))))
-
-    min_possible_wu = apply_city_settlement(city_name, max_so_far) if max_so_far is not None else -999
-    probs = {}
-    
-    # Range: mu +/- 3 sigma or at least +/- 2 degrees
-    search_range = max(2, int(sigma * 2.5))
-    is_exact = is_exact_settlement_city(city_name)
-    target_mu = apply_city_settlement(city_name, mu)
-    if is_exact:
-        target_mu = int(math.floor(mu))
-    
-    for n in range(target_mu - search_range, target_mu + search_range + 1):
-        if n < min_possible_wu:
-            continue
-        if is_exact:
-            # 向下取整的概率区间为 [n, n + 1)
-            p = _norm_cdf(n + 1.0, mu, sigma) - _norm_cdf(n, mu, sigma)
-        else:
-            # 常规四舍五入的概率区间为 [n - 0.5, n + 0.5)
-            p = _norm_cdf(n + 0.5, mu, sigma) - _norm_cdf(n - 0.5, mu, sigma)
-            
-        if p > 0.01:
-            probs[n] = p
-
-    total_p = sum(probs.values())
-    sorted_probs = []
-    probabilities = []
-    probabilities_all = []
-    
-    if total_p > 0:
-        norm_probs = {k: v / total_p for k, v in probs.items()}
-        sorted_probs = sorted(norm_probs.items(), key=lambda x: x[1], reverse=True)
-        for t, p in sorted_probs:
-            rng_str = f"[{t}.0~{t+1}.0)" if is_exact else f"[{t-0.5}~{t+0.5})"
-            probabilities_all.append({
-                "value": int(t),
-                "range": rng_str,
-                "probability": round(p, 3)
-            })
-        probabilities = probabilities_all[:4]
-
-    return {
-        "mu": mu,
-        "sigma": sigma,
-        "probabilities": probabilities,
-        "probabilities_all": probabilities_all,
-        "sorted_probs": sorted_probs
-    }

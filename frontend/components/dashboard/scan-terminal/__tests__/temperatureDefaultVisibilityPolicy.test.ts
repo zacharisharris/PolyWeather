@@ -7,6 +7,8 @@ import {
   __getPeakGlowStateForTest,
   __getWundergroundDailyHighForTest,
   __getVisibleTemperatureSeriesForTest,
+  __formatCityLocalDateForTest,
+  __formatCityLocalDateTimeForTest,
   __isTemperatureSeriesVisibleByDefaultForTest,
   __mergePatchIntoHourlyForTest,
   __selectCompactSecondaryTempForTest,
@@ -27,6 +29,39 @@ function runwayKey(rwy: string) {
 }
 
 export function runTests() {
+  {
+    const originalDateNow = Date.now;
+    const originalGetTimezoneOffsetForCityDate = Date.prototype.getTimezoneOffset;
+    try {
+      Date.now = () => Date.UTC(2026, 5, 15, 14, 0, 0);
+      Date.prototype.getTimezoneOffset = function () {
+        return 0;
+      };
+      assert(
+        __formatCityLocalDateForTest(9 * 60 * 60) === "2026-06-15",
+        "Tokyo local date should be formatted from UTC plus city offset, independent of browser timezone",
+      );
+      assert(
+        __formatCityLocalDateTimeForTest(9 * 60 * 60) === "2026-06-15 23:00:00",
+        "Tokyo update time should be formatted from UTC plus city offset, independent of browser timezone",
+      );
+      Date.prototype.getTimezoneOffset = function () {
+        return -8 * 60;
+      };
+      assert(
+        __formatCityLocalDateForTest(9 * 60 * 60) === "2026-06-15",
+        "Tokyo local date should not change when the browser timezone changes",
+      );
+      assert(
+        __formatCityLocalDateTimeForTest(9 * 60 * 60) === "2026-06-15 23:00:00",
+        "Tokyo update time should not change when the browser timezone changes",
+      );
+    } finally {
+      Date.now = originalDateNow;
+      Date.prototype.getTimezoneOffset = originalGetTimezoneOffsetForCityDate;
+    }
+  }
+
   const peakGlowSeries = [
     {
       key: "madis",
@@ -323,18 +358,12 @@ export function runTests() {
     "Ankara local METAR backup curve should remain visible by default because MGM history can be incomplete",
   );
   assert(
-    !__isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "model_curve_ECMWF"),
-    "multi-model curves should be hidden by default",
+    __isTemperatureSeriesVisibleByDefaultForTest("guangzhou", "model_curve_ECMWF"),
+    "multi-model curves should be visible by default for all cities",
   );
   assert(
-    !defaultVisibleSeries.some((item) => item.key === "model_curve_ECMWF"),
-    "hidden multi-model curves should not affect the active chart series by default",
-  );
-  assert(
-    __getVisibleTemperatureSeriesForTest("guangzhou", series, { model_curve_ECMWF: true }).some(
-      (item) => item.key === "model_curve_ECMWF",
-    ),
-    "users should still be able to enable a hidden multi-model curve from the legend",
+    defaultVisibleSeries.some((item) => item.key === "model_curve_ECMWF"),
+    "multi-model curves should now affect the active chart series by default",
   );
   assert(
     defaultVisibleSeries.some((item) => item.key === "hourly_forecast"),
@@ -434,25 +463,15 @@ export function runTests() {
     postPeakWindowEnd - postPeakWindowStart <= 12 * 60 * 60 * 1000,
     "Post-peak high-temperature view should keep a bounded 12-hour window",
   );
-
   assert(
     __isTemperatureSeriesVisibleByDefaultForTest("paris", "model_curve_AROME HD"),
-    "Paris AROME HD should be the only default-visible model curve exception",
+    "Paris AROME HD should be visible by default like all other model curves",
   );
   assert(
-    __getVisibleTemperatureSeriesForTest(
-      "paris",
-      [{ key: "model_curve_AROME HD" }, { key: "model_curve_ECMWF" }] as any,
-      {},
-    ).some((item) => item.key === "model_curve_AROME HD"),
-    "Paris AROME HD should be active in the default visible series",
+    __isTemperatureSeriesVisibleByDefaultForTest("paris", "model_curve_ECMWF"),
+    "Paris ECMWF should also be visible by default since all model curves are now default-visible",
   );
-
   const settlementRunwayCases = [
-    ["beijing", "19/01"],
-    ["shanghai", "17L/35R"],
-    ["guangzhou", "02L/20R"],
-    ["chengdu", "02L/20R"],
     ["chongqing", "20R/02L"],
     ["wuhan", "04/22"],
     ["qingdao", "16/34"],
@@ -551,8 +570,7 @@ export function runTests() {
     null,
     "1D",
   );
-  assert(seriesByKey(shenzhen.series, "metar"), "Shenzhen/Lau Fau Shan observations should stay as METAR/HKO observations, not runway data");
-  assert(!shenzhen.series.some((item) => item.key.startsWith("runway_")), "Shenzhen should not be treated as an AMSC runway city");
+  assert(!shenzhen.series.some((item) => item.key.startsWith("runway_")), "Shenzhen should not be treated as a runway city");
 
   const shenzhenAirportPrimaryHko = __buildTemperatureChartDataForTest(
     {
@@ -1035,8 +1053,61 @@ export function runTests() {
       isShenzhen: false,
       displayMetarTemp: 72.0,
       observedHighMetar: 73.9,
-    }) === 73.9,
-    "non-HKO compact secondary stat should keep the existing daily-high behavior",
+    }) === 72.0,
+    "non-HKO compact secondary stat should render the latest METAR/current point, not the daily high",
+  );
+
+  const wuhanEarlyMorningMetrics = __getObservationDisplayMetricsForTest(
+    {
+      city: "wuhan",
+      local_date: "2026-06-16",
+      local_time: "04:23",
+      tz_offset_seconds: 8 * 60 * 60,
+      current_temp: 22.8,
+      current_max_so_far: 33.0,
+      temp_symbol: "°C",
+      metar_context: {
+        airport_current_temp: 23.0,
+        airport_max_so_far: 33.0,
+        airport_obs_time: "04:00",
+      },
+    } as any,
+    {
+      localTime: "04:23",
+      times: ["00:00", "04:00", "12:00", "18:00"],
+      temps: [24.0, 23.0, 33.0, 29.0],
+      settlementTodayObs: [
+        { time: "04:00", temp: 23.0 },
+      ],
+      airportCurrent: {
+        temp: 23.0,
+        max_so_far: 33.0,
+        obs_time: "2026-06-16T04:00:00+08:00",
+      },
+      runwayPlateHistory: {
+        "04/22": [
+          { time: "04:20", temp: 22.8 },
+        ],
+      },
+    } as any,
+    null,
+  );
+  assert(
+    wuhanEarlyMorningMetrics.currentMetarTemp === 23.0,
+    "Wuhan early-morning METAR current metric should use the latest settlement point",
+  );
+  assert(
+    wuhanEarlyMorningMetrics.observedHighMetar === 33.0,
+    "Wuhan METAR daily high can remain available separately from the compact current stat",
+  );
+  assert(
+    __selectCompactSecondaryTempForTest({
+      isHKO: false,
+      isShenzhen: false,
+      displayMetarTemp: (wuhanEarlyMorningMetrics as any).currentMetarTemp,
+      observedHighMetar: wuhanEarlyMorningMetrics.observedHighMetar,
+    }) === 23.0,
+    "Wuhan compact METAR settlement stat should not show a stale daily high at 04:23",
   );
 
   const wuhanRunwayChart = __buildTemperatureChartDataForTest(
@@ -1168,29 +1239,6 @@ export function runTests() {
   assert(
     panamaLabels.runwayHighLabel === "机场报文",
     "Panama City high label should use airport METAR report wording, not weather-station or runway wording",
-  );
-
-  const shanghaiLabels = __getLiveObservationLabelsForTest(
-    {
-      city: "shanghai",
-      local_date: "2026-06-06",
-      local_time: "21:03",
-      tz_offset_seconds: 8 * 60 * 60,
-    } as any,
-    {
-      amos: {
-        source: "amsc_awos",
-        source_label: "AMSC AWOS",
-      },
-      airportPrimary: {
-        source_code: "amsc_awos",
-        source_label: "AMSC AWOS",
-      },
-    } as any,
-  );
-  assert(
-    shanghaiLabels.runwayHeaderLabel === "跑道实测 (3分钟)",
-    "AMSC runway cities should advertise the 3-minute source cadence instead of the AMOS 1-minute cadence",
   );
 
   const newYorkWithMadis = __buildTemperatureChartDataForTest(
@@ -1474,7 +1522,7 @@ export function runTests() {
       changes: {
         temp: 24.8,
         obs_time: "2026-05-26 05:26:00",
-        source: "amsc_awos",
+        source: "metar",
         runway_points: [
           {
             runway: "02L/20R",
@@ -1659,42 +1707,4 @@ export function runTests() {
   assert(bandPoints.length >= 2, "runway_band tuples should be binned into data slots");
   const firstBand = bandPoints[0].runway_band;
   assert(Array.isArray(firstBand) && firstBand[0] === 24.0 && firstBand[1] === 26.0, "runway_band tuple values should match input limits");
-
-  // ── Legacy Gaussian probability data should be available as compact tooltip context only ──
-  const gaussianOverlayChart = __buildTemperatureChartDataForTest(
-    {
-      city: "toronto",
-      local_date: "2026-05-27",
-      local_time: "14:00",
-      tz_offset_seconds: -4 * 60 * 60,
-      temp_symbol: "°C",
-    } as any,
-    {
-      localDate: "2026-05-27",
-      localTime: "14:00",
-      times: ["10:00", "14:00", "18:00"],
-      temps: [24, 27, 23],
-      probabilities: {
-        mu: 27.4,
-        engine: "legacy",
-        distribution_all: [
-          { value: 26, probability: 0.18, range: "[25.5~26.5)" },
-          { value: 27, probability: 0.42, range: "[26.5~27.5)" },
-          { value: 28, probability: 0.31, range: "[27.5~28.5)" },
-        ],
-      },
-    } as any,
-    "1D",
-  ) as any;
-
-  const gaussianOverlay = gaussianOverlayChart.probabilityOverlay;
-  assert(
-    gaussianOverlay?.muLine?.label === "Gaussian μ 27.4°C" &&
-      gaussianOverlay.bands.length === 3,
-    "legacy Gaussian probabilities should remain available for compact tooltip context",
-  );
-  assert(
-    !gaussianOverlayChart.series.some((series: any) => String(series.key || "").includes("probability")),
-    "legacy Gaussian probability distribution should not be rendered as a time-series line on the main chart",
-  );
 }

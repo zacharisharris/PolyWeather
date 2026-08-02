@@ -18,13 +18,6 @@ _OBSERVATION_SOURCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "expected_grace_sec": 180,
         "stale_after_sec": 900,
     },
-    "amsc_awos": {
-        "label": "AMSC AWOS",
-        "native_update_interval_sec": 180,
-        "fresh_window_sec": 180,
-        "expected_grace_sec": 180,
-        "stale_after_sec": 900,
-    },
     "jma": {
         "label": "JMA",
         "native_update_interval_sec": 600,
@@ -48,13 +41,6 @@ _OBSERVATION_SOURCE_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     "hko": {
         "label": "HKO",
-        "native_update_interval_sec": 600,
-        "fresh_window_sec": 900,
-        "expected_grace_sec": 600,
-        "stale_after_sec": 2700,
-    },
-    "cwa": {
-        "label": "CWA",
         "native_update_interval_sec": 600,
         "fresh_window_sec": 900,
         "expected_grace_sec": 600,
@@ -116,13 +102,6 @@ _OBSERVATION_SOURCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "expected_grace_sec": 900,
         "stale_after_sec": 3600,
     },
-    "wunderground": {
-        "label": "METAR",
-        "native_update_interval_sec": 900,
-        "fresh_window_sec": 600,
-        "expected_grace_sec": 900,
-        "stale_after_sec": 3600,
-    },
 }
 
 
@@ -138,8 +117,6 @@ def canonical_observation_source_code(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
         return "metar"
-    if "amsc" in raw:
-        return "amsc_awos"
     if "amos" in raw:
         return "amos"
     if "jma" in raw:
@@ -150,8 +127,6 @@ def canonical_observation_source_code(value: Any) -> str:
         return "knmi"
     if "hko" in raw:
         return "hko"
-    if "cwa" in raw:
-        return "cwa"
     if "mgm" in raw:
         return "mgm"
     if "ims" in raw:
@@ -166,8 +141,6 @@ def canonical_observation_source_code(value: Any) -> str:
         return "singapore_mss"
     if "noaa" in raw:
         return "noaa"
-    if "wunderground" in raw or raw == "wu":
-        return "wunderground"
     return raw
 
 

@@ -34,6 +34,11 @@ export const opsApi = {
   async funnel(days = 30) {
     const raw = await opsFetch<{
       events?: Record<string, { total?: number; unique_users?: number; unique_actors?: number }>;
+      content_events?: Record<string, { total?: number; unique_users?: number; unique_actors?: number }>;
+      content?: {
+        paths?: { name: string; count: number }[];
+        cities?: { name: string; count: number }[];
+      };
       diagnostics?: Record<string, { total?: number; unique_actors?: number; by_reason?: { name: string; count: number }[] }>;
       rates?: Record<string, number>;
       traffic?: {
@@ -68,6 +73,8 @@ export const opsApi = {
       return { key, label: stepLabels[key] ?? key, count, uniqueActors, pct_of_prev };
     });
     return {
+      content: raw?.content ?? {},
+      contentEvents: raw?.content_events ?? {},
       diagnostics: raw?.diagnostics ?? {},
       rates: raw?.rates,
       steps,
@@ -108,6 +115,37 @@ export const opsApi = {
     const params = new URLSearchParams({ limit: String(limit) });
     if (reason) params.set("reason", reason);
     return opsFetch<Record<string, unknown>>(`/api/ops/payments/incidents?${params}`);
+  },
+  auditLog(limit = 100, action?: string) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (action) params.set("action", action);
+    return opsFetch<Record<string, unknown>>(`/api/ops/audit-log?${params}`);
+  },
+  refunds(limit = 50, status?: string) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (status) params.set("status", status);
+    return opsFetch<Record<string, unknown>>(`/api/ops/refunds?${params}`);
+  },
+  createRefund(input: {
+    reason: string;
+    intent_id?: string;
+    tx_hash?: string;
+    user_id?: string;
+    amount_usdc?: string;
+    note?: string;
+  }) {
+    return opsFetch<Record<string, unknown>>("/api/ops/refunds", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  },
+  updateRefund(caseId: string | number, input: { status: string; note?: string }) {
+    return opsFetch<Record<string, unknown>>(`/api/ops/refunds/${caseId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
   },
   feedback(limit = 100, status?: string) {
     const params = new URLSearchParams({ limit: String(limit) });
@@ -254,6 +292,29 @@ export const opsApi = {
         }>;
       };
     }>("/api/ops/training/accuracy");
+  },
+  marketOpportunities(params: Record<string, string | number | boolean | undefined> = {}) {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === "") return;
+      qs.set(key, String(value));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return opsFetch<{
+      generated_at?: string;
+      filters?: Record<string, unknown>;
+      summary?: {
+        opportunity_count?: number;
+        positive_edge_count?: number;
+        min_price?: number | null;
+        max_edge?: number | null;
+        quote_status?: string;
+        scanned_city_count?: number;
+        matched_event_count?: number;
+        error?: string | null;
+      };
+      rows?: Array<Record<string, unknown>>;
+    }>(`/api/ops/market-opportunities${suffix}`);
   },
   telegramAudit() {
     return opsFetch<{

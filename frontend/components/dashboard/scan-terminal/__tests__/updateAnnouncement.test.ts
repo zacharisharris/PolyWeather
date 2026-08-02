@@ -61,6 +61,53 @@ export function runTests() {
     "announcement component must use hardcoded zh/en release notes with an expiry time and no backend polling",
   );
   assert(
+    componentSource.includes("polyweather_update_announcement_seen_v1") &&
+      componentSource.includes("loadSeenAnnouncementIds") &&
+      componentSource.includes("saveSeenAnnouncementIds") &&
+      componentSource.includes("markAnnouncementAsSeen") &&
+      componentSource.includes("announcement.id") &&
+      componentSource.includes("scan-update-announcement-unread"),
+    "announcement component must persist seen announcement ids and render an unread indicator for unseen updates",
+  );
+  assert(
+    componentSource.includes("模型汇总表上线") &&
+      componentSource.includes("模型汇总") &&
+      componentSource.includes("当地时间") &&
+      componentSource.includes("DEB") &&
+      componentSource.includes("ECMWF") &&
+      componentSource.includes("ECMWF AIFS") &&
+      componentSource.includes("GFS") &&
+      componentSource.includes("ICON-EU") &&
+      componentSource.includes("JMA") &&
+      componentSource.includes("AROME HD") &&
+      componentSource.includes("HRRR") &&
+      componentSource.includes("NAM") &&
+      componentSource.includes("模型中位数") &&
+      componentSource.includes("分歧范围") &&
+      componentSource.includes("仅 DEB") &&
+      componentSource.includes("分歧较大"),
+    "terminal announcement should summarize the model summary table release in Chinese",
+  );
+  assert(
+    componentSource.includes("Model Summary table is live") &&
+      componentSource.includes("city-by-city table") &&
+      componentSource.includes("local time") &&
+      componentSource.includes("DEB") &&
+      componentSource.includes("ECMWF") &&
+      componentSource.includes("ECMWF AIFS") &&
+      componentSource.includes("GFS") &&
+      componentSource.includes("ICON-EU") &&
+      componentSource.includes("JMA") &&
+      componentSource.includes("AROME HD") &&
+      componentSource.includes("HRRR") &&
+      componentSource.includes("NAM") &&
+      componentSource.includes("Model median") &&
+      componentSource.includes("spread") &&
+      componentSource.includes("Only DEB") &&
+      componentSource.includes("Large spread"),
+    "terminal announcement should summarize the model summary table release in English",
+  );
+  assert(
     !middlewareSource.includes("/api/system/update-announcement"),
     "middleware should not keep a public announcement API entry after announcements move into frontend code",
   );

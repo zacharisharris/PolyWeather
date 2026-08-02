@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
 from src.analysis.settlement_rounding import apply_city_settlement
+from src.data_collection.city_time import get_city_utc_offset_seconds
 from loguru import logger
 from src.database.runtime_state import (
     DailyRecordRepository,
@@ -110,6 +111,7 @@ def _deb_model_priority(model_name: str) -> int:
         "hko": 45,
         "lgbm": 50,
         "openmeteo": 15,
+        "weathernext2": 30,
     }.get(normalized, 10)
 
 
@@ -780,16 +782,6 @@ def _reconcile_recent_noaa_actual_highs(city_name: str, lookback_days: int = 14)
         return {"ok": False, "reason": str(e), "updated": 0}
 
 
-def _reconcile_recent_wunderground_actual_highs(city_name: str, lookback_days: int = 14):
-    return {
-        "ok": True,
-        "reason": "wunderground_crawler_removed",
-        "updated": 0,
-        "scanned_dates": 0,
-        "source": "wunderground",
-    }
-
-
 def reconcile_recent_actual_highs(city_name: str, lookback_days: int = 7):
     """
     Reconcile recent `actual_high` values using the city's official settlement source.
@@ -803,8 +795,6 @@ def reconcile_recent_actual_highs(city_name: str, lookback_days: int = 7):
         return _reconcile_recent_hko_actual_highs(city_key, lookback_days=lookback_days)
     if settlement_source == "noaa":
         return _reconcile_recent_noaa_actual_highs(city_key, lookback_days=lookback_days)
-    if settlement_source == "wunderground":
-        return _reconcile_recent_wunderground_actual_highs(city_key, lookback_days=lookback_days)
     return _reconcile_recent_metar_actual_highs(city_key, lookback_days=lookback_days)
 
 
@@ -880,6 +870,7 @@ def update_daily_record(
     shadow_probabilities=None,
     calibration_summary=None,
     hourly_error=None,
+    actual_is_final=True,
 ):
     """
     保存/更新某城市某天的各个模型预报与最终实测值
@@ -986,7 +977,7 @@ def update_daily_record(
 
     next_mu = round(mu, 2) if mu is not None else None
     if (
-        old_actual == actual_high
+        old_actual == (actual_high if actual_is_final else old_actual)
         and old_forecasts == merged_forecasts
         and (deb_prediction is None or old_deb == deb_prediction)
         and (mu is None or old_mu == next_mu)
@@ -1007,15 +998,21 @@ def update_daily_record(
     ):
         return
 
-    # actual_high 应该是日内最高温，理论上不应下降；防止异常写入覆盖已确认高值
-    if old_actual is not None and actual_high is not None:
-        try:
-            actual_high = max(float(old_actual), float(actual_high))
-        except Exception:
-            pass
+    # Only final settlement truth may update actual_high. Intraday max_so_far is
+    # useful context, but treating it as settled truth poisons DEB training.
+    next_actual_high = old_actual
+    if actual_is_final:
+        next_actual_high = actual_high
+        # actual_high 应该是日内最高温，理论上不应下降；防止异常写入覆盖已确认高值
+        if old_actual is not None and actual_high is not None:
+            try:
+                next_actual_high = max(float(old_actual), float(actual_high))
+            except Exception:
+                pass
 
     existing["forecasts"] = merged_forecasts
-    existing["actual_high"] = actual_high
+    if actual_is_final or next_actual_high is not None:
+        existing["actual_high"] = next_actual_high
     if deb_prediction is not None:
         existing["deb_prediction"] = deb_prediction
     if mu is not None:
@@ -1031,16 +1028,16 @@ def update_daily_record(
     if next_hourly_error is not None:
         existing["hourly_error"] = next_hourly_error
 
-    if actual_high is not None:
+    if actual_is_final and next_actual_high is not None:
         try:
             _persist_truth_record(
                 city_name,
                 date_str,
-                float(actual_high),
+                float(next_actual_high),
                 updated_by="runtime:update_daily_record",
                 reason="update_daily_record",
                 source_payload={
-                    "actual_high": actual_high,
+                    "actual_high": next_actual_high,
                     "deb_prediction": deb_prediction,
                     "mu": next_mu,
                 },
@@ -1082,7 +1079,15 @@ def update_daily_record(
         save_history(history_file, data)
 
 
-def calculate_dynamic_weights(city_name, current_forecasts, lookback_days=7, decay_factor=0.85):
+def calculate_dynamic_weights(
+    city_name,
+    current_forecasts,
+    lookback_days=7,
+    decay_factor=0.85,
+    bias_penalty=0.5,
+    divergence_threshold=3.0,
+    history_data=None,
+):
     """
     计算动态权重融合 (Dynamic Ensemble Blending, DEB)
 
@@ -1097,6 +1102,9 @@ def calculate_dynamic_weights(city_name, current_forecasts, lookback_days=7, dec
         current_forecasts,
         lookback_days=lookback_days,
         decay_factor=decay_factor,
+        bias_penalty=bias_penalty,
+        divergence_threshold=divergence_threshold,
+        history_data=history_data,
     )
     forecasts = components.get("forecasts") or {}
     weights = components.get("weights") or {}
@@ -1111,13 +1119,19 @@ def calculate_dynamic_weight_components(
     current_forecasts,
     lookback_days=7,
     decay_factor=0.85,
+    bias_penalty=0.5,
+    divergence_threshold=3.0,
+    history_data=None,
 ):
     """Return DEB forecast representatives and model weights for reuse by hourly paths."""
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    history_file = os.path.join(project_root, "data", "daily_records.json")
-    data = load_history(history_file)
+    if history_data is not None:
+        data = history_data
+    else:
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        history_file = os.path.join(project_root, "data", "daily_records.json")
+        data = load_history(history_file)
 
     raw_forecast_count = len(
         [
@@ -1140,6 +1154,14 @@ def calculate_dynamic_weight_components(
             "dedup_note": dedup_note,
         }
 
+    # Heat-day weighting: historical days with actual_high >= 35C (95F for
+    # Fahrenheit cities) get their sample weight multiplied so MAE-based weights
+    # track hot-day performance, where the blend historically loses to single
+    # models (>=37C stratum: blend ranked 3/6 vs ECMWF 2.05C MAE).
+    _, city_meta = _resolve_city_history_context(city_name)
+    heat_threshold = 95.0 if bool((city_meta or {}).get("use_fahrenheit")) else 35.0
+    hot_days_used = 0
+
     def _equal_weight_result(note: str, days_used: int):
         weights = {model: 1.0 / len(forecasts) for model in forecasts}
         weights_info = f"{note} | {dedup_note}" if dedup_note else note
@@ -1159,10 +1181,15 @@ def calculate_dynamic_weight_components(
 
     city_data = data[city_name]
     sorted_dates = sorted(city_data.keys(), reverse=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    utc_offset = get_city_utc_offset_seconds(city_name)
+    today_str = (datetime.now(timezone.utc) + timedelta(seconds=utc_offset)).strftime("%Y-%m-%d")
     available_days = sum(
-        1 for d in sorted_dates
-        if d != today_str and city_data[d].get("actual_high") is not None
+        1
+        for d in sorted_dates
+        if d != today_str
+        and city_data[d].get("actual_high") is not None
+        and isinstance(city_data[d].get("forecasts"), dict)
+        and any(v is not None for v in city_data[d].get("forecasts", {}).values())
     )
 
     # ── 改进3: 自适应 lookback — 数据多的城市用更多历史 ──
@@ -1187,13 +1214,24 @@ def calculate_dynamic_weight_components(
         if actual is None:
             continue
 
+        usable_day = False
         for model in forecasts.keys():
+            matched_val = None
             if model in past_forecasts and past_forecasts[model] is not None:
+                matched_val = past_forecasts[model]
+            else:
+                model_family = _deb_model_family(model)
+                for hist_model, hist_val in past_forecasts.items():
+                    if hist_val is not None and _deb_model_family(hist_model) == model_family:
+                        matched_val = hist_val
+                        break
+            if matched_val is not None:
                 try:
-                    pv = float(past_forecasts[model])
+                    pv = float(matched_val)
                     av = float(actual)
                 except (TypeError, ValueError):
                     continue
+                usable_day = True
                 # Track signed error for bias
                 model_biases[model] += (pv - av)  # positive = model overpredicts
                 bias_samples[model] += 1
@@ -1206,8 +1244,14 @@ def calculate_dynamic_weight_components(
                 )
                 blended_error = _blend_mae(daily_error, h_err)
                 decay_weight = decay_factor ** days_used
+                if av >= heat_threshold:
+                    decay_weight *= 2.0
                 errors[model].append((blended_error, decay_weight))
 
+        if not usable_day:
+            continue
+        if av >= heat_threshold:
+            hot_days_used += 1
         days_used += 1
         if days_used >= effective_lookback:
             break
@@ -1234,7 +1278,7 @@ def calculate_dynamic_weight_components(
 
     # ── 改进1: 偏差惩罚进逆误差 ──
     inverse_errors = {
-        m: 1.0 / (mae + abs(model_biases[m]) * 0.5 + 0.1)
+        m: 1.0 / (mae + abs(model_biases[m]) * bias_penalty + 0.1)
         for m, mae in maes.items()
         if forecasts.get(m) is not None
     }
@@ -1257,8 +1301,8 @@ def calculate_dynamic_weight_components(
     forecast_values = [v for v in forecasts.values() if v is not None]
     if len(forecast_values) >= 2:
         spread = max(forecast_values) - min(forecast_values)
-        if spread > 3.0:
-            trust_factor = 3.0 / spread  # 分歧>3°F时才回退
+        if spread > divergence_threshold:
+            trust_factor = divergence_threshold / spread  # 分歧>阈值时才回退
             n = len(weights)
             weights = {
                 m: w * trust_factor + (1.0 - trust_factor) / n
@@ -1276,6 +1320,8 @@ def calculate_dynamic_weight_components(
         if abs(model_biases.get(m, 0.0)) >= 0.3:
             parts.append(f"bias:{model_biases[m]:+.1f}")
         weight_str_parts.append(",".join(parts) + ")")
+    if hot_days_used:
+        weight_str_parts.append(f"高温日加权x2({hot_days_used}天)")
     if dedup_note:
         weight_str_parts.append(dedup_note)
 
@@ -1284,8 +1330,10 @@ def calculate_dynamic_weight_components(
         "weights": weights,
         "forecasts": forecasts,
         "maes": maes,
+        "biases": model_biases,
         "weights_info": " | ".join(weight_str_parts),
         "days_used": days_used,
+        "hot_days_used": hot_days_used,
         "dedup_note": dedup_note,
     }
 
@@ -1363,6 +1411,29 @@ def _append_deb_quality_note(weights_info, quality):
     return note
 
 
+def _apply_ml_calibration_if_available(
+    city_name,
+    raw_prediction,
+    current_forecasts,
+):
+    """Apply the LightGBM residual calibrator when trained and enabled.
+
+    Returns None when the calibrator should not participate, so the legacy
+    guarded path runs unchanged. Import is deferred to avoid a module cycle
+    (deb_ml_calibration imports this module for walk-forward training).
+    """
+    try:
+        from src.analysis.deb_ml_calibration import apply_deb_ml_calibration
+
+        return apply_deb_ml_calibration(
+            city_name,
+            raw_prediction,
+            current_forecasts,
+        )
+    except Exception:
+        return None
+
+
 def calculate_deb_prediction(
     city_name,
     current_forecasts,
@@ -1383,6 +1454,7 @@ def calculate_deb_prediction(
     from src.analysis.deb_evaluation import (
         DEB_BUCKET_CALIBRATED_VERSION,
         DEB_GUARDED_CALIBRATED_VERSION,
+        DEB_ML_CALIBRATED_VERSION,
         DEB_RAW_VERSION,
         DEB_RECENT_BIAS_CORRECTED_VERSION,
         choose_guarded_deb_correction,
@@ -1417,6 +1489,37 @@ def calculate_deb_prediction(
 
     data = load_history(_get_history_file_path())
     history_rows = flatten_daily_records(data)
+    quality = _assess_recent_deb_quality(
+        city_name,
+        history_rows,
+        adjustment=0.0,
+        lookback_days=bias_lookback_days,
+    )
+
+    ml_corrected = _apply_ml_calibration_if_available(
+        city_name,
+        raw_prediction,
+        current_forecasts,
+    )
+    if ml_corrected is not None:
+        next_weights_info = (
+            f"{weights_info or 'DEB'} | "
+            f"lightgbm_calib({ml_corrected['adjustment']:+.1f},n={ml_corrected['samples']})"
+        )
+        next_weights_info = _append_deb_quality_note(next_weights_info, quality)
+        return {
+            "prediction": ml_corrected["prediction"],
+            "raw_prediction": ml_corrected["raw_prediction"],
+            "version": DEB_ML_CALIBRATED_VERSION,
+            "weights_info": next_weights_info,
+            "bias_adjustment": ml_corrected["adjustment"],
+            "bias_samples": ml_corrected["samples"],
+            "selected_version": DEB_ML_CALIBRATED_VERSION,
+            "guard_reason": "lightgbm_calibrated",
+            "ml_calibration": ml_corrected,
+            **quality,
+        }
+
     corrected = choose_guarded_deb_correction(
         history_rows,
         city_name,
@@ -1477,7 +1580,7 @@ def get_deb_accuracy(city_name):
     """
     计算 DEB 融合预测的历史准确率
     返回: (hit_rate, mae, total_days, details_str) 或 None
-    - hit_rate: WU 结算命中率 (DEB 四舍五入 == 实测四舍五入)
+    - hit_rate: 预测命中率 (round(DEB) == round(实测))
     - mae: 平均绝对误差
     - total_days: 有效天数
     - details_str: 格式化的展示字符串
@@ -1500,7 +1603,7 @@ def get_deb_accuracy(city_name):
 
     for date_str in sorted(city_data.keys()):
         if date_str == today_str:
-            continue  # 跳过今天，还没结算
+            continue
         record = city_data[date_str]
         deb_pred = record.get("deb_prediction")
         actual = record.get("actual_high")
@@ -1528,7 +1631,7 @@ def get_deb_accuracy(city_name):
     mae = sum(errors) / len(errors)
 
     details_str = (
-        f"过去{total}天 WU命中 {hits}/{total} ({hit_rate:.0f}%) | MAE: {mae:.1f}°"
+        f"过去{total}天 命中 {hits}/{total} ({hit_rate:.0f}%) | MAE: {mae:.1f}°"
     )
 
     return hit_rate, mae, total, details_str
@@ -1540,9 +1643,8 @@ def get_mu_accuracy(city_name):
     返回: (mu_mae, mu_hit_rate, brier_score, total_days, details_str) 或 None
 
     - mu_mae: μ 与实际最高温的平均绝对误差
-    - mu_hit_rate: round(μ) 命中 WU 结算值的比率
+    - mu_hit_rate: round(μ) 命中实测四舍五入值的比率
     - brier_score: 概率分布的 Brier Score (越低越好)
-      对于每天，取概率最高的预测值，计算 (p - outcome)² 的平均值
     - total_days: 有效统计天数
     """
     project_root = os.path.dirname(
@@ -1583,14 +1685,13 @@ def get_mu_accuracy(city_name):
         if apply_city_settlement(city_name, mu_val) == apply_city_settlement(city_name, actual):
             mu_hits += 1
 
-        # Brier Score from probability snapshot
         prob_snap = record.get("prob_snapshot", [])
         if prob_snap:
-            actual_wu = apply_city_settlement(city_name, actual)
+            actual_bucket = apply_city_settlement(city_name, actual)
             bs = 0.0
             for entry in prob_snap:
                 predicted_p = entry.get("p", 0)
-                outcome = 1.0 if entry.get("v") == actual_wu else 0.0
+                outcome = 1.0 if entry.get("v") == actual_bucket else 0.0
                 bs += (predicted_p - outcome) ** 2
             brier_scores.append(bs)
 
@@ -1603,7 +1704,7 @@ def get_mu_accuracy(city_name):
 
     details_parts = [
         f"μ准确率: 过去{total}天",
-        f"WU命中 {mu_hits}/{total} ({mu_hr:.0f}%)",
+        f"命中 {mu_hits}/{total} ({mu_hr:.0f}%)",
         f"MAE: {mu_mae:.1f}°",
     ]
     if avg_brier is not None:

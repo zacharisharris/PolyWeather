@@ -18,7 +18,6 @@ import { TemperatureTooltipContent } from "@/components/dashboard/scan-terminal/
 import {
   getTemperatureSeriesForRunwayDetailsMode,
   type EvidenceSeries,
-  type ProbabilityOverlay,
 } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
 type CityThreshold = {
@@ -34,14 +33,11 @@ function isFiniteChartValue(value: unknown) {
 
 function hasDrawableTemperatureChartContent({
   activeSeries,
-  probabilityOverlay,
   zoomedData,
 }: {
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
 }) {
-  void probabilityOverlay;
   return activeSeries.some((series) =>
     zoomedData.some((point, index) => {
       const value = point?.[series.key] ?? series.values[index];
@@ -50,22 +46,37 @@ function hasDrawableTemperatureChartContent({
   );
 }
 
+function isFallbackReferenceSeries(series: EvidenceSeries) {
+  return series.key === "current" && series.label === "Current reference";
+}
+
+function hasDrawablePrimaryTemperatureChartContent({
+  activeSeries,
+  zoomedData,
+}: {
+  activeSeries: EvidenceSeries[];
+  zoomedData: Array<Record<string, any>>;
+}) {
+  return hasDrawableTemperatureChartContent({
+    activeSeries: activeSeries.filter((series) => !isFallbackReferenceSeries(series)),
+    zoomedData,
+  });
+}
+
 function shouldKeepTemperatureChartLoading({
   row,
   isHourlyLoading,
   activeSeries,
-  probabilityOverlay,
   zoomedData,
 }: {
   row: ScanOpportunityRow | null;
   isHourlyLoading: boolean;
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
 }) {
   if (!row?.city) return false;
   if (!isHourlyLoading) return false;
-  return !hasDrawableTemperatureChartContent({ activeSeries, probabilityOverlay, zoomedData });
+  return !hasDrawablePrimaryTemperatureChartContent({ activeSeries, zoomedData });
 }
 
 function TemperatureChartSkeleton({ compact }: { compact: boolean }) {
@@ -89,7 +100,8 @@ function TemperatureChartSkeleton({ compact }: { compact: boolean }) {
             style={{ left: `${(index / Math.max(1, verticalLines - 1)) * 100}%` }}
           />
         ))}
-        <div className="absolute inset-x-10 top-1/3 h-10 rounded bg-slate-100/60" />
+        <div className="absolute inset-x-10 top-1/3 h-10 animate-pulse rounded bg-gradient-to-r from-slate-100 via-blue-100 to-slate-100" />
+        <div className="absolute inset-y-0 -left-1/3 w-1/3 animate-pulse bg-gradient-to-r from-transparent via-white/80 to-transparent" />
       </div>
     </div>
   );
@@ -103,7 +115,6 @@ function TemperatureChartCanvasComponent({
   cityThresholds,
   chartSeries,
   activeSeries,
-  probabilityOverlay,
   zoomedData,
   chartDomain,
   intDegreeTicks,
@@ -132,7 +143,6 @@ function TemperatureChartCanvasComponent({
   cityThresholds: CityThreshold[];
   chartSeries: EvidenceSeries[];
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
   chartDomain: [number, number] | ["auto", "auto"];
   intDegreeTicks: number[] | null;
@@ -212,22 +222,21 @@ function TemperatureChartCanvasComponent({
     collapsedRunwaySeries.length < chartSeries.length;
   const hasDrawableChartContent = hasDrawableTemperatureChartContent({
     activeSeries,
-    probabilityOverlay,
     zoomedData,
   });
   const shouldShowChartLoading = shouldKeepTemperatureChartLoading({
     row,
     isHourlyLoading,
     activeSeries,
-    probabilityOverlay,
     zoomedData,
   });
   const shouldRenderChart = canRenderChart && hasDrawableChartContent;
   const shouldShowEmptyState = Boolean(row?.city) && !isHourlyLoading && !hasDrawableChartContent;
-  const shouldShowBackgroundRefresh = isHourlyLoading && hasDrawableChartContent;
+  const shouldShowBackgroundRefresh = isHourlyLoading && hasDrawableChartContent && !shouldShowChartLoading;
   const shouldShowUnavailableState = Boolean(row?.city) && Boolean(detailError) && !isHourlyLoading && !hasDrawableChartContent;
   const shouldShowBackgroundError =
-    showDetailErrorBadge && Boolean(row?.city) && Boolean(detailError) && !isHourlyLoading && hasDrawableChartContent;
+    showDetailErrorBadge && Boolean(row?.city) && !isHourlyLoading && hasDrawableChartContent &&
+    (Boolean(detailError) || showingStaleDetail || detailStatus === "stale_cache");
   const backgroundErrorLabel =
     showingStaleDetail || detailStatus === "stale_cache"
       ? (isEn ? "Detail cache" : "详情缓存")
@@ -339,7 +348,6 @@ function TemperatureChartCanvasComponent({
                   payload={props.payload as ReadonlyArray<{ payload?: Record<string, any> }> | undefined}
                   data={zoomedData}
                   series={activeSeries}
-                  probabilityOverlay={probabilityOverlay}
                   tempSymbol={tempSymbol}
                   isEn={isEn}
                 />

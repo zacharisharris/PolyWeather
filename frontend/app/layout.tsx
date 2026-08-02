@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { RegisterSW } from "@/components/dashboard/RegisterSW";
+import { MicrosoftClarity } from "@/components/observability/MicrosoftClarity";
 import "./globals.css";
 
 const inter = Inter({
@@ -90,6 +91,7 @@ export default function RootLayout({
         </a>
         <main id="main-content">{children}</main>
         <RegisterSW />
+        <MicrosoftClarity />
       </body>
     </html>
   );

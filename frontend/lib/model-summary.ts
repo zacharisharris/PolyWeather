@@ -1,0 +1,525 @@
+import type { ScanOpportunityRow } from "@/lib/dashboard-types";
+import {
+  REGIONS,
+  getCityRegion,
+} from "@/components/dashboard/scan-terminal/continent-grouping";
+
+export const MODEL_SUMMARY_MODEL_COLUMNS = [
+  { key: "ECMWF", label: "ECMWF" },
+  { key: "ECMWF AIFS", label: "ECMWF AIFS" },
+  { key: "GFS", label: "GFS" },
+  { key: "ICON", label: "ICON" },
+  { key: "ICON-EU", label: "ICON-EU" },
+  { key: "GEM", label: "GEM" },
+  { key: "GDPS", label: "GDPS" },
+  { key: "JMA", label: "JMA" },
+  { key: "AROME HD", label: "AROME HD" },
+  { key: "HRRR", label: "HRRR" },
+  { key: "NAM", label: "NAM" },
+] as const;
+
+export type ModelSummaryColumnKey = (typeof MODEL_SUMMARY_MODEL_COLUMNS)[number]["key"];
+
+export type ModelSummaryProbabilityBucket = {
+  key: string;
+  label: string;
+  value: number;
+  lower: number;
+  upper: number;
+  probability: number;
+};
+
+export type ModelSummaryMarketMatch = {
+  key: string;
+  label: string;
+  modelProbability: number | null;
+  marketUrl: string | null;
+};
+
+export type ModelSummaryRow = {
+  cityKey: string;
+  cityName: string;
+  regionLabel: string;
+  regionLabelZh: string;
+  regionSort: number;
+  tempSymbol: string;
+  localTime: string;
+  timezoneOffsetSeconds: number | null;
+  debPrediction: number | null;
+  models: Record<ModelSummaryColumnKey, number | null>;
+  modelMedian: number | null;
+  modelSpread: number | null;
+  probabilityBuckets: ModelSummaryProbabilityBucket[];
+  probabilityBucketMap: Record<string, ModelSummaryProbabilityBucket>;
+  gaussianMu: number | null;
+  probabilityEngine: string | null;
+  topProbabilityBucketKey: string | null;
+  marketMatches: ModelSummaryMarketMatch[];
+  searchText: string;
+};
+
+export type ModelSummaryFilters = {
+  query: string;
+  debOnly: boolean;
+  wideSpreadOnly: boolean;
+};
+
+const WIDE_SPREAD_THRESHOLD = 2;
+
+function finiteNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function roundToOneDecimal(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function median(values: number[]) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return roundToOneDecimal(sorted[mid]);
+  return roundToOneDecimal((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+function spread(values: number[]) {
+  if (!values.length) return null;
+  return roundToOneDecimal(Math.max(...values) - Math.min(...values));
+}
+
+function probabilityFromBucket(bucket: Record<string, unknown>) {
+  const raw = finiteNumber(bucket.probability ?? bucket.model_probability);
+  if (raw == null) return null;
+  return raw > 1 ? raw / 100 : raw;
+}
+
+function formatBucketBound(value: number) {
+  return Number(value.toFixed(1)).toString();
+}
+
+function probabilityBucketKey(lower: number, upper: number, unit: string) {
+  return `${formatBucketBound(lower)}-${formatBucketBound(upper)}${unit || "°C"}`;
+}
+
+function probabilityBucketLabel(lower: number, upper: number, unit: string) {
+  return probabilityBucketKey(lower, upper, unit);
+}
+
+function isFahrenheitUnit(unit: string) {
+  return unit.toUpperCase().includes("F");
+}
+
+function marketOptionBucketForValue(value: number, unit: string) {
+  const settledValue = Math.round(value);
+  if (isFahrenheitUnit(unit)) {
+    const lowerValue = settledValue % 2 === 0 ? settledValue : settledValue - 1;
+    const upperValue = lowerValue + 1;
+    return {
+      key: `${lowerValue}-${upperValue}${unit || "°F"}`,
+      label: `${lowerValue}-${upperValue}${unit || "°F"}`,
+      lower: lowerValue - 0.5,
+      upper: upperValue + 0.5,
+    };
+  }
+  return {
+    key: `${settledValue}${unit || "°C"}`,
+    label: `${settledValue}${unit || "°C"}`,
+    lower: settledValue - 0.5,
+    upper: settledValue + 0.5,
+  };
+}
+
+function roundProbability(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function sourceMarketBuckets(row: ScanOpportunityRow) {
+  const marketRow = row as ScanOpportunityRow & {
+    all_buckets?: Array<Record<string, unknown>> | null;
+    top_buckets?: Array<Record<string, unknown>> | null;
+  };
+  return (
+    Array.isArray(marketRow.all_buckets) && marketRow.all_buckets.length
+      ? marketRow.all_buckets
+      : Array.isArray(marketRow.top_buckets)
+        ? marketRow.top_buckets
+        : []
+  ) as Array<Record<string, unknown>>;
+}
+
+function parseMarketOptionBucket(bucket: Record<string, unknown>, unit: string) {
+  const rawLabel = String(bucket.label || bucket.bucket || bucket.range || "").trim();
+  const labelNumbers = rawLabel.match(/-?\d+(?:\.\d+)?/g)?.map(Number) || [];
+  const lower = finiteNumber(bucket.lower);
+  const upper = finiteNumber(bucket.upper);
+  let lowerValue: number | null = null;
+  let upperValue: number | null = null;
+
+  if (/below/i.test(rawLabel) && labelNumbers.length) {
+    upperValue = Math.round(labelNumbers[0]);
+  } else if (/higher/i.test(rawLabel) && labelNumbers.length) {
+    lowerValue = Math.round(labelNumbers[0]);
+  } else if (labelNumbers.length >= 2) {
+    lowerValue = Math.round(labelNumbers[0]);
+    upperValue = Math.round(labelNumbers[1]);
+  } else if (labelNumbers.length === 1) {
+    lowerValue = Math.round(labelNumbers[0]);
+    upperValue = Math.round(labelNumbers[0]);
+  } else if (lower != null && upper != null && upper > lower) {
+    lowerValue = Math.ceil(lower);
+    upperValue = Math.ceil(upper) - 1;
+  } else {
+    const value = finiteNumber(bucket.value ?? bucket.temp ?? bucket.temperature);
+    if (value == null) return null;
+    const option = marketOptionBucketForValue(value, unit);
+    lowerValue = Math.ceil(option.lower);
+    upperValue = Math.ceil(option.upper) - 1;
+  }
+
+  const finiteLower = lowerValue ?? Number.NEGATIVE_INFINITY;
+  const finiteUpper = upperValue ?? Number.POSITIVE_INFINITY;
+  if (finiteUpper < finiteLower) return null;
+
+  let label = rawLabel;
+  if (!label || /\.5\b/.test(label)) {
+    const representative =
+      Number.isFinite(finiteLower) && Number.isFinite(finiteUpper)
+        ? (finiteLower + finiteUpper) / 2
+        : Number.isFinite(finiteLower)
+          ? finiteLower
+          : finiteUpper;
+    label = marketOptionBucketForValue(representative, unit).label;
+  }
+
+  return {
+    key: label,
+    label,
+    lowerValue: finiteLower,
+    upperValue: finiteUpper,
+    sortValue: Number.isFinite(finiteLower) ? finiteLower : finiteUpper,
+  };
+}
+
+function buildProbabilityBuckets(row: ScanOpportunityRow): ModelSummaryProbabilityBucket[] {
+  const rawBuckets = (
+    Array.isArray(row.distribution_full) && row.distribution_full.length
+      ? row.distribution_full
+      : Array.isArray(row.distribution_preview)
+        ? row.distribution_preview
+        : []
+  ) as Array<Record<string, unknown>>;
+  const unit = row.temp_symbol || "°C";
+  const rawProbabilityPoints = rawBuckets
+    .map((bucket) => {
+      const value = finiteNumber(bucket.value ?? bucket.temp ?? bucket.temperature);
+      const probability = probabilityFromBucket(bucket);
+      if (value == null || probability == null || probability <= 0) return null;
+      return { value, settledValue: Math.round(value), probability };
+    })
+    .filter((point): point is { value: number; settledValue: number; probability: number } => point !== null);
+
+  const marketBuckets = sourceMarketBuckets(row)
+    .map((bucket) => parseMarketOptionBucket(bucket, unit))
+    .filter((bucket): bucket is NonNullable<typeof bucket> => bucket !== null);
+
+  if (marketBuckets.length && rawProbabilityPoints.length) {
+    const fromMarketBuckets = marketBuckets
+      .map((bucket) => {
+        const matchingPoints = rawProbabilityPoints.filter(
+          (point) =>
+            point.settledValue >= bucket.lowerValue &&
+            point.settledValue <= bucket.upperValue,
+        );
+        const probability = matchingPoints.reduce((sum, point) => sum + point.probability, 0);
+        if (probability <= 0) return null;
+        const weightedValue = matchingPoints.reduce(
+          (sum, point) => sum + point.value * point.probability,
+          0,
+        );
+        return {
+          key: bucket.key,
+          label: bucket.label,
+          value: roundToOneDecimal(weightedValue / probability),
+          lower: bucket.sortValue,
+          upper: bucket.sortValue,
+          probability: roundProbability(probability),
+        };
+      })
+      .filter((bucket): bucket is ModelSummaryProbabilityBucket => bucket !== null)
+      .sort((a, b) => a.lower - b.lower || a.upper - b.upper);
+
+    if (fromMarketBuckets.length) return fromMarketBuckets;
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      label: string;
+      lower: number;
+      upper: number;
+      probability: number;
+      weightedValue: number;
+    }
+  >();
+
+  rawProbabilityPoints.forEach(({ value, probability }) => {
+    const option = marketOptionBucketForValue(value, unit);
+    const existing = grouped.get(option.key);
+    if (existing) {
+      existing.probability += probability;
+      existing.weightedValue += value * probability;
+      return;
+    }
+    grouped.set(option.key, {
+      label: option.label,
+      lower: option.lower,
+      upper: option.upper,
+      probability,
+      weightedValue: value * probability,
+    });
+  });
+
+  return [...grouped.entries()]
+    .map(([key, bucket]) => ({
+      key,
+      label: bucket.label,
+      value:
+        bucket.probability > 0
+          ? roundToOneDecimal(bucket.weightedValue / bucket.probability)
+          : roundToOneDecimal((bucket.lower + bucket.upper) / 2),
+      lower: bucket.lower,
+      upper: bucket.upper,
+      probability: roundProbability(bucket.probability),
+    }))
+    .sort((a, b) => a.lower - b.lower || a.upper - b.upper);
+}
+
+function weightedProbabilityMu(buckets: ModelSummaryProbabilityBucket[]) {
+  const totalProbability = buckets.reduce((sum, bucket) => sum + bucket.probability, 0);
+  if (totalProbability <= 0) return null;
+  const weightedValue = buckets.reduce(
+    (sum, bucket) => sum + bucket.value * bucket.probability,
+    0,
+  );
+  return roundToOneDecimal(weightedValue / totalProbability);
+}
+
+function normalizeProbability(value: unknown) {
+  const numericValue = finiteNumber(value);
+  if (numericValue == null) return null;
+  return numericValue > 1 ? numericValue / 100 : numericValue;
+}
+
+function marketBucketLabel(bucket: Record<string, unknown>, tempSymbol: string) {
+  const textLabel = String(bucket.label || bucket.bucket || bucket.range || "").trim();
+  if (textLabel) return textLabel;
+  const lower = finiteNumber(bucket.lower);
+  const upper = finiteNumber(bucket.upper);
+  if (lower != null && upper != null && upper > lower) {
+    return probabilityBucketLabel(lower, upper, String(bucket.unit || tempSymbol || "°C"));
+  }
+  const value = finiteNumber(bucket.value ?? bucket.temp ?? bucket.temperature);
+  return value == null ? "—" : `${formatBucketBound(value)}${bucket.unit || tempSymbol || "°C"}`;
+}
+
+function buildMarketMatches(row: ScanOpportunityRow): ModelSummaryMarketMatch[] {
+  const marketRow = row as ScanOpportunityRow & {
+    all_buckets?: Array<Record<string, unknown>> | null;
+    top_buckets?: Array<Record<string, unknown>> | null;
+  };
+  const sourceBuckets = (
+    Array.isArray(marketRow.all_buckets) && marketRow.all_buckets.length
+      ? marketRow.all_buckets
+      : Array.isArray(marketRow.top_buckets)
+        ? marketRow.top_buckets
+        : []
+  ) as Array<Record<string, unknown>>;
+  const tempSymbol = row.temp_symbol || "°C";
+
+  return sourceBuckets
+    .map((bucket, index) => {
+      const label = marketBucketLabel(bucket, tempSymbol);
+      const modelProbability = normalizeProbability(bucket.model_probability ?? bucket.probability);
+      return {
+        key: `${label}-${index}`,
+        label,
+        modelProbability,
+        marketUrl: typeof bucket.market_url === "string" ? bucket.market_url : null,
+      };
+    })
+    .sort((a, b) => {
+      return (b.modelProbability ?? -1) - (a.modelProbability ?? -1);
+    });
+}
+
+function normalizeCityKey(row: ScanOpportunityRow, index: number) {
+  const rawKey = row.city || row.city_display_name || row.display_name || `row-${index}`;
+  return String(rawKey).trim().toLowerCase();
+}
+
+function normalizeLocalTime(value: unknown) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return text;
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+}
+
+function resolveRegion(row: ScanOpportunityRow, isEn: boolean) {
+  const configuredRegionKey = getCityRegion(row);
+  const configuredRegion = configuredRegionKey
+    ? REGIONS.find((region) => region.key === configuredRegionKey)
+    : null;
+  if (configuredRegion) {
+    return {
+      label: isEn ? configuredRegion.labelEn : configuredRegion.labelZh,
+      labelEn: configuredRegion.labelEn,
+      labelZh: configuredRegion.labelZh,
+      sort: configuredRegion.sort,
+    };
+  }
+
+  const labelEn = row.trading_region_label || row.trading_region_label_zh || "—";
+  const labelZh = row.trading_region_label_zh || row.trading_region_label || "—";
+  return {
+    label: isEn ? labelEn : labelZh,
+    labelEn,
+    labelZh,
+    sort: finiteNumber(row.trading_region_sort) ?? 999,
+  };
+}
+
+export function formatModelSummaryTemp(value: number | null | undefined, symbol = "°C") {
+  const numericValue = finiteNumber(value);
+  if (numericValue == null) return "—";
+  return `${numericValue.toFixed(1)}${symbol || "°C"}`;
+}
+
+export function formatModelSummaryProbability(value: number | null | undefined) {
+  const numericValue = finiteNumber(value);
+  if (numericValue == null) return "—";
+  return `${Math.round((numericValue > 1 ? numericValue / 100 : numericValue) * 100)}%`;
+}
+
+export function formatModelSummaryLocalTime(
+  row: Pick<ModelSummaryRow, "localTime" | "timezoneOffsetSeconds">,
+  nowMs: number | null | undefined = Date.now(),
+) {
+  const offsetSeconds = finiteNumber(row.timezoneOffsetSeconds);
+  const timestampMs = finiteNumber(nowMs);
+  if (offsetSeconds == null || timestampMs == null) return row.localTime || "—";
+  const localDate = new Date(timestampMs + offsetSeconds * 1000);
+  const hours = String(localDate.getUTCHours()).padStart(2, "0");
+  const minutes = String(localDate.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+export function buildModelSummaryRows(
+  rows: ScanOpportunityRow[],
+  isEn: boolean,
+): ModelSummaryRow[] {
+  const byCity = new Map<string, ModelSummaryRow>();
+
+  rows.forEach((row, index) => {
+    const cityKey = normalizeCityKey(row, index);
+    if (byCity.has(cityKey)) return;
+
+    const cityName = row.city_display_name || row.display_name || row.city || "—";
+    const region = resolveRegion(row, isEn);
+    const rawModelSources = row.model_cluster_sources || {};
+    const models = MODEL_SUMMARY_MODEL_COLUMNS.reduce(
+      (acc, column) => {
+        acc[column.key] = finiteNumber(rawModelSources[column.key]);
+        return acc;
+      },
+      {} as Record<ModelSummaryColumnKey, number | null>,
+    );
+    const modelValues = MODEL_SUMMARY_MODEL_COLUMNS.map((column) => models[column.key]).filter(
+      (value): value is number => value != null,
+    );
+    const modelSearchText = MODEL_SUMMARY_MODEL_COLUMNS.filter(
+      (column) => models[column.key] != null,
+    )
+      .map((column) => column.label)
+      .join(" ");
+    const probabilityBuckets = buildProbabilityBuckets(row);
+    const probabilityBucketMap = Object.fromEntries(
+      probabilityBuckets.map((bucket) => [bucket.key, bucket]),
+    );
+    const topProbabilityBucket =
+      probabilityBuckets.length > 0
+        ? probabilityBuckets.reduce((best, bucket) =>
+            bucket.probability > best.probability ? bucket : best,
+          )
+        : null;
+    const probabilitySearchText = probabilityBuckets
+      .map((bucket) => `${bucket.label} ${formatModelSummaryProbability(bucket.probability)}`)
+      .join(" ");
+    const marketMatches = buildMarketMatches(row);
+    const marketSearchText = marketMatches
+      .map(
+        (match) =>
+          `${match.label} ${formatModelSummaryProbability(match.modelProbability)}`,
+      )
+      .join(" ");
+
+    byCity.set(cityKey, {
+      cityKey,
+      cityName,
+      regionLabel: region.label,
+      regionLabelZh: region.labelZh,
+      regionSort: region.sort,
+      tempSymbol: row.temp_symbol || "°C",
+      localTime: normalizeLocalTime(row.local_time),
+      timezoneOffsetSeconds: finiteNumber(row.tz_offset_seconds),
+      debPrediction: finiteNumber(row.deb_prediction),
+      models,
+      modelMedian: median(modelValues),
+      modelSpread: spread(modelValues),
+      probabilityBuckets,
+      probabilityBucketMap,
+      gaussianMu: weightedProbabilityMu(probabilityBuckets),
+      probabilityEngine: row.probability_engine || (probabilityBuckets.length ? "deb_normal" : null),
+      topProbabilityBucketKey: topProbabilityBucket?.key || null,
+      marketMatches,
+      searchText:
+        `${cityName} ${row.city || ""} ${region.labelEn} ${region.labelZh} ${modelSearchText} ${probabilitySearchText} ${marketSearchText}`.toLowerCase(),
+    });
+  });
+
+  return [...byCity.values()].sort((a, b) => {
+    if (a.regionSort !== b.regionSort) return a.regionSort - b.regionSort;
+    return a.cityName.localeCompare(b.cityName, isEn ? "en" : "zh-CN", {
+      sensitivity: "base",
+    });
+  });
+}
+
+export function filterModelSummaryRows(
+  rows: ModelSummaryRow[],
+  filters: ModelSummaryFilters,
+): ModelSummaryRow[] {
+  const query = filters.query.trim().toLowerCase();
+
+  return rows.filter((row) => {
+    if (query && !row.searchText.includes(query)) return false;
+    if (filters.debOnly && row.debPrediction == null) return false;
+    if (
+      filters.wideSpreadOnly &&
+      (row.modelSpread == null || row.modelSpread < WIDE_SPREAD_THRESHOLD)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function hasModelSummaryForecastData(rows: ModelSummaryRow[]) {
+  return rows.some((row) => {
+    if (row.debPrediction != null) return true;
+    return MODEL_SUMMARY_MODEL_COLUMNS.some((column) => row.models[column.key] != null);
+  });
+}

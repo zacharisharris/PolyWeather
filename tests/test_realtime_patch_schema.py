@@ -62,7 +62,7 @@ def test_v1_patch_payload_is_accepted_and_normalized():
         {
             "type": "city_observation_patch.v1",
             "city": "Taipei",
-            "source": "cwa",
+            "source": "noaa",
             "obs_time": "2026-05-26T07:01:00Z",
             "payload": {
                 "temp": 29.4,
@@ -79,7 +79,7 @@ def test_v1_patch_payload_is_accepted_and_normalized():
     )
 
     assert event["city"] == "taipei"
-    assert event["source"] == "cwa"
+    assert event["source"] == "noaa"
     assert event["payload"]["temp"] == 29.4
     assert event["payload"]["max_so_far"] == 30.1
     assert event["payload"]["signed_gap"] == 0.6
@@ -139,21 +139,6 @@ def test_patch_records_received_time_and_latency_for_late_runway_points(monkeypa
     assert event["payload"]["received_at_utc"] == "2026-06-06T13:01:04Z"
     assert event["payload"]["latency_sec"] == 124
 
-
-def test_amsc_patch_uses_three_minute_source_cadence():
-    event = normalize_observation_patch(
-        {
-            "city": "Shanghai",
-            "changes": {
-                "temp": 22.4,
-                "obs_time": "2026-06-06T13:01:00Z",
-                "source": "amsc_awos",
-            },
-        }
-    )
-
-    assert event["source_cadence_sec"] == 180
-    assert event["payload"]["source_cadence_sec"] == 180
 
 
 def test_invalid_patch_without_city_or_observation_data_is_rejected():

@@ -9,11 +9,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Cloud,
   Crown,
   GraduationCap,
   Menu,
   MessageSquare,
+  Scale,
   Search,
+  Table2,
   UserRound,
   Users,
 } from "lucide-react";
@@ -48,6 +51,9 @@ import { scanRootClass } from "@/components/dashboard/scan-root-styles";
 import { useRelativeTime } from "@/hooks/useRelativeTime";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { UsageGuideDashboard } from "@/components/dashboard/scan-terminal/UsageGuideDashboard";
+import { ModelSummaryDashboard } from "@/components/dashboard/scan-terminal/ModelSummaryDashboard";
+import { ArbitrageDashboard } from "@/components/dashboard/scan-terminal/ArbitrageDashboard";
+import { WeatherNext2Dashboard } from "@/components/dashboard/scan-terminal/WeatherNext2Dashboard";
 import {
   LiveTemperatureThresholdChart,
   clearCityDetailCache,
@@ -99,7 +105,10 @@ const TrainingDashboard = dynamic(
 const ONLINE_USERS_REFRESH_MS = 5 * 60_000;
 const TERMINAL_NAV_ITEMS = [
   { key: "thresholds", Icon: Activity, labelEn: "Decision", labelZh: "天气决策" },
+  { key: "modelSummary", Icon: Table2, labelEn: "Model Summary", labelZh: "模型汇总" },
+  { key: "weathernext2", Icon: Cloud, labelEn: "WeatherNext 2", labelZh: "WeatherNext 2" },
   { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
+  { key: "arbitrage", Icon: Scale, labelEn: "Arbitrage", labelZh: "套利对比" },
   { key: "guide", Icon: BookOpenCheck, labelEn: "Guide", labelZh: "使用指南" },
 ] as const;
 const AUTH_PROFILE_REQUEST_TIMEOUT_MS = 4500;
@@ -137,6 +146,14 @@ function createLocalAccess(): ProAccessState {
     points: 999_999,
     error: null,
   };
+}
+
+function hasTerminalForecastRows(rows: ScanOpportunityRow[]) {
+  return rows.some((row) => {
+    if (row.deb_prediction != null) return true;
+    const sources = row.model_cluster_sources;
+    return Boolean(sources && Object.keys(sources).length > 0);
+  });
 }
 
 function isFutureAccessExpiry(value: string | null | undefined, now = Date.now()) {
@@ -499,6 +516,64 @@ function EmptySlotCard({
   );
 }
 
+function LoadingSlotCard({
+  city,
+  isActive,
+  isEn,
+  onSelectSlot,
+}: {
+  city: string;
+  isActive: boolean;
+  isEn: boolean;
+  onSelectSlot: () => void;
+}) {
+  const cityLabel = city
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || city;
+
+  return (
+    <div
+      onClick={onSelectSlot}
+      className={clsx(
+        "relative flex h-full min-h-0 flex-col overflow-hidden rounded-[4px] border bg-white cursor-default",
+        isActive ? "border-blue-500 ring-2 ring-blue-500/20 shadow-md z-10" : "border-[#d2d9e2]",
+      )}
+    >
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] font-bold text-slate-600">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+          <span className="truncate">{cityLabel}</span>
+          <span className="text-slate-300">·</span>
+          <span className="text-slate-400">{isEn ? "Loading chart" : "加载图表"}</span>
+        </div>
+        <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-200 border-t-blue-500" />
+      </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-white">
+        <div className="absolute inset-x-3 bottom-7 top-5 rounded-sm border border-slate-100">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <span
+              key={`h-${index}`}
+              className="absolute left-0 right-0 border-t border-dashed border-sky-100"
+              style={{ top: `${(index / 5) * 100}%` }}
+            />
+          ))}
+          {Array.from({ length: 7 }).map((_, index) => (
+            <span
+              key={`v-${index}`}
+              className="absolute bottom-0 top-0 border-l border-dashed border-sky-100"
+              style={{ left: `${(index / 6) * 100}%` }}
+            />
+          ))}
+          <div className="absolute left-8 right-8 top-1/3 h-10 animate-pulse rounded bg-gradient-to-r from-slate-100 via-blue-100 to-slate-100" />
+          <div className="absolute inset-y-0 -left-1/3 w-1/3 animate-[pulse_1.2s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-white/80 to-transparent" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const TerminalSidebar = memo(function TerminalSidebar({
   activeNavKey,
   isEn,
@@ -690,6 +765,28 @@ function PolyWeatherTerminal({
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
   const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft | null>(null);
   const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
+  const { terminalData: modelSummaryTerminalData } = useScanTerminalQuery({
+    cacheScope: "model-summary",
+    isPro: activeNavKey === "modelSummary",
+    modelSummary: true,
+    proAccessLoading: false,
+    terminalActivationRefreshKey,
+    timezoneOffsetSeconds: null,
+    tradingRegion: "all",
+  });
+  const modelSummaryRows = useMemo(
+    () =>
+      sortRowsByUserTime(
+        modelSummaryTerminalData?.rows?.length
+          ? modelSummaryTerminalData.rows
+          : hasTerminalForecastRows(rows)
+            ? rows
+            : [],
+      ),
+    [modelSummaryTerminalData?.rows, rows],
+  );
+  const modelSummaryGeneratedText =
+    useRelativeTime(modelSummaryTerminalData?.generated_at ?? null) || generatedText;
   const trialExpiryMs = Date.parse(String(trialSubscriptionExpiresAt || ""));
   const trialHoursLeft = Number.isFinite(trialExpiryMs)
     ? Math.max(0, Math.ceil((trialExpiryMs - Date.now()) / 3_600_000))
@@ -716,6 +813,20 @@ function PolyWeatherTerminal({
     if (activeNavKey !== "thresholds" || previousActiveNavKey === "thresholds") return;
     onTerminalActivated();
   }, [activeNavKey, onTerminalActivated]);
+
+  const wn2StaleRef = useRef(false);
+  useEffect(() => {
+    if (activeNavKey !== "weathernext2") {
+      wn2StaleRef.current = false;
+      return;
+    }
+    if (wn2StaleRef.current) return;
+    const hasWn2 = rows.some((r) => r.weathernext2?.summary?.median != null);
+    if (!hasWn2 && !refreshing) {
+      wn2StaleRef.current = true;
+      onRefresh();
+    }
+  }, [activeNavKey, rows, onRefresh, refreshing]);
 
   useEffect(() => {
     const fetchOnline = () => {
@@ -1064,6 +1175,16 @@ function PolyWeatherTerminal({
         <main className="min-h-0 flex-1 overflow-hidden flex flex-col p-2 bg-[#eef2f6]">
           {activeNavKey === "training" ? (
             <TrainingDashboard isEn={isEn} />
+          ) : activeNavKey === "modelSummary" ? (
+            <ModelSummaryDashboard
+              rows={modelSummaryRows}
+              isEn={isEn}
+              generatedText={modelSummaryGeneratedText}
+            />
+          ) : activeNavKey === "weathernext2" ? (
+            <WeatherNext2Dashboard rows={rows} isEn={isEn} />
+          ) : activeNavKey === "arbitrage" ? (
+            <ArbitrageDashboard isEn={isEn} />
           ) : activeNavKey === "guide" ? (
             <UsageGuideDashboard isEn={isEn} />
           ) : (
@@ -1186,6 +1307,19 @@ function PolyWeatherTerminal({
                               (r) => String(r.city || "").toLowerCase() === cityInSlot
                             ) || null
                           : null;
+                        const isSavedSlotLoading = Boolean(cityInSlot && !rowForSlot && refreshing);
+
+                        if (isSavedSlotLoading && cityInSlot) {
+                          return (
+                            <LoadingSlotCard
+                              key={slotIndex}
+                              city={cityInSlot}
+                              isActive={isSlotActive}
+                              isEn={isEn}
+                              onSelectSlot={() => setActiveSlotIndex(slotIndex)}
+                            />
+                          );
+                        }
 
                         if (!cityInSlot || !rowForSlot) {
                           return (

@@ -36,6 +36,7 @@ from src.data_collection.country_networks import build_country_network_snapshot
 from src.data_collection.city_registry import ALIASES, CITY_REGISTRY
 from src.data_collection.city_time import get_city_utc_offset_seconds
 from src.data_collection.forecast_source_bundle import ensure_multi_model_hourly_payload
+from src.data_collection.multi_model_freshness import multi_model_forecasts_for_local_date
 from src.database.runtime_state import IntradayPathSnapshotRepository
 from web.services.city_payloads import (
     build_city_chart_detail_payload as _city_chart_payload_detail,
@@ -79,25 +80,6 @@ HIGH_FREQ_AIRPORT_ANALYSIS_CITIES = {
     "wuhan",
 }
 
-AMSC_SETTLEMENT_RUNWAY_PAIRS: Dict[str, tuple[str, str]] = {
-    "shanghai": ("17L", "35R"),
-    "chengdu": ("02L", "20R"),
-    "chongqing": ("20R", "02L"),
-    "guangzhou": ("02L", "20R"),
-    "wuhan": ("04", "22"),
-    "beijing": ("19", "01"),
-    "qingdao": ("16", "34"),
-}
-
-AMSC_SETTLEMENT_RUNWAY_TARGETS: Dict[str, str] = {
-    "shanghai": "35R",
-    "chengdu": "02L",
-    "chongqing": "02L",
-    "guangzhou": "02L",
-    "wuhan": "04",
-    "beijing": "01",
-    "qingdao": "34",
-}
 
 
 def _should_build_country_network_snapshot(
@@ -137,50 +119,10 @@ def _mgm_hourly_high(mgm: Dict[str, Any]) -> Optional[float]:
     return max(values) if values else None
 
 
-def _normalize_runway_label(value: Any) -> str:
-    return re.sub(r"[^0-9A-Z]+", "", str(value or "").strip().upper())
 
-
-def _split_runway_pair_label(value: Any) -> tuple[str, str]:
-    parts = [_normalize_runway_label(part) for part in str(value or "").split("/") if part.strip()]
-    if len(parts) >= 2:
-        return parts[0], parts[1]
-    runway = _normalize_runway_label(value)
-    return runway, runway
-
-
-def _runway_pair_matches(left: tuple[str, str], right: tuple[str, str]) -> bool:
-    return tuple(sorted(left)) == tuple(sorted(right))
-
-
-def _settlement_runway_endpoint_temp(city: str, row: Dict[str, Any]) -> Optional[float]:
-    city_key = (city or "").strip().lower()
-    configured_pair = AMSC_SETTLEMENT_RUNWAY_PAIRS.get(city_key)
-    target = _normalize_runway_label(AMSC_SETTLEMENT_RUNWAY_TARGETS.get(city_key))
-    if not configured_pair or not target:
-        return None
-
-    pair = _split_runway_pair_label(row.get("runway"))
-    configured = (
-        _normalize_runway_label(configured_pair[0]),
-        _normalize_runway_label(configured_pair[1]),
-    )
-    if not _runway_pair_matches(pair, configured):
-        return None
-
-    tdz_temp = _sf(row.get("tdz_temp"))
-    end_temp = _sf(row.get("end_temp"))
-    if target == pair[0]:
-        return tdz_temp if tdz_temp is not None else end_temp
-    if target == pair[1]:
-        return end_temp if end_temp is not None else tdz_temp
-    return None
 
 
 def _runway_history_temp_for_city(city: str, row: Dict[str, Any]) -> Optional[float]:
-    endpoint_temp = _settlement_runway_endpoint_temp(city, row)
-    if endpoint_temp is not None:
-        return endpoint_temp
     target_runway_max = _sf(row.get("target_runway_max"))
     if target_runway_max is not None:
         return target_runway_max
@@ -531,7 +473,6 @@ def _analyze(
     taf = raw.get("taf", {})
     mgm = raw.get("mgm") or {}
     settlement_current = raw.get("settlement_current") or {}
-    wunderground_current = raw.get("wunderground_current") or {}
     ens_raw = raw.get("ensemble", {})
     mm = raw.get("multi_model", {})
     if not isinstance(om, dict):
@@ -542,8 +483,6 @@ def _analyze(
         mgm = {}
     if not isinstance(settlement_current, dict):
         settlement_current = {}
-    if not isinstance(wunderground_current, dict):
-        wunderground_current = {}
     if not isinstance(ens_raw, dict):
         ens_raw = {}
     if not isinstance(mm, dict):
@@ -611,7 +550,7 @@ def _analyze(
     if amos_data:
         logger.info("AMOS _analyze: found amos data for city={} temp_c={} source={}",
                     city, amos_data.get("temp_c"), amos_data.get("source"))
-    use_settlement_current = settlement_source in {"hko", "cwa", "noaa", "wunderground"} and bool(sc_cur)
+    use_settlement_current = settlement_source in {"hko", "noaa"} and bool(sc_cur)
     live_mc = mc if metar_current_is_today else {}
     primary_current = sc_cur if use_settlement_current else live_mc
     current_source = settlement_source
@@ -634,7 +573,7 @@ def _analyze(
         cur_temp = _sf(live_mc.get("temp"))
         if cur_temp is not None and not _is_plausible_city_temp(city, cur_temp, sym):
             cur_temp = None
-    # Official settlement station: e.g. CWA for Taipei, HKO for Hong Kong
+    # Official settlement station: e.g. HKO for Hong Kong
     if cur_temp is None:
         cur_temp = _sf((settlement_current.get("current") or {}).get("temp"))
         if cur_temp is not None:
@@ -682,8 +621,8 @@ def _analyze(
         max_temp_time = None
 
     raw_settlement_max = max_so_far
-    wu_settle = apply_city_settlement(city.lower(), raw_settlement_max) if raw_settlement_max is not None else None
-    display_settlement_max = wu_settle if settlement_source == "wunderground" and wu_settle is not None else raw_settlement_max
+    settle = apply_city_settlement(city.lower(), raw_settlement_max) if raw_settlement_max is not None else None
+    display_settlement_max = settle if settle is not None else raw_settlement_max
 
     # Observation time → local
     obs_time_str = ""
@@ -894,7 +833,7 @@ def _analyze(
     current_forecasts: Dict[str, float] = {}
     if om_today is not None:
         current_forecasts["Open-Meteo"] = om_today
-    for m, v in mm.get("forecasts", {}).items():
+    for m, v in multi_model_forecasts_for_local_date(mm, local_date_str).items():
         if v is not None and not _is_excluded_model_name(m):
             temp_val = _sf(v)
             if temp_val is not None:
@@ -1069,12 +1008,13 @@ def _analyze(
     # ── 10. Shared analysis (probability, trend, AI) via trend_engine ──
     # This single call replaces the duplicate probability engine, dead market
     # detection, forecast bust grading, and AI context building.
-    from src.analysis.trend_engine import analyze_weather_trend as _trend_analyze, calculate_prob_distribution
+    from src.analysis.trend_engine import analyze_weather_trend as _trend_analyze
 
     probabilities = []
     probabilities_all = []
     mu = None
     dynamic_commentary = {"summary": "", "notes": []}
+    deb_ensemble_signal = {}
     try:
         _, _ai_context, sd = _trend_analyze(raw, sym, city)
 
@@ -1082,6 +1022,7 @@ def _analyze(
         probabilities = sd.get("probabilities", [])
         probabilities_all = sd.get("probabilities_all", probabilities)
         dynamic_commentary = sd.get("dynamic_commentary") or dynamic_commentary
+        deb_ensemble_signal = sd.get("deb_ensemble_signal") or {}
         trend_info["is_dead_market"] = sd.get("trend_info", {}).get("is_dead_market", False)
         trend_info["direction"] = sd.get("trend_info", {}).get("direction", trend_info.get("direction", "unknown"))
         trend_info["is_cooling"] = sd.get("trend_info", {}).get("is_cooling", False)
@@ -1379,8 +1320,6 @@ def _analyze(
     multi_model_daily = {}
     mm_daily_raw = mm.get("daily_forecasts", {})
     for i, d_str in enumerate(dates):
-        d_probs = []
-        d_probs_all = []
         if i == 0:
             day_m = current_forecasts.copy()
             d_val, d_winfo = deb_val, deb_weights
@@ -1410,8 +1349,6 @@ def _analyze(
             d_selected_version, d_guard_reason = None, None
             d_bias_adjustment, d_bias_samples = 0.0, 0
             d_quality = {}
-            d_probs = []
-            d_probs_all = []
             if day_m:
                 try:
                     deb_result = calculate_deb_prediction(city, day_m)
@@ -1433,19 +1370,6 @@ def _analyze(
                             "recent_hits": deb_result.get("recent_hits"),
                             "recent_mae": deb_result.get("recent_mae"),
                         }
-                        
-                        # Calculate future probability based on model divergence
-                        m_vals = [v for v in day_m.values() if v is not None]
-                        if len(m_vals) > 1:
-                            # Use spread as a proxy for sigma. 
-                            # sigma = (max-min)/2 with a floor of 0.6
-                            d_sigma = max(0.6, (max(m_vals) - min(m_vals)) / 2.0)
-                        else:
-                            d_sigma = 1.0
-                        
-                        prob_obj = calculate_prob_distribution(d_val, d_sigma, None, sym)
-                        d_probs = prob_obj.get("probabilities", [])
-                        d_probs_all = prob_obj.get("probabilities_all", d_probs)
                 except Exception:
                     pass
         
@@ -1463,8 +1387,8 @@ def _analyze(
                     "bias_samples": d_bias_samples,
                     **d_quality,
                 },
-                "probabilities": d_probs if i > 0 else probabilities, # Use today's real prob for today
-                "probabilities_all": d_probs_all if i > 0 else probabilities_all,
+                "probabilities": probabilities if i == 0 else [],
+                "probabilities_all": probabilities_all if i == 0 else [],
             }
 
     # ── Assemble result ──
@@ -1531,7 +1455,7 @@ def _analyze(
             "max_so_far": display_settlement_max,
             "max_temp_time": max_temp_time,
             "raw_max_so_far": raw_settlement_max,
-            "wu_settlement": wu_settle,
+            "settlement": settle,
             "source_code": current_source,
             "settlement_source": current_source,
             "settlement_source_label": current_source_label,
@@ -1581,7 +1505,6 @@ def _analyze(
             "last_observation_local_date": metar.get("observation_local_date") if metar else None,
             "current_local_date": local_date_str,
         },
-        "wunderground_current": wunderground_current,
         "settlement_station": network_snapshot.get("settlement_station") or {},
         "airport_primary": airport_primary_current,
         "airport_primary_today_obs": network_snapshot.get("airport_primary_today_obs") or [],
@@ -1630,6 +1553,7 @@ def _analyze(
             "hourly_consensus": deb_hourly_consensus,
             "hourly_path": deb_hourly_path,
             "hourly_correction": (deb_hourly_path or {}).get("correction") if isinstance(deb_hourly_path, dict) else None,
+            "ensemble_signal": deb_ensemble_signal,
             **deb_quality,
         },
         "deviation_monitor": deviation_monitor,
@@ -1638,7 +1562,7 @@ def _analyze(
             "mu": round(mu, 1) if mu is not None else None,
             "distribution": probabilities,
             "distribution_all": probabilities_all or probabilities,
-            "engine": "legacy",
+            "engine": sd.get("probability_engine") if isinstance(sd, dict) else None,
         },
         "trend": trend_info,
         "peak": {
@@ -1757,11 +1681,8 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             fetched[key] = future.result()
 
     settlement_current = fetched.get("settlement_current") or {}
-    wunderground_current = fetched.get("wunderground_current") or {}
     open_meteo = fetched.get("open_meteo") or {}
     mm = fetched.get("multi_model") or {}
-    if not isinstance(wunderground_current, dict):
-        wunderground_current = {}
     utc_offset = open_meteo.get("utc_offset")
     if utc_offset is None:
         utc_offset = default_utc_offset
@@ -1790,7 +1711,7 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
     mc = metar.get("current") or {}
     live_mc = mc if metar_current_is_today else {}
     mg_cur = mgm.get("current") or {}
-    use_settlement_current = settlement_source in {"hko", "cwa", "noaa", "wunderground"} and bool(sc_cur)
+    use_settlement_current = settlement_source in {"hko", "noaa"} and bool(sc_cur)
     primary_current = sc_cur if use_settlement_current else live_mc
 
     current_source = settlement_source
@@ -1844,16 +1765,12 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             max_temp_time = mgm_time.split(" ")[1][:5]
 
     raw_settlement_max = max_so_far
-    wu_settle = (
+    settle = (
         apply_city_settlement(city.lower(), raw_settlement_max)
         if raw_settlement_max is not None
         else None
     )
-    display_settlement_max = (
-        wu_settle
-        if settlement_source == "wunderground" and wu_settle is not None
-        else raw_settlement_max
-    )
+    display_settlement_max = settle if settle is not None else raw_settlement_max
 
     obs_time_str = ""
     obs_age_min = None
@@ -1921,7 +1838,7 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
     current_forecasts: Dict[str, float] = {}
     if om_today is not None:
         current_forecasts["Open-Meteo"] = om_today
-    for m, v in mm.get("forecasts", {}).items():
+    for m, v in multi_model_forecasts_for_local_date(mm, local_date_str).items():
         if v is not None and not _is_excluded_model_name(m):
             temp_val = _sf(v)
             if temp_val is not None:
@@ -2029,7 +1946,7 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             "temp": _sf(cur_temp),
             "max_so_far": _sf(display_settlement_max),
             "max_temp_time": max_temp_time,
-            "wu_settlement": _sf(wu_settle),
+            "settlement": _sf(settle),
             "source_code": current_source,
             "settlement_source": current_source,
             "settlement_source_label": current_source_label,
@@ -2039,7 +1956,6 @@ def _analyze_summary(city: str, force_refresh: bool = False) -> Dict[str, Any]:
             "obs_age_min": obs_age_min,
             "observation_status": "live" if cur_temp is not None else "missing",
         },
-        "wunderground_current": wunderground_current,
         "deb": {
             "prediction": _sf(deb_val),
             "raw_prediction": _sf(deb_raw_val),

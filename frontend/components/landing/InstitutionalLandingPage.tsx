@@ -7,6 +7,7 @@ import {
 } from "@/components/landing/LandingAuthActions";
 import {
   LANDING_LOCALE_COOKIE,
+  landingLocaleHref,
   pickLandingLocale,
   type LandingLocale,
 } from "@/components/landing/landingLocale";
@@ -15,7 +16,6 @@ import { STATIC_CITY_LIST } from "@/lib/static-cities";
 
 const COVERAGE_EN = [
   "AMOS 60s runway sensors",
-  "AMSC 180s runway endpoints",
   "MADIS 300s airport observations",
   "CoWIN 60s + HKO 600s",
   "Live chart updates",
@@ -24,7 +24,6 @@ const COVERAGE_EN = [
 
 const COVERAGE_ZH = [
   "AMOS 60s 跑道传感器",
-  "AMSC 180s 跑道端点",
   "MADIS 300s 机场观测",
   "CoWIN 60s + HKO 600s",
   "网页图表实时更新",
@@ -323,6 +322,9 @@ function InstitutionalLandingScreen({ locale }: { locale: LandingLocale }) {
             </a>
             <Link href="/docs/chart-guide" className="hover:text-slate-950">
               {isEn ? "Guide" : "读图"}
+            </Link>
+            <Link href={landingLocaleHref("/briefs", locale)} className="hover:text-slate-950">
+              {isEn ? "Briefs" : "简报"}
             </Link>
             <a href="#pricing" className="hover:text-slate-950">
               {isEn ? "Pricing" : "定价"}

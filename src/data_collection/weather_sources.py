@@ -18,8 +18,8 @@ from src.data_collection.metar_sources import MetarSourceMixin
 from src.data_collection.mgm_sources import MgmSourceMixin
 from src.data_collection.jma_amedas_sources import JmaAmedasSourceMixin
 from src.data_collection.nws_open_meteo_sources import NwsOpenMeteoSourceMixin
+from src.data_collection.weathernext2_sources import WeatherNext2SourceMixin
 from src.data_collection.amos_station_sources import AmosStationSourceMixin
-from src.data_collection.amsc_awos_sources import AmscAwosSourceMixin
 from src.data_collection.fmi_sources import FmiSourceMixin
 from src.data_collection.knmi_sources import KnmiSourceMixin
 from src.data_collection.hko_obs_sources import HkoObsSourceMixin
@@ -29,13 +29,12 @@ from src.data_collection.singapore_mss_sources import SingaporeMssSourceMixin
 from src.data_collection.ims_sources import ImsSourceMixin
 from src.data_collection.ncm_sources import NcmSourceMixin
 from src.data_collection.aeroweb_sources import AerowebSourceMixin
-from src.data_collection.wunderground_sources import WundergroundHistoricalMixin
 from src.data_collection.city_time import get_city_utc_offset_seconds
 from src.data_collection.forecast_source_bundle import fetch_open_meteo_forecast_bundle
 from src.database.db_manager import DBManager
 
 
-class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSourceMixin, MgmSourceMixin, JmaAmedasSourceMixin, NwsOpenMeteoSourceMixin, AmosStationSourceMixin, AmscAwosSourceMixin, FmiSourceMixin, KnmiSourceMixin, HkoObsSourceMixin, CowinSourceMixin, MadisSourceMixin, SingaporeMssSourceMixin, ImsSourceMixin, NcmSourceMixin, AerowebSourceMixin, WundergroundHistoricalMixin):
+class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSourceMixin, MgmSourceMixin, JmaAmedasSourceMixin, NwsOpenMeteoSourceMixin, WeatherNext2SourceMixin, AmosStationSourceMixin, FmiSourceMixin, KnmiSourceMixin, HkoObsSourceMixin, CowinSourceMixin, MadisSourceMixin, SingaporeMssSourceMixin, ImsSourceMixin, NcmSourceMixin, AerowebSourceMixin):
     """
     Multi-source weather data collector
 
@@ -43,10 +42,9 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
     - Open-Meteo (global forecast + multi-model ensemble)
     - METAR/TAF (aviation weather observations)
     - AMOS (Korean runway-level airport sensors — RKSI, RKPK)
-    - AMSC AWOS (China mainland runway-point airport sensors)
     - NWS (US National Weather Service)
     - MGM (Turkish Meteorological Service)
-    - JMA / HKO / CWA (country official networks)
+    - JMA / HKO (country official networks)
     - Weather derivative markets
     """
 
@@ -184,14 +182,16 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         )
         self.open_meteo_multi_model_cache_ttl_sec = min(self.open_meteo_multi_model_cache_ttl_sec, MODEL_CACHE_TTL_SEC)
         self.multi_model_cache_version = str(
-            os.getenv("OPEN_METEO_MULTI_MODEL_CACHE_VERSION", "v4")
-        ).strip() or "v4"
+            os.getenv("OPEN_METEO_MULTI_MODEL_CACHE_VERSION", "v5")
+        ).strip() or "v5"
         self._open_meteo_cache: Dict[str, Dict] = {}
         self._ensemble_cache: Dict[str, Dict] = {}
         self._multi_model_cache: Dict[str, Dict] = {}
+        self._weathernext2_cache: Dict[str, Dict] = {}
         self._open_meteo_cache_lock = threading.Lock()
         self._ensemble_cache_lock = threading.Lock()
         self._multi_model_cache_lock = threading.Lock()
+        self._weathernext2_cache_lock = threading.Lock()
         # Open-Meteo 共享 429 冷却计时器：触发限流后所有 OM 端点暂停请求
         self._open_meteo_rate_limit_until: float = 0.0
         self._open_meteo_rl_cooldown: int = int(
@@ -229,17 +229,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         self.settlement_cache_ttl_sec = min(self.settlement_cache_ttl_sec, OBSERVATION_REFRESH_SEC)
         self._settlement_cache: Dict[str, Dict] = {}
         self._settlement_cache_lock = threading.Lock()
-        self.wunderground_historical_cache_ttl_sec = max(
-            30,
-            int(
-                os.getenv(
-                    "WUNDERGROUND_HISTORICAL_CACHE_TTL_SEC",
-                    str(OBSERVATION_REFRESH_SEC),
-                )
-            ),
-        )
-        self._wunderground_historical_cache: Dict[str, Dict] = {}
-        self._wunderground_historical_cache_lock = threading.Lock()
         self.fmi_cache_ttl_sec = int(
             os.getenv("FMI_CACHE_TTL_SEC", "120")
         )
@@ -268,11 +257,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         self.cowin_obs_cache_ttl_sec = min(self.cowin_obs_cache_ttl_sec, OBSERVATION_REFRESH_SEC)
         self._cowin_obs_cache: Dict[str, Dict] = {}
         self._cowin_obs_cache_lock = threading.Lock()
-        self.cwa_open_data_auth = (
-            os.getenv("CWA_OPEN_DATA_AUTH")
-            or os.getenv("CWA_OPEN_DATA_API_KEY")
-            or ""
-        ).strip()
 
         # 磁盘持久化缓存：重启后即可加载上次的预报数据，避免冷启动请求爆发
         self._disk_cache_path = os.getenv(
@@ -356,11 +340,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             (self._knmi_cache, self._knmi_cache_lock, float(self.knmi_cache_ttl_sec * 2)),
             (self._hko_obs_cache, self._hko_obs_cache_lock, float(self.hko_obs_cache_ttl_sec * 2)),
             (self._cowin_obs_cache, self._cowin_obs_cache_lock, float(self.cowin_obs_cache_ttl_sec * 5)),
-            (
-                self._wunderground_historical_cache,
-                self._wunderground_historical_cache_lock,
-                float(self.wunderground_historical_cache_ttl_sec * 2),
-            ),
         ]:
             stale = [
                 key
@@ -1000,22 +979,12 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                     or normalized
                 )
                 self._settlement_cache.pop(f"noaa:{station_code.lower()}", None)
-            elif settlement_source == "cwa":
+            elif settlement_source == "hko":
                 station_code = (
                     str(city_meta.get("settlement_station_code") or "").strip()
                     or normalized
                 )
-                self._settlement_cache.pop(f"cwa:{station_code.lower()}", None)
-        location_id = self._wunderground_location_id(normalized)
-        if location_id:
-            prefix = f"wu:{location_id}:"
-            with self._wunderground_historical_cache_lock:
-                for key in list(self._wunderground_historical_cache.keys()):
-                    if key.startswith(prefix):
-                        self._wunderground_historical_cache.pop(key, None)
-                for key in list(getattr(self, "_wunderground_negative_cache", {}).keys()):
-                    if key.startswith(prefix):
-                        self._wunderground_negative_cache.pop(key, None)
+                self._settlement_cache.pop(f"hko:{station_code.lower()}", None)
 
     def _uses_fahrenheit(self, city_lower: str) -> bool:
         return city_lower in self.US_CITIES
@@ -1062,10 +1031,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             hko_forecast = self.fetch_hko_forecast()
             if hko_forecast:
                 results["hko_forecast"] = hko_forecast
-        elif settlement_source == "cwa":
-            cwa_forecast = self.fetch_cwa_taipei_forecast()
-            if cwa_forecast is not None:
-                results["cwa_forecast"] = cwa_forecast
 
     def _attach_turkish_mgm_data(
         self,
@@ -1127,7 +1092,7 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         if (
             city_lower not in self.CITY_METAR_CLUSTERS
             or "mgm_nearby" in results
-            or settlement_source in {"hko", "cwa", "ims", "ncm", "aeroweb"}
+            or settlement_source in {"hko", "ims", "ncm", "aeroweb"}
         ):
             return
         cluster_icaos = self.CITY_METAR_CLUSTERS[city_lower]
@@ -1231,10 +1196,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             except Exception:
                 logger.exception("airport_obs_log append failed for aeroweb city={}", city_lower)
 
-    def _attach_china_official_nearby(
-        self, results: Dict, city_lower: str, use_fahrenheit: bool
-    ) -> None:
-        return
 
     def _attach_japan_official_nearby(
         self, results: Dict, city_lower: str, use_fahrenheit: bool
@@ -1413,44 +1374,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         except Exception:
             logger.exception("airport_obs_log append/update failed for cowin_obs city={}", city_lower)
 
-    def _attach_cwa_settlement_nearby(
-        self, results: Dict, city_lower: str, use_fahrenheit: bool
-    ) -> None:
-        if city_lower != "taipei":
-            return
-        sc = results.get("settlement_current") or {}
-        if not sc:
-            return
-        current = sc.get("current") or {}
-        temp = current.get("temp")
-        if temp is None:
-            return
-        row = {
-            "station_code": sc.get("station_code") or "466920",
-            "station_label": sc.get("station_name") or "Taipei CWA",
-            "temp": temp,
-            "obs_time": sc.get("observation_time") or "",
-            "source_code": "cwa",
-            "source_label": "CWA",
-            "icao": "RCSS",
-            "is_official": True,
-            "is_airport_station": True,
-            "is_settlement_anchor": False,
-            "max_so_far": current.get("max_temp_so_far"),
-            "max_temp_time": current.get("max_temp_time"),
-            "humidity": current.get("humidity"),
-            "wind_speed_kt": current.get("wind_speed_kt"),
-            "wind_dir": current.get("wind_dir"),
-        }
-        results["mgm_nearby"] = [row]
-        results["nearby_source"] = "cwa"
-        self._emit_temperature_patch_if_changed(
-            city_lower,
-            temp,
-            sc.get("observation_time"),
-            source="cwa",
-        )
-
     def _attach_korean_amos_data(
         self, results: Dict, city_lower: str, use_fahrenheit: bool
     ) -> None:
@@ -1520,79 +1443,6 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
         except Exception as exc:
             logger.warning("AMOS attach failed city={}: {}", city_lower, exc)
 
-    def _attach_china_amsc_awos_data(
-        self, results: Dict, city_lower: str, use_fahrenheit: bool
-    ) -> None:
-        """Fetch AMSC AWOS runway-point air temperature for selected China cities."""
-        try:
-            amsc_data = self.fetch_amsc_awos_current(
-                city_lower, use_fahrenheit=use_fahrenheit
-            )
-            if not amsc_data:
-                return
-            logger.info(
-                "AMSC AWOS: got data for city={} temp_c={} runway_pairs={}",
-                city_lower,
-                amsc_data.get("temp_c"),
-                len(amsc_data.get("runway_obs", {}).get("runway_pairs", []) or []),
-            )
-            # Reuse the existing `amos` detail shape consumed by dashboard runway panels.
-            results["amos"] = amsc_data
-            self._emit_temperature_patch_if_changed(
-                city_lower,
-                amsc_data.get("temp_c"),
-                amsc_data.get("observation_time"),
-                source="amsc_awos",
-                extra={"amos": amsc_data},
-            )
-            try:
-                icao = amsc_data.get("icao") or ""
-                obs_time = amsc_data.get("observation_time") or datetime.now().isoformat()
-                DBManager().append_airport_obs(
-                    icao=icao,
-                    city=city_lower,
-                    temp_c=amsc_data.get("temp_c"),
-                    wind_kt=amsc_data.get("wind_speed"),
-                    pressure_hpa=amsc_data.get("pressure_hpa"),
-                    obs_time=obs_time,
-                )
-                runway_obs = amsc_data.get("runway_obs") or {}
-                rw_pairs = runway_obs.get("runway_pairs") or []
-                rw_temps = runway_obs.get("temperatures") or []
-                point_temps = runway_obs.get("point_temperatures") or []
-                for i, (pair, temp_pair) in enumerate(zip(rw_pairs, rw_temps)):
-                    t = temp_pair[0] if temp_pair else None
-                    if t is not None and i < 6:
-                        pair_label = "/".join(pair) if isinstance(pair, (list, tuple)) else str(pair)
-                        # Legacy airport_obs_log (keep backward compat)
-                        DBManager().append_airport_obs(
-                            icao=f"{icao}_RWY_{i}",
-                            city=city_lower,
-                            temp_c=t,
-                            obs_time=obs_time,
-                        )
-                        # New runway_obs_log with full detail
-                        pt = point_temps[i] if i < len(point_temps) else {}
-                        DBManager().append_runway_obs(
-                            icao=icao,
-                            city=city_lower,
-                            runway=pair_label,
-                            tdz_temp=pt.get("tdz_temp"),
-                            mid_temp=pt.get("mid_temp"),
-                            end_temp=pt.get("end_temp"),
-                            target_runway_max=pt.get("target_runway_max"),
-                            wind_dir=pt.get("wind_dir"),
-                            wind_speed=pt.get("wind_speed"),
-                            rvr=pt.get("rvr"),
-                            mor=pt.get("mor"),
-                            humidity=pt.get("humidity"),
-                            otime_utc=obs_time,
-                        )
-                        logger.debug("AMSC AWOS stored runway row city={} runway={} temp={}", city_lower, pair_label, t)
-            except Exception:
-                logger.exception("airport_obs_log append failed for amsc_awos city={}", city_lower)
-        except Exception as exc:
-            logger.warning("AMSC AWOS attach failed city={}: {}", city_lower, exc)
 
     def _attach_madis_hfmetar_data(
         self, results: Dict, city_lower: str, use_fahrenheit: bool
@@ -1740,6 +1590,26 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             if multi_model_data:
                 results["multi_model"] = multi_model_data
 
+    def _attach_weathernext2_model(
+        self,
+        results: Dict,
+        city: str,
+        lat: float,
+        lon: float,
+        use_fahrenheit: bool,
+        *,
+        timezone_offset_seconds: Optional[int] = None,
+    ) -> None:
+        payload = self.fetch_weathernext2_probability(
+            city,
+            lat,
+            lon,
+            use_fahrenheit=use_fahrenheit,
+            timezone_offset_seconds=timezone_offset_seconds,
+        )
+        if payload:
+            results["weathernext2"] = payload
+
     def fetch_all_sources(
         self,
         city: str,
@@ -1794,6 +1664,14 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                 results["open-meteo"] = open_meteo
                 # 获取时区偏移以过滤 METAR
                 utc_offset = open_meteo.get("utc_offset", 0)
+                self._attach_weathernext2_model(
+                    results,
+                    city_lower,
+                    lat,
+                    lon,
+                    use_fahrenheit,
+                    timezone_offset_seconds=utc_offset,
+                )
                 if supports_aviationweather:
                     metar_data = self.fetch_metar(
                         city, use_fahrenheit=use_fahrenheit, utc_offset=utc_offset
@@ -1812,20 +1690,17 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                     include_nearby=include_nearby,
                 )
                 self._attach_korean_amos_data(results, city_lower, use_fahrenheit)
-                self._attach_china_amsc_awos_data(results, city_lower, use_fahrenheit)
                 self._attach_madis_hfmetar_data(results, city_lower, use_fahrenheit)
                 self._attach_singapore_mss_data(results, city_lower)
                 self._attach_israel_ims_data(results, city_lower)
                 self._attach_saudi_ncm_data(results, city_lower)
                 self._attach_paris_aeroweb_data(results, city_lower)
                 if include_nearby:
-                    self._attach_china_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_japan_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_fmi_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_knmi_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_cowin_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_hko_obs_official_nearby(results, city_lower, use_fahrenheit)
-                    self._attach_cwa_settlement_nearby(results, city_lower, use_fahrenheit)
                     if city_lower == "warsaw":
                         self._attach_warsaw_official_nearby(results, use_fahrenheit)
                     self._attach_global_nearby_cluster(
@@ -1843,6 +1718,14 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
             else:
                 fallback_utc_offset = int(
                     self.CITY_REGISTRY.get(city_lower, {}).get("tz_offset", 0)
+                )
+                self._attach_weathernext2_model(
+                    results,
+                    city_lower,
+                    lat,
+                    lon,
+                    use_fahrenheit,
+                    timezone_offset_seconds=fallback_utc_offset,
                 )
                 if supports_aviationweather:
                     metar_data = self.fetch_metar(
@@ -1864,20 +1747,17 @@ class WeatherDataCollector(OpenMeteoCacheMixin, SettlementSourceMixin, MetarSour
                     include_nearby=include_nearby,
                 )
                 self._attach_korean_amos_data(results, city_lower, use_fahrenheit)
-                self._attach_china_amsc_awos_data(results, city_lower, use_fahrenheit)
                 self._attach_madis_hfmetar_data(results, city_lower, use_fahrenheit)
                 self._attach_singapore_mss_data(results, city_lower)
                 self._attach_israel_ims_data(results, city_lower)
                 self._attach_saudi_ncm_data(results, city_lower)
                 self._attach_paris_aeroweb_data(results, city_lower)
                 if include_nearby:
-                    self._attach_china_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_japan_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_fmi_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_knmi_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_cowin_official_nearby(results, city_lower, use_fahrenheit)
                     self._attach_hko_obs_official_nearby(results, city_lower, use_fahrenheit)
-                    self._attach_cwa_settlement_nearby(results, city_lower, use_fahrenheit)
                     if city_lower == "warsaw":
                         self._attach_warsaw_official_nearby(results, use_fahrenheit)
                     self._attach_global_nearby_cluster(

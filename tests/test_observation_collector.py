@@ -24,15 +24,15 @@ def test_observation_source_gate_shares_inflight_and_cooldown(monkeypatch):
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(run_observation_source, "amsc_awos", "qingdao", 180, fetcher),
-            executor.submit(run_observation_source, "amsc_awos", "qingdao", 180, fetcher),
+            executor.submit(run_observation_source, "amos", "qingdao", 180, fetcher),
+            executor.submit(run_observation_source, "amos", "qingdao", 180, fetcher),
         ]
         results = [future.result(timeout=2) for future in futures]
 
     assert results == [{"temp": 23.4}, {"temp": 23.4}]
     assert calls == 1
 
-    cached = run_observation_source("amsc_awos", "qingdao", 180, fetcher)
+    cached = run_observation_source("amos", "qingdao", 180, fetcher)
 
     assert cached == {"temp": 23.4}
     assert calls == 1
@@ -82,20 +82,29 @@ def test_observation_collector_profiles_match_source_cadence():
 
     profiles = {profile.source: profile for profile in build_observation_source_profiles()}
 
-    assert profiles["amsc_awos"].interval_sec == 180
     assert profiles["amos"].interval_sec == 60
     assert profiles["madis_hfmetar"].interval_sec == 300
     assert profiles["cowin_obs"].interval_sec == 60
     assert profiles["hko_obs"].interval_sec == 600
     assert profiles["mgm"].interval_sec == 300
-    assert "qingdao" in profiles["amsc_awos"].cities
+    assert profiles["jma_amedas"].interval_sec == 600
+    assert profiles["singapore_mss"].interval_sec == 60
+    assert profiles["fmi"].interval_sec == 600
+    assert profiles["knmi"].interval_sec == 600
+    assert profiles["ims"].interval_sec == 600
+    assert profiles["aeroweb"].interval_sec == 900
+    assert profiles["metar"].interval_sec == 1800
     assert {"seoul", "busan"}.issubset(set(profiles["amos"].cities))
     assert "new york" in profiles["madis_hfmetar"].cities
     assert "hong kong" in profiles["cowin_obs"].cities
     assert {"hong kong", "shenzhen"}.issubset(set(profiles["hko_obs"].cities))
     assert {"ankara", "istanbul"}.issubset(set(profiles["mgm"].cities))
-    assert SOURCE_CADENCE_SECONDS["amsc_awos"] == 180
+    assert profiles["jma_amedas"].cities == ("tokyo",)
+    assert profiles["aeroweb"].cities == ("paris",)
+    assert {"madrid", "milan", "tokyo", "paris"}.issubset(set(profiles["metar"].cities))
     assert SOURCE_CADENCE_SECONDS["mgm"] == 300
+    assert SOURCE_CADENCE_SECONDS["jma_amedas"] == 600
+    assert SOURCE_CADENCE_SECONDS["metar"] == 1800
 
 
 def test_observation_collector_run_due_once_collects_without_panel_cache_refresh():
@@ -110,15 +119,15 @@ def test_observation_collector_run_due_once_collects_without_panel_cache_refresh
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             calls.append((city, use_fahrenheit))
-            results["amos"] = {"source": "amsc_awos", "temp_c": 24.0}
+            results["amos"] = {"source": "amos", "temp_c": 24.0}
 
     collector = ObservationCollector(
         weather=FakeWeather(),
         profiles=[
             ObservationSourceProfile(
-                source="amsc_awos",
+                source="amos",
                 cities=("qingdao",),
                 interval_sec=180,
             )
@@ -161,7 +170,7 @@ def test_raw_observation_store_records_latest_observation(tmp_path):
     db = DBManager(str(tmp_path / "polyweather.db"))
 
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="Qingdao",
         value=24.0,
         observed_at="2026-06-14T01:00:00+00:00",
@@ -172,10 +181,10 @@ def test_raw_observation_store_records_latest_observation(tmp_path):
         payload={"temp_c": 24.0},
     )
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao")
+    latest = db.get_latest_raw_observation("amos", "qingdao")
 
     assert latest is not None
-    assert latest["source"] == "amsc_awos"
+    assert latest["source"] == "amos"
     assert latest["city"] == "qingdao"
     assert latest["value"] == 24.0
     assert latest["observed_at"] == "2026-06-14T01:00:00+00:00"
@@ -194,7 +203,7 @@ def test_raw_observation_store_lists_source_city_history(tmp_path):
     first_observed_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0).isoformat()
     second_observed_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microsecond=0).isoformat()
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="Chengdu",
         value=25.6,
         observed_at=first_observed_at,
@@ -203,7 +212,7 @@ def test_raw_observation_store_lists_source_city_history(tmp_path):
         payload={"temp_c": 25.6},
     )
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="chengdu",
         value=25.4,
         observed_at=second_observed_at,
@@ -212,115 +221,13 @@ def test_raw_observation_store_lists_source_city_history(tmp_path):
         payload={"temp_c": 25.4},
     )
 
-    rows = db.list_raw_observation_history("amsc_awos", "chengdu", minutes=60, limit=10)
+    rows = db.list_raw_observation_history("amos", "chengdu", minutes=60, limit=10)
 
     assert [row["observed_at"] for row in rows] == [
         first_observed_at,
         second_observed_at,
     ]
     assert rows[-1]["payload"]["temp_c"] == 25.4
-
-
-def test_observation_collector_aligns_amsc_payload_time_with_record_observed_at(tmp_path):
-    from src.database.db_manager import DBManager
-    from web.observation_collector_service import ObservationCollector
-    from web.services.observation_source_adapters import ObservationRecord
-
-    db = DBManager(str(tmp_path / "polyweather.db"))
-    collector = ObservationCollector(
-        weather=object(),
-        profiles=[],
-        observation_store=db,
-    )
-
-    record = ObservationRecord(
-        source="amsc_awos",
-        city="shanghai",
-        value=25.4,
-        observed_at="2026-06-14T15:43:00+00:00",
-        observed_at_local="2026-06-14 23:43:00",
-        station_code="ZSPD",
-        station_name="Shanghai Pudong",
-        runway="",
-        value_unit="c",
-        source_label="AMSC AWOS Shanghai Pudong (ZSPD)",
-        payload={
-            "source": "amsc_awos",
-            "temp_c": 25.4,
-            "observation_time": "2026-06-14T10:44:00+00:00",
-            "observation_time_local": "2026-06-14 18:44:00",
-        },
-    )
-
-    assert collector._store_raw_observations([record]) == 1
-
-    latest = db.get_latest_raw_observation("amsc_awos", "shanghai")
-
-    assert latest is not None
-    assert latest["observed_at"] == "2026-06-14T15:43:00+00:00"
-    assert latest["payload"]["observation_time"] == "2026-06-14T15:43:00+00:00"
-    assert latest["payload"]["observation_time_local"] == "2026-06-14 23:43:00"
-
-
-def test_observation_collector_persists_amsc_runway_history(tmp_path):
-    from src.database.db_manager import DBManager
-    from web.observation_collector_service import ObservationCollector
-    from web.services.observation_source_adapters import ObservationRecord
-
-    db = DBManager(str(tmp_path / "polyweather.db"))
-    collector = ObservationCollector(
-        weather=object(),
-        profiles=[],
-        observation_store=db,
-    )
-
-    observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    record = ObservationRecord(
-        source="amsc_awos",
-        city="chengdu",
-        value=28.4,
-        observed_at=observed_at,
-        observed_at_local="2026-06-15 18:51:00",
-        station_code="ZUUU",
-        station_name="Chengdu Shuangliu",
-        runway="",
-        value_unit="c",
-        source_label="AMSC AWOS Chengdu Shuangliu (ZUUU)",
-        payload={
-            "source": "amsc_awos",
-            "icao": "ZUUU",
-            "temp_c": 28.4,
-            "runway_obs": {
-                "point_temperatures": [
-                    {
-                        "runway": "02L/20R",
-                        "tdz_temp": 28.4,
-                        "mid_temp": None,
-                        "end_temp": 28.2,
-                        "target_runway_max": 28.4,
-                        "wind_dir": 130,
-                        "wind_speed": 4.0,
-                    },
-                    {
-                        "runway": "02R/20L",
-                        "tdz_temp": 28.1,
-                        "mid_temp": None,
-                        "end_temp": 28.0,
-                        "target_runway_max": 28.1,
-                    },
-                ],
-            },
-        },
-    )
-
-    assert collector._store_raw_observations([record]) == 1
-
-    rows = db.get_runway_obs_recent("ZUUU", minutes=60)
-
-    assert [row["runway"] for row in rows] == ["02L/20R", "02R/20L"]
-    assert rows[0]["otime_utc"] == observed_at
-    assert rows[0]["target_runway_max"] == 28.4
-    assert rows[0]["wind_dir"] == 130
 
 
 def test_runway_obs_recent_filters_by_observation_time_not_insert_time(tmp_path):
@@ -358,7 +265,7 @@ def test_raw_observation_failure_preserves_last_success_and_increments_errors(tm
     db = DBManager(str(tmp_path / "polyweather.db"))
 
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="Qingdao",
         value=24.0,
         observed_at="2026-06-14T01:00:00+00:00",
@@ -369,14 +276,14 @@ def test_raw_observation_failure_preserves_last_success_and_increments_errors(tm
         payload={"temp_c": 24.0},
     )
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="qingdao",
         fetched_at="2026-06-14T01:02:00+00:00",
         status="timeout",
         payload={"error": "upstream timeout"},
     )
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao")
+    latest = db.get_latest_raw_observation("amos", "qingdao")
 
     assert latest is not None
     assert latest["status"] == "timeout"
@@ -392,7 +299,7 @@ def test_raw_observation_store_computes_source_latency_when_times_are_known(tmp_
     db = DBManager(str(tmp_path / "polyweather.db"))
 
     db.append_raw_observation(
-        source="amsc_awos",
+        source="amos",
         city="Qingdao",
         value=24.0,
         observed_at="2026-06-14T01:00:00+00:00",
@@ -402,7 +309,7 @@ def test_raw_observation_store_computes_source_latency_when_times_are_known(tmp_
         payload={"temp_c": 24.0},
     )
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao")
+    latest = db.get_latest_raw_observation("amos", "qingdao")
 
     assert latest is not None
     assert latest["source_latency_sec"] == 90.0
@@ -509,9 +416,9 @@ def test_observation_collector_writes_raw_observation_store(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             results["amos"] = {
-                "source": "amsc_awos",
+                "source": "amos",
                 "temp_c": 24.0,
                 "observation_time": "2026-06-14T01:00:00+00:00",
                 "icao": "ZSQD",
@@ -520,14 +427,14 @@ def test_observation_collector_writes_raw_observation_store(tmp_path):
 
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("qingdao",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("qingdao",), 180)],
         observation_store=db,
         async_cache_refresh=False,
     )
 
     assert collector.run_due_once(now_ts=1000.0) == 1
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao")
+    latest = db.get_latest_raw_observation("amos", "qingdao")
     assert latest is not None
     assert latest["value"] == 24.0
     assert latest["observed_at"] == "2026-06-14T01:00:00+00:00"
@@ -552,13 +459,13 @@ def test_observation_collector_consumes_source_adapter_records(monkeypatch, tmp_
     def fake_collect_observation_source(weather, source, city, *, use_fahrenheit):
         calls.append((weather.marker, source, city, use_fahrenheit))
         return ObservationSourceResult(
-            source="amsc_awos",
+            source="amos",
             city="qingdao",
             status="ok",
             error="",
             records=(
                 ObservationRecord(
-                    source="amsc_awos",
+                    source="amos",
                     city="qingdao",
                     value=24.5,
                     observed_at="2026-06-14T01:00:00+00:00",
@@ -567,7 +474,7 @@ def test_observation_collector_consumes_source_adapter_records(monkeypatch, tmp_
                     station_name="Qingdao Jiaodong",
                     runway="17L",
                     value_unit="c",
-                    source_label="AMSC AWOS",
+                    source_label="AMOS",
                     payload={"temp_c": 24.5},
                 ),
             ),
@@ -587,15 +494,15 @@ def test_observation_collector_consumes_source_adapter_records(monkeypatch, tmp_
 
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("qingdao",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("qingdao",), 180)],
         observation_store=db,
         async_cache_refresh=False,
     )
 
     assert collector.run_due_once(now_ts=1000.0) == 1
-    assert calls == [("weather", "amsc_awos", "qingdao", False)]
+    assert calls == [("weather", "amos", "qingdao", False)]
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao", station_code="ZSQD", runway="17L")
+    latest = db.get_latest_raw_observation("amos", "qingdao", station_code="ZSQD", runway="17L")
     assert latest is not None
     assert latest["value"] == 24.5
     assert latest["payload"]["temp_c"] == 24.5
@@ -726,19 +633,19 @@ def test_observation_collector_records_no_results_source_health(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             return None
 
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("qingdao",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("qingdao",), 180)],
         observation_store=db,
         async_cache_refresh=False,
     )
 
     assert collector.run_due_once(now_ts=1000.0) == 0
 
-    latest = db.get_latest_raw_observation("amsc_awos", "qingdao")
+    latest = db.get_latest_raw_observation("amos", "qingdao")
     assert latest is not None
     assert latest["status"] == "no_results"
     assert latest["value"] is None
@@ -760,10 +667,10 @@ def test_observation_collector_writes_canonical_latest_from_source(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             results["amos"] = {
-                "source": "amsc_awos",
-                "source_label": "AMSC AWOS",
+                "source": "amos",
+                "source_label": "AMOS",
                 "temp_c": 24.0,
                 "observation_time": "2026-06-14T01:00:00+00:00",
                 "icao": "ZSQD",
@@ -772,7 +679,7 @@ def test_observation_collector_writes_canonical_latest_from_source(tmp_path):
 
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("qingdao",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("qingdao",), 180)],
         observation_store=db,
         async_cache_refresh=False,
     )
@@ -782,7 +689,7 @@ def test_observation_collector_writes_canonical_latest_from_source(tmp_path):
     canonical = db.get_canonical_temperature("qingdao")
     assert canonical is not None
     assert canonical["payload"]["value"] == 24.0
-    assert canonical["payload"]["source"] == "amsc_awos"
+    assert canonical["payload"]["source"] == "amos"
     assert canonical["payload"]["source_role"] == "settlement_proxy"
     assert canonical["payload"]["observed_at"] == "2026-06-14T01:00:00+00:00"
 
@@ -802,7 +709,7 @@ def test_observation_collector_canonical_uses_source_freshness_profile(tmp_path)
 
     collector._store_canonical_temperature_from_observation(
         record=ObservationRecord(
-            source="amsc_awos",
+            source="amos",
             city="qingdao",
             value=24.0,
             observed_at="2026-06-14T01:00:00+00:00",
@@ -811,7 +718,7 @@ def test_observation_collector_canonical_uses_source_freshness_profile(tmp_path)
             station_name="",
             runway="",
             value_unit="c",
-            source_label="AMSC AWOS",
+            source_label="AMOS",
             payload={"temp_c": 24.0},
         ),
         fetched_at="2026-06-14T01:05:00+00:00",
@@ -820,7 +727,7 @@ def test_observation_collector_canonical_uses_source_freshness_profile(tmp_path)
     canonical = db.get_canonical_temperature("qingdao")
 
     assert canonical is not None
-    assert canonical["payload"]["freshness_status"] == "expected_wait"
+    assert canonical["payload"]["freshness_status"] == "delayed"
     assert canonical["payload"]["freshness_sec"] == 300
     assert canonical["payload"]["confidence"] < 0.92
 
@@ -845,10 +752,10 @@ def test_observation_collector_consumes_refresh_request_queue(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             calls.append(city)
             results["amos"] = {
-                "source": "amsc_awos",
+                "source": "amos",
                 "temp_c": 24.0,
                 "observation_time": "2026-06-14T01:00:00+00:00",
                 "icao": "ZSQD",
@@ -856,7 +763,7 @@ def test_observation_collector_consumes_refresh_request_queue(tmp_path):
 
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("qingdao",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("qingdao",), 180)],
         observation_store=db,
         async_cache_refresh=False,
     )
@@ -881,9 +788,9 @@ def test_observation_collector_cache_refresh_does_not_block_source_polling():
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             calls.append(city)
-            results["amsc_awos"] = {"source": "amsc_awos", "temp_c": 24.0}
+            results["amos"] = {"source": "amos", "temp_c": 24.0}
 
     def slow_cache_refresher(city):
         refresh_started.set()
@@ -894,7 +801,7 @@ def test_observation_collector_cache_refresh_does_not_block_source_polling():
         weather=FakeWeather(),
         profiles=[
             ObservationSourceProfile(
-                source="amsc_awos",
+                source="amos",
                 cities=("qingdao", "beijing"),
                 interval_sec=180,
             )
@@ -933,14 +840,14 @@ def test_observation_collector_records_source_status_to_runtime_state(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
-            results["amsc_awos"] = {"source": "amsc_awos", "temp_c": 22.8}
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
+            results["amos"] = {"source": "amos", "temp_c": 22.8}
 
     db = RuntimeStateDB(str(tmp_path / "polyweather.db"))
     status_repo = ObservationCollectorStatusRepository(db)
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("beijing",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("beijing",), 180)],
         status_recorder=status_repo,
     )
 
@@ -951,7 +858,7 @@ def test_observation_collector_records_source_status_to_runtime_state(tmp_path):
     assert payload["status_counts"] == {"ok": 1}
 
     entry = payload["entries"][0]
-    assert entry["source"] == "amsc_awos"
+    assert entry["source"] == "amos"
     assert entry["city"] == "beijing"
     assert entry["interval_sec"] == 180
     assert entry["failure_count"] == 0
@@ -964,7 +871,7 @@ def test_observation_collector_records_source_status_to_runtime_state(tmp_path):
     assert entry["status"] == "ok"
 
     source = payload["sources"][0]
-    assert source["source"] == "amsc_awos"
+    assert source["source"] == "amos"
     assert source["city_count"] == 1
     assert source["failure_count"] == 0
     assert source["avg_latency_ms"] is not None
@@ -982,14 +889,14 @@ def test_observation_collector_records_failure_and_cooldown(tmp_path):
         def _uses_fahrenheit(self, city):
             return False
 
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_korean_amos_data(self, results, city, use_fahrenheit):
             raise RuntimeError("upstream timeout")
 
     db = RuntimeStateDB(str(tmp_path / "polyweather.db"))
     status_repo = ObservationCollectorStatusRepository(db)
     collector = ObservationCollector(
         weather=FakeWeather(),
-        profiles=[ObservationSourceProfile("amsc_awos", ("seoul",), 180)],
+        profiles=[ObservationSourceProfile("amos", ("seoul",), 180)],
         status_recorder=status_repo,
     )
 
@@ -1000,7 +907,7 @@ def test_observation_collector_records_failure_and_cooldown(tmp_path):
     assert payload["status_counts"] == {"cooldown": 1}
 
     entry = payload["entries"][0]
-    assert entry["source"] == "amsc_awos"
+    assert entry["source"] == "amos"
     assert entry["city"] == "seoul"
     assert entry["failure_count"] == 1
     assert entry["last_success_at"] is None
