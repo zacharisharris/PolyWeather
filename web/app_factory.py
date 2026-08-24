@@ -11,8 +11,8 @@ from fastapi import FastAPI
 
 from web.core import app as core_app
 from web.routers.analytics import router as analytics_router
-from web.routers.arbitrage import router as arbitrage_router
 from web.routers.city import router as city_router
+from web.routers.city_forecast import router as city_forecast_router
 from web.routers.bot import router as bot_router
 from web.routers.auth import router as auth_router
 from web.routers.feedback import router as feedback_router
@@ -21,7 +21,6 @@ from web.routers.payments import router as payments_router
 from web.routers.scan import router as scan_router
 from web.routers.sse_router import router as sse_router
 from web.routers.system import router as system_router
-from web.routers.telegram_webhook import router as telegram_webhook_router
 from web.routes import router as legacy_router
 from web.scan_terminal_service import start_scan_terminal_prewarm
 
@@ -52,16 +51,15 @@ def create_app() -> FastAPI:
     if not bool(getattr(core_app.state, _ROUTES_REGISTERED_FLAG, False)):
         core_app.include_router(system_router)
         core_app.include_router(city_router)
+        core_app.include_router(city_forecast_router)
         core_app.include_router(bot_router)
         core_app.include_router(auth_router)
         core_app.include_router(feedback_router)
         core_app.include_router(analytics_router)
-        core_app.include_router(arbitrage_router)
         core_app.include_router(scan_router)
         core_app.include_router(sse_router)
         core_app.include_router(payments_router)
         core_app.include_router(ops_router)
-        core_app.include_router(telegram_webhook_router)
         core_app.include_router(legacy_router)
         setattr(core_app.state, _ROUTES_REGISTERED_FLAG, True)
         if _scan_terminal_prewarm_enabled():

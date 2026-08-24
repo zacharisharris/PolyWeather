@@ -106,12 +106,10 @@ def _deb_model_priority(model_name: str) -> int:
         "ecmwf": 30,
         "gfs": 30,
         "jma": 30,
-        "mgm": 45,
         "nws": 45,
         "hko": 45,
         "lgbm": 50,
         "openmeteo": 15,
-        "weathernext2": 30,
     }.get(normalized, 10)
 
 
@@ -226,6 +224,8 @@ def load_history(filepath):
     mode = get_state_storage_mode()
 
     if mode == STATE_STORAGE_SQLITE:
+        if _history_cache:
+            return _history_cache
         try:
             data = _daily_record_repo.load_all()
             _history_cache = data
@@ -414,22 +414,6 @@ def _parse_hko_ryes_max_temp(payload):
     return None
 
 
-def _parse_noaa_timeseries_stamp(raw_value):
-    try:
-        return datetime.strptime(str(raw_value), "%Y-%m-%dT%H:%M:%S%z")
-    except Exception:
-        return None
-
-
-def _noaa_round_temp(value):
-    if value is None:
-        return None
-    try:
-        return int(float(value) + 0.5)
-    except Exception:
-        return None
-
-
 def _reconcile_recent_metar_actual_highs(city_name: str, lookback_days: int = 7):
     """
     Reconcile recent `actual_high` values using historical METAR data from
@@ -447,9 +431,10 @@ def _reconcile_recent_metar_actual_highs(city_name: str, lookback_days: int = 7)
         tz_offset = int(city_meta.get("tz_offset") or 0)
         use_fahrenheit = bool(city_meta.get("use_fahrenheit"))
 
-        history_file = _get_history_file_path()
-        data = load_history(history_file)
-        city_data = data.get(city_key) or {}
+        # Single-city incremental load/upsert: loading the whole store per city
+        # pass (and rewriting it afterwards) made 51-city reconcile cycles
+        # memory- and IO-heavy on full datasets.
+        city_data = _daily_record_repo.load_city(city_key)
         if not isinstance(city_data, dict) or not city_data:
             return {"ok": True, "reason": "no_city_history", "updated": 0}
 
@@ -530,8 +515,12 @@ def _reconcile_recent_metar_actual_highs(city_name: str, lookback_days: int = 7)
                 updated += 1
 
         if updated > 0:
-            data[city_key] = city_data
-            save_history(history_file, data)
+            for d in [d for d in target_dates if d in city_data]:
+                _daily_record_repo.upsert_record(city_key, d, city_data[d])
+            # 该路径用 load_city（不经 load_history），直接改写 DB 行，
+            # 需要让 load_history 的全量缓存失效，避免读到旧修正。
+            global _history_cache
+            _history_cache = {}
 
         return {
             "ok": True,
@@ -561,9 +550,8 @@ def _reconcile_recent_hko_actual_highs(city_name: str, lookback_days: int = 14):
 
         tz_offset = int(city_meta.get("tz_offset") or 0)
         use_fahrenheit = bool(city_meta.get("use_fahrenheit"))
-        history_file = _get_history_file_path()
-        data = load_history(history_file)
-        city_data = data.get(city_key) or {}
+        # Single-city incremental load/upsert (see metar reconcile).
+        city_data = _daily_record_repo.load_city(city_key)
         if not isinstance(city_data, dict) or not city_data:
             return {"ok": True, "reason": "no_city_history", "updated": 0}
 
@@ -636,8 +624,12 @@ def _reconcile_recent_hko_actual_highs(city_name: str, lookback_days: int = 14):
                 updated += 1
 
         if updated > 0:
-            data[city_key] = city_data
-            save_history(history_file, data)
+            for d in [d for d in target_dates if d in city_data]:
+                _daily_record_repo.upsert_record(city_key, d, city_data[d])
+            # 该路径用 load_city（不经 load_history），直接改写 DB 行，
+            # 需要让 load_history 的全量缓存失效，避免读到旧修正。
+            global _history_cache
+            _history_cache = {}
 
         return {
             "ok": True,
@@ -667,9 +659,8 @@ def _reconcile_recent_noaa_actual_highs(city_name: str, lookback_days: int = 14)
 
         tz_offset = int(city_meta.get("tz_offset") or 0)
         use_fahrenheit = bool(city_meta.get("use_fahrenheit"))
-        history_file = _get_history_file_path()
-        data = load_history(history_file)
-        city_data = data.get(city_key) or {}
+        # Single-city incremental load/upsert (see metar reconcile).
+        city_data = _daily_record_repo.load_city(city_key)
         if not isinstance(city_data, dict) or not city_data:
             return {"ok": True, "reason": "no_city_history", "updated": 0}
 
@@ -684,63 +675,55 @@ def _reconcile_recent_noaa_actual_highs(city_name: str, lookback_days: int = 14)
         if not target_dates:
             return {"ok": True, "reason": "no_target_dates", "updated": 0}
 
-        recent_minutes = max(4320, min(28800, (lookback_days + 3) * 1440))
+        # NOAA aviationweather METAR API: free, no token, global ICAO coverage
+        # (replaces the SynopticData timeseries endpoint that 401'd with an
+        # empty NOAA_WRH_MESO_TOKEN).  temp is Celsius, obsTime is epoch UTC.
+        span_hours = max(72, min(240, (lookback_days + 3) * 24))
         response = requests.get(
-            "https://api.synopticdata.com/v2/stations/timeseries",
-            params={
-                "STID": station_code,
-                "showemptystations": 1,
-                "recent": recent_minutes,
-                "complete": 1,
-                "token": os.environ.get("NOAA_WRH_MESO_TOKEN", ""),
-                "obtimezone": "local",
-            },
-            headers={
-                "Referer": f"https://www.weather.gov/wrh/timeseries?site={station_code}",
-                "Origin": "https://www.weather.gov",
-                "User-Agent": "Mozilla/5.0",
-            },
+            "https://aviationweather.gov/api/data/metar",
+            params={"ids": station_code, "format": "json", "hours": span_hours},
             timeout=15,
         )
         response.raise_for_status()
-        payload = response.json() if response.content else {}
-        stations = payload.get("STATION") or []
-        station = stations[0] if isinstance(stations, list) and stations else None
-        if not isinstance(station, dict):
+        rows = response.json() if response.content else []
+        if not isinstance(rows, list) or not rows:
             return {"ok": True, "reason": "no_station_payload", "updated": 0}
-
-        obs = station.get("OBSERVATIONS") or {}
-        stamps = obs.get("date_time") or []
-        temps = obs.get("air_temp_set_1") or []
-        if not isinstance(stamps, list) or not isinstance(temps, list):
-            return {"ok": True, "reason": "missing_observations", "updated": 0}
 
         daily_max = {}
         scanned_rows = 0
-        for idx, stamp in enumerate(stamps):
-            rounded_temp = _noaa_round_temp(temps[idx] if idx < len(temps) else None)
-            if rounded_temp is None:
+        for row in rows:
+            if not isinstance(row, dict):
                 continue
-            dt = _parse_noaa_timeseries_stamp(stamp)
-            if dt is None:
+            temp = row.get("temp")
+            obs_ts = row.get("obsTime")
+            if temp is None or obs_ts is None:
                 continue
-            date_key = dt.date().strftime("%Y-%m-%d")
+            try:
+                obs_dt = datetime.fromtimestamp(int(obs_ts), tz=timezone.utc)
+            except Exception:
+                continue
+            local_dt = obs_dt + timedelta(seconds=tz_offset)
+            date_key = local_dt.strftime("%Y-%m-%d")
             if date_key < cutoff or date_key >= local_today:
                 continue
             scanned_rows += 1
+            try:
+                t_c = float(temp)
+            except Exception:
+                continue
             prev = daily_max.get(date_key)
-            if prev is None or rounded_temp > prev:
-                daily_max[date_key] = rounded_temp
+            if prev is None or t_c > prev:
+                daily_max[date_key] = t_c
 
         updated = 0
         for date_key in target_dates:
-            corrected = daily_max.get(date_key)
-            if corrected is None:
+            t_c = daily_max.get(date_key)
+            if t_c is None:
                 continue
             next_value = (
-                round((corrected - 32) * 5 / 9, 1)
+                round(t_c * 9 / 5 + 32, 1)
                 if use_fahrenheit
-                else int(corrected)
+                else round(t_c, 1)
             )
             _persist_truth_record(
                 city_key,
@@ -767,8 +750,12 @@ def _reconcile_recent_noaa_actual_highs(city_name: str, lookback_days: int = 14)
                 updated += 1
 
         if updated > 0:
-            data[city_key] = city_data
-            save_history(history_file, data)
+            for d in [d for d in target_dates if d in city_data]:
+                _daily_record_repo.upsert_record(city_key, d, city_data[d])
+            # 该路径用 load_city（不经 load_history），直接改写 DB 行，
+            # 需要让 load_history 的全量缓存失效，避免读到旧修正。
+            global _history_cache
+            _history_cache = {}
 
         return {
             "ok": True,
@@ -824,22 +811,25 @@ def bootstrap_recent_daily_history_if_missing(city_name: str, lookback_days: int
         local_now = datetime.utcnow() + timedelta(seconds=tz_offset)
         local_today = local_now.date()
 
-        history_file = _get_history_file_path()
-        data = load_history(history_file)
-        city_rows = data.get(city_key)
+        # Single-city incremental load/upsert (see metar reconcile).
+        city_rows = _daily_record_repo.load_city(city_key)
         if not isinstance(city_rows, dict):
             city_rows = {}
-            data[city_key] = city_rows
 
         seeded = 0
+        seeded_days: list = []
         for offset in range(max(lookback_days, 1), 0, -1):
             day = (local_today - timedelta(days=offset)).strftime("%Y-%m-%d")
             if day not in city_rows:
                 city_rows[day] = {}
+                seeded_days.append(day)
                 seeded += 1
 
-        if seeded > 0:
-            save_history(history_file, data)
+        if seeded_days:
+            for day in seeded_days:
+                _daily_record_repo.upsert_record(city_key, day, city_rows[day])
+            global _history_cache
+            _history_cache = {}
 
         reconcile_result = reconcile_recent_actual_highs(city_key, lookback_days=lookback_days)
         result = {
@@ -1440,7 +1430,7 @@ def calculate_deb_prediction(
     *,
     lookback_days=7,
     decay_factor=0.85,
-    bias_lookback_days=30,
+    bias_lookback_days=21,
     bias_min_samples=3,
     raw_calculator=None,
 ):

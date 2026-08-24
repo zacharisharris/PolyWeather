@@ -12,10 +12,6 @@ from src.data_collection.nws_open_meteo_sources import (
     _parse_open_meteo_multi_model_daily,
 )
 from src.data_collection.multi_model_freshness import multi_model_forecasts_for_local_date
-from src.data_collection.weathernext2_sources import (
-    _load_artifact_payload as _load_weathernext2_artifact,
-    _weathernext2_artifact_path,
-)
 from src.database.db_manager import DBManager
 from src.utils.refresh_policy import SCAN_ROWS_REFRESH_SEC
 from web.core import CITIES, _sf as _safe_float, _weather
@@ -24,26 +20,12 @@ from web.scan_terminal_filters import (
     safe_int as _safe_int,
 )
 from web.services.canonical_temperature import build_city_weather_from_canonical
-from web.services.city_payloads import aggregate_runway_history
 
 
-SCAN_ROW_RUNWAY_HISTORY_RESOLUTION = "10m"
-SCAN_ROW_MAX_RUNWAY_POINTS = 144
 SCAN_TERMINAL_MULTI_MODEL_BATCH_SIZE = 20
 _PANEL_CACHE_DB = DBManager()
 _analyze = None  # compatibility hook for tests that assert scan terminal stays cache-only.
 SCAN_PANEL_CACHE_MAX_AGE_SEC = max(300, int(SCAN_ROWS_REFRESH_SEC) * 3)
-
-
-def _compact_runway_plate_history_for_scan(raw_history: Any) -> Dict[str, List[Dict[str, Any]]]:
-    if not isinstance(raw_history, dict) or not raw_history:
-        return {}
-    compacted = aggregate_runway_history(raw_history, SCAN_ROW_RUNWAY_HISTORY_RESOLUTION)
-    return {
-        str(runway): points[-SCAN_ROW_MAX_RUNWAY_POINTS:]
-        for runway, points in compacted.items()
-        if isinstance(points, list) and points
-    }
 
 
 def _enqueue_scan_terminal_refresh(city: str, *, reason: str) -> None:
@@ -81,9 +63,9 @@ def _city_local_time(city: str, utc_offset_seconds: Optional[int] = None) -> str
     return _city_local_now(city, utc_offset_seconds).strftime("%H:%M")
 
 
-def _model_sources_with_weathernext2(
+def _model_sources_without_weathernext2(
     base_models: Any,
-    data: Dict[str, Any],
+    _data: Dict[str, Any],
 ) -> Dict[str, Any]:
     models = (
         {
@@ -94,18 +76,6 @@ def _model_sources_with_weathernext2(
         if isinstance(base_models, dict)
         else {}
     )
-    weathernext2 = data.get("weathernext2")
-    if isinstance(weathernext2, dict):
-        summary = (
-            weathernext2.get("summary")
-            if isinstance(weathernext2.get("summary"), dict)
-            else {}
-        )
-        representative = _safe_float(summary.get("median"))
-        if representative is None:
-            representative = _safe_float(summary.get("mean"))
-        if representative is not None:
-            models["WeatherNext 2"] = round(float(representative), 1)
     return models
 
 
@@ -384,18 +354,6 @@ def _fetch_today_forecast_panel_payload(
     if not forecasts:
         return None
 
-    weathernext2_payload = _load_weathernext2_artifact(_weathernext2_artifact_path(), city)
-    weathernext2_summary = (
-        weathernext2_payload.get("summary")
-        if isinstance(weathernext2_payload, dict) and isinstance(weathernext2_payload.get("summary"), dict)
-        else None
-    )
-    if weathernext2_summary:
-        wn2_val = _safe_float(weathernext2_summary.get("median")) or _safe_float(weathernext2_summary.get("mean"))
-        if wn2_val is not None:
-            forecasts["WeatherNext 2"] = round(wn2_val, 1)
-    weathernext2_data = weathernext2_payload if isinstance(weathernext2_payload, dict) else None
-
     try:
         deb_result = calculate_deb_prediction(
             city,
@@ -423,7 +381,6 @@ def _fetch_today_forecast_panel_payload(
             }
         },
         "deb": deb_result if deb_result else {"prediction": deb_prediction},
-        "weathernext2": weathernext2_data,
         "probabilities": probabilities,
         "forecast_refreshed": True,
         "forecast_source_local_date": local_date,
@@ -623,7 +580,7 @@ def _build_terminal_row(
         "distribution_full": scan.get("distribution_full") or scan.get("distribution_preview") or row.get("distribution_preview") or [],
         "probability_engine": scan.get("probability_engine") or (data.get("probabilities") or {}).get("engine"),
         "probability_calibration_mode": scan.get("probability_calibration_mode") or (data.get("probabilities") or {}).get("calibration_mode"),
-        "model_cluster_sources": _model_sources_with_weathernext2(
+        "model_cluster_sources": _model_sources_without_weathernext2(
             daily_entry.get("models")
             if isinstance(daily_entry.get("models"), dict)
             else data.get("multi_model", {}).get("forecasts"),
@@ -640,12 +597,8 @@ def _build_terminal_row(
         "edge_percent": edge_percent,
         "final_score": final_score,
         "volume": volume,
-        "amos": data.get("amos") or None,
         "top_buckets": scan.get("top_buckets") or [],
         "all_buckets": scan.get("all_buckets") or [],
-        "runway_plate_history": _compact_runway_plate_history_for_scan(
-            data.get("runway_plate_history")
-        ),
     }
 
 
@@ -761,7 +714,7 @@ def _build_quick_row(
         "network_provider": data.get("official_network_source") or official_status.get("provider_code"),
         "network_provider_label": official_status.get("provider_label"),
         "deb_prediction": deb.get("prediction"),
-        "model_cluster_sources": _model_sources_with_weathernext2(
+        "model_cluster_sources": _model_sources_without_weathernext2(
             daily_entry.get("models")
             if isinstance(daily_entry.get("models"), dict)
             else multi.get("forecasts", {}),
@@ -784,10 +737,6 @@ def _build_quick_row(
         "is_primary_signal": True,
         "accepting_orders": False,
         "row_id": row_id,
-        "weathernext2": data.get("weathernext2"),
-        "runway_plate_history": _compact_runway_plate_history_for_scan(
-            data.get("runway_plate_history")
-        ),
     }
     # Compute a simple edge: model top probability vs neutral
     best_model_prob = max(

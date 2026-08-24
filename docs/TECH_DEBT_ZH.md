@@ -33,7 +33,7 @@ flowchart TD
 
 ## 2. 近期已关闭
 
-- **前端设计系统工程债务（2026-05-10）**：消除 !important 滥用（134→49）、统一断点体系（18→10）、数百处硬编码颜色迁移至 CSS 变量、修复 accent-green 蓝色 Bug、添加 ARIA 无障碍属性、去重 @keyframes、移除死代码（1,697 行）。详见 `docs/frontend-ui-design-review.md`。
+- **前端设计系统工程债务（2026-05-10）**：消除 !important 滥用（134→49）、统一断点体系（18→10）、数百处硬编码颜色迁移至 CSS 变量、修复 accent-green 蓝色 Bug、添加 ARIA 无障碍属性、去重 @keyframes、移除死代码（1,697 行）。详见 `docs/reviews/frontend-ui-design-review.md`。
 - 支付主链路已上线（intent -> submit -> confirm）。
 - 支付自动补单已上线（Event Loop + Confirm Loop，循环参数可配置）。
 - 支付事件重放脚本已补齐。
@@ -42,8 +42,6 @@ flowchart TD
 - 账户中心与 Pro 权限展示链路打通。
 - 运行态状态/缓存与核心离线训练、评估、回填链路已完成 SQLite 主路径收口。
 - 轻量可观测性已上线（`/healthz`、`/api/system/status`、`/api/system/cache-status`、`/api/system/priority-warm`、`/metrics` + `scripts/check_ops_health.py`）。
-- **WeatherNext2 接入（2026-08-01）**：GCS Zarr 6h worker + LightGBM 校准 q10/q50/q90 分位，终端侧边栏第 3 项展示。
-- **套利对比上线（2026-08-01）**：`/api/arbitrage/overview` 与 `/overview-batch` 全城市批量概览，终端侧边栏第 5 项展示。
 - **DEB 正态概率引擎（2026-08-01）**：`deb_normal` 取代 legacy 高斯分桶成为主概率路径，legacy 保留为回退分支。
 - **训练结算服务（2026-08-01）**：`training_settlement` 服务（6h 周期、回看 10 天）与领域仓库重构（`src/database/repos/`）。
 - **数据源清理（2026-08-01）**：移除 Wunderground、台北 CWA、AMSC AWOS、NMC/CMA；深圳改挂流浮山 HKO（LFS）；结算源收敛为 NOAA Synoptic（11 城）+ HKO（2 城）+ IMGW（可选）；TAF 唯一来源 NOAA AviationWeather。
@@ -59,7 +57,7 @@ flowchart TD
 
 | 项目 | 影响 | 建议动作 |
 | :-- | :-- | :-- |
-| 积分发放可解释性 | 用户理解成本高 | 输出积分来源明细前端展示（群发言/有效付费邀请/后台人工补发/积分抵扣消费） |
+| 积分发放可解释性 | 用户理解成本高 | 输出积分来源明细前端展示（后台人工补发/反馈奖励/积分抵扣消费） |
 | 支付合约 V2 升级 | 当前仍是最小可用合约 | 升级到 SafeERC20 + Pausable + plan 绑定 |
 | 支付失败文案标准化 | 转化率受影响 | 建立错误码 -> 文案映射表 |
 

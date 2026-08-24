@@ -496,7 +496,7 @@ def test_ops_source_health_flags_expected_official_sources(monkeypatch):
     )
 
 
-def test_ops_billing_risk_surfaces_trial_payment_referral_and_points(monkeypatch):
+def test_ops_billing_risk_surfaces_trial_payment_and_points(monkeypatch):
     from src.database.db_manager import DBManager
 
     now = datetime.now(timezone.utc)
@@ -530,42 +530,6 @@ def test_ops_billing_risk_surfaces_trial_payment_referral_and_points(monkeypatch
                         }
                     },
                 },
-            ]
-        if table == "referral_attributions":
-            return [
-                {
-                    "id": 1,
-                    "code": "CAP1",
-                    "referrer_user_id": "referrer-cap",
-                    "referred_user_id": "referred-cap",
-                    "status": "capped",
-                    "updated_at": recent,
-                    "created_at": recent,
-                },
-                {
-                    "id": 2,
-                    "code": "MISS1",
-                    "referrer_user_id": "referrer-missing",
-                    "referred_user_id": "referred-missing",
-                    "status": "converted",
-                    "converted_payment_intent_id": "intent-converted",
-                    "converted_at": recent,
-                    "updated_at": recent,
-                    "created_at": recent,
-                },
-            ]
-        if table == "referral_rewards":
-            return [
-                {
-                    "id": 10,
-                    "referral_attribution_id": 99,
-                    "referrer_user_id": "referrer-ok",
-                    "referred_user_id": "referred-ok",
-                    "payment_intent_id": "intent-ok",
-                    "reward_points": 3500,
-                    "reward_days": 0,
-                    "created_at": recent,
-                }
             ]
         if table == "trial_claims":
             return []
@@ -616,15 +580,11 @@ def test_ops_billing_risk_surfaces_trial_payment_referral_and_points(monkeypatch
     assert summary["stuck_intents"] == 1
     assert summary["trial_gaps"] == 1
     assert summary["points_discount_issues"] == 1
-    assert summary["referral_settlement_issues"] == 1
-    assert summary["monthly_cap_hits"] == 1
     assert summary["payment_incidents"] == 1
-    assert payload["recent_referral_rewards"][0]["reward_points"] == 3500
     assert {
         "payment_intent",
         "signup_trial",
         "points_redemption",
-        "referral",
     }.issubset({issue["category"] for issue in payload["issues"]})
 
 
@@ -939,7 +899,6 @@ def test_cities_endpoint_includes_new_wunderground_cities():
         "qingdao",
         "panama city",
         "kuala lumpur",
-        "jakarta",
         "helsinki",
         "amsterdam",
     }.issubset(names)
@@ -1198,13 +1157,11 @@ def test_city_detail_batch_chart_scope_returns_only_chart_fields(monkeypatch):
                     },
                     "deb": {"prediction": 21.5, "hourly_path": {"times": ["15:00"], "temps": [21.5]}},
                     "probabilities": {"mu": 21.4, "distribution": [{"value": 21, "probability": 0.4}]},
-                    "runway_plate_history": {"01/19": [{"time": "2026-05-30T15:20:00Z", "temp": 20.1}]},
                     "airport_current": {"temp": 20.0},
                     "airport_primary": {"temp": 20.0},
                     "airport_primary_today_obs": [["15:20", 20.0]],
                     "wunderground_current": {"max_so_far": 20.5},
                     "settlement_station": {"settlement_station_label": "Station"},
-                    "amos": {"runway_obs": {"point_temperatures": []}},
                     "metar_today_obs": [{"time": "15:20", "temp": 20.0}],
                     "settlement_today_obs": [],
                     "dynamic_commentary": {"summary": "large text"},
@@ -1234,143 +1191,6 @@ def test_city_detail_batch_chart_scope_returns_only_chart_fields(monkeypatch):
     assert "ai_analysis" not in detail
 
 
-def test_chart_scope_overlays_collector_runway_history_from_db(monkeypatch):
-    monkeypatch.setattr(city_api.legacy_routes, "_assert_entitlement", lambda request: None)
-    monkeypatch.setattr(city_api.legacy_routes, "_normalize_city_or_404", lambda name: name.strip().lower())
-    monkeypatch.setattr(
-        city_api.legacy_routes,
-        "_city_cache_is_fresh",
-        lambda entry, ttl: True,
-    )
-    monkeypatch.setattr(
-        city_api,
-        "_overlay_cached_wunderground",
-        _async_noop_overlay,
-    )
-
-    class FakeCache:
-        def get_city_cache(self, kind, city):
-            assert kind == "full"
-            return {
-                "payload": {
-                    "name": city,
-                    "display_name": city.title(),
-                    "local_date": "2026-06-06",
-                    "local_time": "13:28",
-                    "temp_symbol": "°C",
-                    "risk": {"icao": "ZSPD"},
-                    "current": {
-                        "temp": 25.0,
-                        "settlement_source": "metar",
-                        "settlement_source_label": "METAR",
-                    },
-                    "hourly": {"times": ["13:00"], "temps": [25.0]},
-                    "forecast": {"today_high": 26.0, "daily": []},
-                    "multi_model": {},
-                    "deb": {"prediction": 26.0},
-                    "probabilities": {"mu": 26.0, "distribution": []},
-                    "runway_plate_history": {
-                        "35R/17L": [{"time": "2026-06-06T05:21:00+00:00", "temp": 24.2}]
-                    },
-                }
-            }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            assert icao == "ZSPD"
-            assert minutes == 24 * 60
-            return [
-                {
-                    "runway": "35R/17L",
-                    "tdz_temp": 24.2,
-                    "mid_temp": None,
-                    "end_temp": 24.0,
-                    "target_runway_max": 24.2,
-                    "otime_utc": "2026-06-06T05:21:00+00:00",
-                },
-                {
-                    "runway": "35R/17L",
-                    "tdz_temp": 24.8,
-                    "mid_temp": None,
-                    "end_temp": 24.6,
-                    "target_runway_max": 24.8,
-                    "otime_utc": "2026-06-06T05:28:00+00:00",
-                },
-            ]
-
-    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
-
-    response = client.get("/api/cities/detail-batch?cities=Shanghai&resolution=1m&scope=chart")
-
-    assert response.status_code == 200
-    history = response.json()["details"]["shanghai"]["runway_plate_history"]["35R/17L"]
-    assert history[-1] == {"time": "2026-06-06T05:28:00+00:00", "temp": 24.8}
-
-
-def test_chart_data_force_refresh_overlays_collector_runway_history(monkeypatch):
-    import asyncio
-
-    class FakeCache:
-        def get_city_cache(self, kind, city):
-            return None
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            assert icao == "ZUUU"
-            assert minutes == 24 * 60
-            return [
-                {
-                    "runway": "02L/20R",
-                    "tdz_temp": 27.2,
-                    "mid_temp": None,
-                    "end_temp": 27.0,
-                    "target_runway_max": 27.2,
-                    "otime_utc": "2026-06-15T09:01:00+00:00",
-                },
-                {
-                    "runway": "02L/20R",
-                    "tdz_temp": 27.8,
-                    "mid_temp": None,
-                    "end_temp": 27.5,
-                    "target_runway_max": 27.8,
-                    "otime_utc": "2026-06-15T09:04:00+00:00",
-                },
-            ]
-
-    async def refreshed_full_payload(city, *, force_refresh):
-        assert force_refresh is True
-        return {
-            "name": city,
-            "display_name": "Chengdu",
-            "local_date": "2026-06-15",
-            "local_time": "17:04",
-            "temp_symbol": "°C",
-            "risk": {"icao": "ZUUU"},
-            "current": {"temp": 27.8},
-            "hourly": {"times": ["16:00"], "temps": [27.0]},
-        }
-
-    class FakeWeather:
-        def fetch_jma_amedas_official_nearby(self, city, use_fahrenheit=False):
-            return []
-
-        def fetch_jma_amedas_current(self, city, use_fahrenheit=False):
-            return None
-
-    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
-    monkeypatch.setattr(city_api.legacy_routes, "_weather", FakeWeather())
-    monkeypatch.setattr(
-        city_api,
-        "_overlay_cached_wunderground",
-        _async_noop_overlay,
-    )
-
-    payload = asyncio.run(city_api._get_city_chart_data("chengdu", force_refresh=True))
-
-    assert payload["runway_plate_history"]["02L/20R"][-1] == {
-        "time": "2026-06-15T09:04:00+00:00",
-        "temp": 27.8,
-    }
-
-
 def test_chart_data_cache_hit_starts_full_stale_refresh(monkeypatch):
     import asyncio
 
@@ -1386,9 +1206,6 @@ def test_chart_data_cache_hit_starts_full_stale_refresh(monkeypatch):
                     "hourly": {"times": ["13:00"], "temps": [25.0]},
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
     monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
     monkeypatch.setattr(
@@ -1433,9 +1250,6 @@ def test_chart_data_cache_hit_overlays_cached_multi_model_hourly(monkeypatch):
                     "multi_model": {},
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
     class DummyLock:
         def __enter__(self):
@@ -1496,9 +1310,6 @@ def test_chart_data_cache_hit_replaces_stale_multi_model_hourly(monkeypatch):
                     },
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
     class DummyLock:
         def __enter__(self):
@@ -1576,9 +1387,6 @@ def test_chart_data_cache_hit_refreshes_when_multi_model_cache_is_stale(monkeypa
                     },
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
     class DummyLock:
         def __enter__(self):
@@ -1666,9 +1474,6 @@ def test_chart_data_floors_stale_forecast_and_deb_with_observed_high(monkeypatch
                     "hourly": {"times": ["13:00"], "temps": [36.0]},
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
         def get_latest_raw_observation(self, source, city):
             return None
@@ -1765,9 +1570,6 @@ def test_chart_data_cache_hit_overlays_latest_jma_amedas(monkeypatch):
                 },
             }
 
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
-
         def get_latest_raw_observation(self, source, city):
             return None
 
@@ -1838,9 +1640,6 @@ def test_chart_data_cache_hit_overlays_latest_jma_from_airport_obs_log(monkeypat
                 },
             }
 
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
-
         def get_latest_raw_observation(self, source, city):
             return None
 
@@ -1906,9 +1705,6 @@ def test_chart_data_cache_hit_returns_cached_when_no_overlay_applies(monkeypatch
                     "timeseries": {"metar_today_obs": [{"time": "18:00", "temp": 26.0}]},
                 },
             }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return []
 
         def get_latest_raw_observation(self, source, city):
             return None
@@ -2038,54 +1834,6 @@ def test_full_detail_batch_overlays_latest_official_observations_from_airport_ob
     assert taipei["overview"]["local_date"] == "2026-06-14"
     assert taipei["airport_current"]["source_code"] == "noaa"
     assert taipei["airport_current"]["temp"] == 26.0
-
-
-def test_chart_data_returns_cached_payload_when_optional_overlay_times_out(monkeypatch):
-    import asyncio
-
-    class FakeCache:
-        def get_city_cache(self, kind, city):
-            assert kind == "full"
-            return {
-                "payload": {
-                    "name": city,
-                    "display_name": city.title(),
-                    "risk": {"icao": "ZSPD"},
-                    "hourly": {"times": ["13:00"], "temps": [25.0]},
-                    "runway_plate_history": {
-                        "35R/17L": [{"time": "2026-06-06T05:21:00+00:00", "temp": 24.2}]
-                    },
-                },
-            }
-
-        def get_runway_obs_recent(self, icao, minutes=60):
-            return [
-                {
-                    "runway": "35R/17L",
-                    "target_runway_max": 24.8,
-                    "otime_utc": "2026-06-06T05:28:00+00:00",
-                }
-            ]
-
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        if fn is city_api._overlay_cached_runway_history_from_db:
-            await asyncio.sleep(0.05)
-        return fn(*args, **kwargs)
-
-    monkeypatch.setenv("POLYWEATHER_CITY_CHART_OPTIONAL_OVERLAY_TIMEOUT_MS", "1")
-    monkeypatch.setattr(city_api, "run_in_threadpool", fake_run_in_threadpool)
-    monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
-    monkeypatch.setattr(
-        city_api,
-        "_overlay_cached_wunderground",
-        _async_noop_overlay,
-    )
-
-    payload = asyncio.run(city_api._get_city_chart_data("shanghai", force_refresh=False))
-
-    assert payload["runway_plate_history"]["35R/17L"] == [
-        {"time": "2026-06-06T05:21:00+00:00", "temp": 24.2}
-    ]
 
 
 def test_chart_detail_payload_uses_threadpool_and_reuses_short_cache(monkeypatch):
@@ -2559,7 +2307,7 @@ def test_stale_city_detail_uses_cached_full_payload_while_refreshing(monkeypatch
     assert refresh_calls == 0
 
 
-def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
+def test_stale_ankara_chart_data_overlays_latest_canonical(monkeypatch):
     import asyncio
 
     class FakeCache:
@@ -2593,8 +2341,8 @@ def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
                     },
                     "airport_current": {
                         "temp": 16.0,
-                        "source_code": "mgm",
-                        "source_label": "MGM",
+                        "source_code": "metar",
+                        "source_label": "METAR",
                         "obs_time": "2026-06-14T09:50:00+00:00",
                         "report_time": "2026-06-14T09:50:00+00:00",
                         "raw_metar": "METAR LTAC 140950Z 06013KT 9999 16/11 Q1015",
@@ -2608,7 +2356,6 @@ def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
                         "last_observation_local_date": "2026-06-14",
                         "current_local_date": "2026-06-14",
                     },
-                    "mgm": {"temp": 16.7, "time": "12:50", "hourly": [{"time": "12:00", "temp": 16.5}]},
                     "hourly": {"times": ["2026-06-14T09:00:00Z"], "temps": [16.0]},
                     "deb": {"prediction": 23.0},
                 },
@@ -2621,11 +2368,11 @@ def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
                     "city": "ankara",
                     "value": 19.0,
                     "temp_symbol": "°C",
-                    "source": "mgm",
-                    "source_label": "MGM",
+                    "source": "metar",
+                    "source_label": "METAR",
                     "source_role": "settlement_official",
-                    "station_code": "17128",
-                    "station_name": "Esenboga Airport",
+                    "station_code": "LTAC",
+                    "station_name": "Ankara Esenboga",
                     "observed_at": "2026-06-15T14:20:00+00:00",
                     "observed_at_local": "17:20",
                     "freshness_sec": 60,
@@ -2647,11 +2394,11 @@ def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
     payload = asyncio.run(city_api._get_city_chart_data("ankara", force_refresh=False))
 
     assert payload["current"]["temp"] == 19.0
-    assert payload["current"]["source_code"] == "mgm"
-    assert payload["current"]["settlement_source_label"] == "MGM"
+    assert payload["current"]["source_code"] == "metar"
+    assert payload["current"]["settlement_source_label"] == "METAR"
     assert payload["airport_primary"]["temp"] == 19.0
-    assert payload["airport_primary"]["source_code"] == "mgm"
-    assert payload["airport_primary"]["station_code"] == "17128"
+    assert payload["airport_primary"]["source_code"] == "metar"
+    assert payload["airport_primary"]["station_code"] == "LTAC"
     assert payload["local_date"] == "2026-06-15"
     assert payload["local_time"] == "17:20"
     assert payload["airport_primary_today_obs"] == [{"time": "17:20", "temp": 19.0}]
@@ -2665,9 +2412,6 @@ def test_stale_ankara_chart_data_overlays_latest_mgm_canonical(monkeypatch):
     assert payload["metar_status"]["available_for_today"] is False
     assert payload["metar_status"]["stale_for_today"] is True
     assert payload["metar_status"]["current_local_date"] == "2026-06-15"
-    assert payload["mgm"]["temp"] == 19.0
-    assert payload["mgm"]["time"] == "17:20"
-    assert payload["mgm"].get("hourly") == []
     assert payload["deb"]["prediction"] == 23.0
 
 
@@ -3115,145 +2859,6 @@ def test_payment_wallets_requires_identity_without_subscription_gate(monkeypatch
     assert response.json() == {"wallets": [], "chain_id": 137}
 
 
-def test_telegram_identity_endpoints_skip_subscription_gate(monkeypatch):
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", True)
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "supabase_url", "https://example.supabase.co")
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "anon_key", "anon-key")
-    monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", True)
-
-    class _Identity:
-        user_id = "user-1"
-        email = "user@example.com"
-        points = 0
-        created_at = "2026-05-01T00:00:00+00:00"
-
-    class _FakePricing:
-        configured = True
-
-        @staticmethod
-        def verify_login_payload(payload):
-            return {"telegram_id": int(payload["id"]), "username": "tester"}
-
-        @staticmethod
-        def get_member_status(telegram_id):
-            return "member"
-
-        @staticmethod
-        def resolve_price_for_telegram_id(telegram_id):
-            return {"telegram_id": telegram_id, "pricing_source": "telegram_group_member"}
-
-    class _FakeDB:
-        @staticmethod
-        def upsert_user(telegram_id, username):
-            return None
-
-        @staticmethod
-        def bind_supabase_identity(*, telegram_id, supabase_user_id, supabase_email):
-            return {"ok": True}
-
-        @staticmethod
-        def consume_bind_token(token):
-            return 12345
-
-        @staticmethod
-        def create_web_bind_token(*, supabase_user_id, supabase_email, ttl_minutes):
-            return "bind-token"
-
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "get_identity", lambda token: _Identity())
-    monkeypatch.setattr(
-        web_core.SUPABASE_ENTITLEMENT,
-        "has_active_subscription",
-        lambda user_id: (_ for _ in ()).throw(
-            AssertionError("telegram identity endpoints should not query subscription gate"),
-        ),
-    )
-    monkeypatch.setattr(auth_api, "TelegramGroupPricing", lambda: _FakePricing())
-    monkeypatch.setattr(auth_api, "DBManager", lambda: _FakeDB())
-
-    auth_headers = {"Authorization": "Bearer access-token"}
-
-    login_response = client.post(
-        "/api/auth/telegram/login",
-        headers=auth_headers,
-        json={"id": 12345, "username": "tester", "auth_date": 1770000000, "hash": "x" * 64},
-    )
-    assert login_response.status_code == 200
-
-    token_response = client.post(
-        "/api/auth/telegram/bind-by-token",
-        headers=auth_headers,
-        json={"token": "token-12345"},
-    )
-    assert token_response.status_code == 200
-
-    link_response = client.post(
-        "/api/auth/telegram/bot-bind-link",
-        headers=auth_headers,
-    )
-    assert link_response.status_code == 200
-    link_payload = link_response.json()
-    assert link_payload["start_param"] == "bind_bind-token"
-    assert link_payload["bot_command"] == "/start bind_bind-token"
-    assert link_payload["bot_url"].endswith("?start=bind_bind-token")
-
-
-def test_telegram_bind_by_token_does_not_require_existing_group_member(monkeypatch):
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", True)
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "supabase_url", "https://example.supabase.co")
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "anon_key", "anon-key")
-    monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", True)
-
-    class _Identity:
-        user_id = "user-1"
-        email = "user@example.com"
-        points = 0
-        created_at = "2026-05-01T00:00:00+00:00"
-
-    class _FakePricing:
-        configured = True
-
-        @staticmethod
-        def get_member_status(telegram_id):
-            raise AssertionError("bind fallback must not require existing group membership")
-
-        @staticmethod
-        def resolve_price_for_telegram_id(telegram_id):
-            return {"telegram_id": telegram_id, "pricing_source": "telegram_public"}
-
-    class _FakeDB:
-        @staticmethod
-        def consume_bind_token(token):
-            return 12345
-
-        @staticmethod
-        def upsert_user(telegram_id, username):
-            return None
-
-        @staticmethod
-        def bind_supabase_identity(*, telegram_id, supabase_user_id, supabase_email):
-            return {
-                "ok": True,
-                "telegram_id": telegram_id,
-                "supabase_user_id": supabase_user_id,
-                "supabase_email": supabase_email,
-            }
-
-    monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "get_identity", lambda token: _Identity())
-    monkeypatch.setattr(auth_api, "TelegramGroupPricing", lambda: _FakePricing())
-    monkeypatch.setattr(auth_api, "DBManager", lambda: _FakeDB())
-
-    response = client.post(
-        "/api/auth/telegram/bind-by-token",
-        headers={"Authorization": "Bearer access-token"},
-        json={"token": "token-12345"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["telegram_id"] == 12345
-
-
 def test_auth_me_does_not_reconcile_on_status_probe(monkeypatch):
     monkeypatch.setattr(routes, "_assert_entitlement", lambda request: None)
 
@@ -3263,7 +2868,6 @@ def test_auth_me_does_not_reconcile_on_status_probe(monkeypatch):
 
     monkeypatch.setattr(routes, "_bind_optional_supabase_identity", _bind_identity)
     monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
     monkeypatch.setattr(routes.SUPABASE_ENTITLEMENT, "enabled", True)
 
     reconcile_calls = {"count": 0}
@@ -3309,7 +2913,6 @@ def test_auth_me_reuses_identity_bound_by_entitlement(monkeypatch):
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "supabase_url", "https://example.supabase.co")
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "anon_key", "anon-key")
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", True)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
 
     class _Identity:
         user_id = "user-1"
@@ -3356,7 +2959,6 @@ def test_auth_me_uses_subscription_window_as_required_subscription_gate(monkeypa
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "supabase_url", "https://example.supabase.co")
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "anon_key", "anon-key")
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", True)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
 
     class _Identity:
         user_id = "user-1"
@@ -3410,7 +3012,6 @@ def test_auth_me_entitlement_scope_reuses_subscription_access_window_cache(monke
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
     monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
 
     def _bind_identity(request):
@@ -3621,7 +3222,6 @@ def test_auth_me_preserves_unknown_subscription_window(monkeypatch):
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
     monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
 
     def _bind_identity(request):
@@ -3666,7 +3266,6 @@ def test_auth_me_uses_window_rows_for_non_required_latest_known_subscription(mon
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
     monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
 
     def _bind_identity(request):
@@ -3720,7 +3319,6 @@ def test_auth_me_skips_latest_active_after_empty_non_required_window(monkeypatch
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "enabled", True)
     monkeypatch.setattr(web_core.SUPABASE_ENTITLEMENT, "require_subscription", False)
     monkeypatch.setattr(web_core, "_SUPABASE_AUTH_REQUIRED", False)
-    monkeypatch.setattr(routes, "_resolve_weekly_profile", lambda request: {"weekly_points": 0, "weekly_rank": None})
     monkeypatch.setattr(routes, "_resolve_auth_points", lambda request: 0)
 
     def _bind_identity(request):
@@ -3848,24 +3446,10 @@ def test_auth_me_entitlement_scope_skips_non_access_profile_sections(monkeypatch
         raising=False,
     )
     monkeypatch.setattr(
-        web_core.SUPABASE_ENTITLEMENT,
-        "get_referral_summary",
-        lambda user_id: (_ for _ in ()).throw(
-            AssertionError("entitlement scope must not block on referral summary"),
-        ),
-    )
-    monkeypatch.setattr(
         routes,
         "_resolve_auth_points",
         lambda request: (_ for _ in ()).throw(
             AssertionError("entitlement scope must not block on points summary"),
-        ),
-    )
-    monkeypatch.setattr(
-        routes,
-        "_resolve_weekly_profile",
-        lambda request: (_ for _ in ()).throw(
-            AssertionError("entitlement scope must not block on weekly profile"),
         ),
     )
 
@@ -3880,8 +3464,6 @@ def test_auth_me_entitlement_scope_skips_non_access_profile_sections(monkeypatch
     assert payload["subscription_active"] is True
     assert payload["subscription_plan_code"] == "pro_monthly"
     assert payload["points"] == 7
-    assert payload["weekly_points"] == 0
-    assert payload["referral"] is None
 
 
 def test_backend_entitlement_token_binds_forwarded_supabase_identity(monkeypatch):
@@ -4206,90 +3788,6 @@ def test_ops_memberships_growth_reuses_active_subscription_window_query(monkeypa
 
     assert response.status_code == 200
     assert any(day["paid"] == 1 for day in response.json()["daily"])
-
-
-def test_ops_telegram_audit_reuses_active_subscription_window_query(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
-    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "chat-1")
-    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    monkeypatch.delenv("POLYWEATHER_TELEGRAM_GROUP_ID", raising=False)
-    monkeypatch.delenv("POLYWEATHER_TELEGRAM_TOPICS_GROUP_ID", raising=False)
-    monkeypatch.setattr(ops_api, "_require_ops", lambda request: None)
-
-    class _FakeRows(list):
-        def fetchall(self):
-            return self
-
-    class _FakeConnection:
-        row_factory = None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, sql):
-            if "FROM users" in sql:
-                return _FakeRows([{"telegram_id": 1, "username": "tester"}])
-            if "FROM supabase_bindings" in sql:
-                return _FakeRows(
-                    [
-                        {
-                            "telegram_id": 1,
-                            "supabase_user_id": "user-1",
-                            "supabase_email": "one@example.com",
-                        }
-                    ]
-                )
-            raise AssertionError(sql)
-
-    class _FakeDB:
-        @staticmethod
-        def _get_connection():
-            return _FakeConnection()
-
-    class _Response:
-        status_code = 200
-
-        @staticmethod
-        def json():
-            return {"ok": True, "result": {"status": "member"}}
-
-    import requests as requests_module
-    import src.database.db_manager as db_module
-
-    monkeypatch.setattr(db_module, "DBManager", lambda: _FakeDB())
-    monkeypatch.setattr(requests_module, "get", lambda *args, **kwargs: _Response())
-    monkeypatch.setattr(
-        routes.SUPABASE_ENTITLEMENT,
-        "list_active_subscriptions",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("telegram audit should not run a separate active subscription query"),
-        ),
-    )
-    monkeypatch.setattr(
-        routes.SUPABASE_ENTITLEMENT,
-        "list_active_subscription_windows",
-        lambda limit=5000: {
-            "subscriptions": [
-                {
-                    "user_id": "user-1",
-                    "plan_code": "pro_monthly",
-                    "source": "payment_contract",
-                    "starts_at": "2026-03-01T00:00:00+00:00",
-                    "expires_at": "2099-01-01T00:00:00+00:00",
-                }
-            ],
-            "windows": {},
-        },
-        raising=False,
-    )
-
-    result = ops_api.get_ops_telegram_audit(object())
-
-    assert result["valid_count"] == 1
-    assert result["anomaly_count"] == 0
 
 
 def test_ops_memberships_overview_combines_memberships_and_growth_in_one_subscription_query(monkeypatch):

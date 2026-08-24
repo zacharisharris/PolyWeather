@@ -7,8 +7,6 @@ import type { User } from "@supabase/supabase-js";
 import {
   User as UserIcon,
   Shield,
-  Fingerprint,
-  Bot,
   RefreshCw,
   LogOut,
   ChevronLeft,
@@ -30,6 +28,7 @@ import {
   Minus,
   ShieldCheck,
   BarChart3,
+  Bot,
   Sparkles,
   ChevronRight,
   Loader2,
@@ -43,12 +42,7 @@ import { markAnalyticsOnce, trackAppEvent } from "@/lib/app-analytics";
 import { useI18n } from "@/hooks/useI18n";
 
 import type { AuthMeResponse } from "./types";
-import {
-  TELEGRAM_BOT_URL,
-  TELEGRAM_GROUP_URL,
-  TELEGRAM_TOPICS_GROUP_URL,
-  WALLETCONNECT_PROJECT_ID,
-} from "./constants";
+import { WALLETCONNECT_PROJECT_ID } from "./constants";
 import { InfoRow, PlusIcon } from "./AccountInfoRow";
 import { AccountFeedbackPanel } from "./AccountFeedbackPanel";
 import { TurnstileWidget } from "@/components/security/TurnstileWidget";
@@ -74,7 +68,6 @@ function pointSourceLabel(source?: string, isEn = false) {
   const key = String(source || "").trim().toLowerCase();
   if (key === "feedback_reward") return isEn ? "Feedback reward" : "反馈奖励";
   if (key === "ops_manual_grant") return isEn ? "Ops manual grant" : "后台补发";
-  if (key === "paid_referral") return isEn ? "Paid referral" : "有效付费邀请";
   if (key === "growth_milestone_reward") return isEn ? "Growth reward" : "增长奖励";
   if (key === "points_redemption") return isEn ? "Payment redemption" : "支付抵扣";
   if (key === "ops_subscription_deduction") return isEn ? "Ops deduction" : "后台订阅扣分";
@@ -101,8 +94,6 @@ export function AccountCenter() {
   const [updatedAt, setUpdatedAt] = useState<string>("");
   const [user, setUser] = useState<User | null>(null);
   const [backend, setBackend] = useState<AuthMeResponse | null>(null);
-  const [referralCodeInput, setReferralCodeInput] = useState("");
-  const [referralApplying, setReferralApplying] = useState(false);
   const [paymentTurnstileToken, setPaymentTurnstileToken] = useState("");
   const [paymentTurnstileResetKey, setPaymentTurnstileResetKey] = useState(0);
 
@@ -131,9 +122,6 @@ export function AccountCenter() {
     paymentError,
     lastIntentId,
     lastPaymentStartedAt,
-    telegramBindOpening,
-    telegramBindUrl,
-    telegramBindCommand,
     manualPayment,
     manualTxHash,
     txValidation,
@@ -148,7 +136,6 @@ export function AccountCenter() {
     setLastIntentId,
     setLastTxHash,
     setLastPaymentStartedAt,
-    setTelegramBindOpening,
     setPaymentMethodTab,
     setManualPayment,
     setManualTxHash,
@@ -203,8 +190,6 @@ export function AccountCenter() {
     createManualPaymentIntent,
     submitManualPaymentTx,
     validateTxHash,
-    createTelegramBotBindCommand,
-    openTelegramBotBindLink,
   } = useAccountPayment({
     isEn,
     supabaseReady,
@@ -396,10 +381,6 @@ export function AccountCenter() {
   const hasQueuedExtension = Boolean(
     isSubscribed && queuedExtensionDays > 0,
   );
-  const canAccessPaidTelegramGroup = Boolean(isSubscribed && !isTrialSubscription);
-  const hasTelegramPanel = Boolean(isTrialSubscription || canAccessPaidTelegramGroup);
-  const telegramBound =
-    Number(backend?.telegram_pricing?.telegram_id || 0) > 0;
   const displayExpiryRaw = isSubscribed
     ? totalExpiryRaw
     : currentExpiryRaw;
@@ -470,16 +451,6 @@ export function AccountCenter() {
     }),
     [displayExpiryRaw, isEn, trialValueReplay],
   );
-  const referral = backend?.referral;
-  const referralCode = String(referral?.code || "").trim();
-  const appliedReferralCode = String(referral?.applied_code || "").trim();
-  const canApplyReferralCode = Boolean(
-    isAuthenticated &&
-      !isSubscribed &&
-      !appliedReferralCode &&
-      referralCodeInput.trim(),
-  );
-
   const focusPaymentManagement = useCallback(() => {
     trackAppEvent("paywall_viewed", {
       entry: "account_center",
@@ -521,37 +492,9 @@ export function AccountCenter() {
     focusPaymentManagement();
   }, [authUserId, focusPaymentManagement, planCode, trialValueReplay]);
 
-  // ── Referral points display ────────────────────────────
-  const referralRewardPointsRaw = Number(referral?.reward_points ?? 3500);
-  const referralRewardPoints = Number.isFinite(referralRewardPointsRaw)
-    ? Math.max(0, referralRewardPointsRaw)
-    : 3500;
-  const monthlyReferralCountRaw = Number(referral?.monthly_reward_count ?? 0);
-  const monthlyReferralCount = Number.isFinite(monthlyReferralCountRaw)
-    ? Math.max(0, monthlyReferralCountRaw)
-    : 0;
-  const monthlyReferralLimitRaw = Number(referral?.monthly_reward_limit ?? 10);
-  const monthlyReferralLimit = Number.isFinite(monthlyReferralLimitRaw)
-    ? Math.max(0, monthlyReferralLimitRaw)
-    : 10;
-  const monthlyReferralPointsRaw = Number(
-    referral?.monthly_reward_points ?? monthlyReferralCount * referralRewardPoints,
-  );
-  const monthlyReferralPoints = Number.isFinite(monthlyReferralPointsRaw)
-    ? Math.max(0, monthlyReferralPointsRaw)
-    : 0;
-  const monthlyReferralPointsLimitRaw = Number(
-    referral?.monthly_reward_points_limit ?? monthlyReferralLimit * referralRewardPoints,
-  );
-  const monthlyReferralPointsLimit = Number.isFinite(monthlyReferralPointsLimitRaw)
-    ? Math.max(0, monthlyReferralPointsLimitRaw)
-    : monthlyReferralLimit * referralRewardPoints;
   const pointsLedger = backend?.points_ledger;
   const pointSourceRows = Object.entries(pointsLedger?.by_source ?? {});
   const recentPointEvents = pointsLedger?.recent ?? [];
-
-  // ── Telegram bind command ──────────────────────────────
-  const bindCommand = telegramBindCommand || copy.telegramBindCommandPlaceholder;
 
   // ── Copy handler ──────────────────────────────────────
   const handleCopy = (text: string) => {
@@ -560,62 +503,6 @@ export function AccountCenter() {
       window.setTimeout(() => setCopied(false), 2000);
     });
   };
-
-  const handleCopyTelegramBindCommand = async () => {
-    if (!isAuthenticated || telegramBindOpening) return;
-    const command = await createTelegramBotBindCommand();
-    if (!command) return;
-    handleCopy(command);
-  };
-
-  const applyReferralCode = useCallback(async () => {
-    const code = referralCodeInput.trim();
-    if (!code || referralApplying) return;
-    setReferralApplying(true);
-    setPaymentError("");
-    setPaymentInfo("");
-    try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (supabaseReady) {
-        const {
-          data: { session },
-        } = await getSupabaseBrowserClient().auth.getSession();
-        const token = String(session?.access_token || "").trim();
-        if (token) headers.Authorization = `Bearer ${token}`;
-      }
-      const res = await fetch("/api/auth/referral/apply", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ code }),
-      });
-      if (!res.ok) {
-        const raw = (await res.text()).slice(0, 240);
-        throw new Error(raw || copy.referralApplyFailed);
-      }
-      setPaymentInfo(copy.referralApplied);
-      setReferralCodeInput("");
-      await loadSnapshot();
-      await loadPaymentSnapshot();
-    } catch (error) {
-      setPaymentError(
-        error instanceof Error ? error.message : copy.referralApplyFailed,
-      );
-    } finally {
-      setReferralApplying(false);
-    }
-  }, [
-    copy.referralApplied,
-    copy.referralApplyFailed,
-    loadPaymentSnapshot,
-    loadSnapshot,
-    referralApplying,
-    referralCodeInput,
-    setPaymentError,
-    setPaymentInfo,
-    supabaseReady,
-  ]);
 
   // ── Render ────────────────────────────────────────────
 
@@ -834,82 +721,8 @@ export function AccountCenter() {
                 {totalPoints.toLocaleString()}
               </p>
             </div>
-            <div className="min-w-[140px] rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 text-center">
-              <p className="mb-1 text-[10px] font-bold uppercase text-emerald-700">
-                {copy.weeklyPoints}
-              </p>
-              <p className="flex items-center justify-center gap-2 text-xl font-bold text-slate-950">
-                <TrendingUp size={16} className="text-emerald-400" />{" "}
-                {monthlyReferralCount.toLocaleString()}
-              </p>
-            </div>
-            <div className="min-w-[140px] rounded-xl border border-blue-200 bg-blue-50 px-6 py-4 text-center">
-              <p className="mb-1 text-[10px] font-bold uppercase text-blue-700">
-                {copy.weeklyRank}
-              </p>
-              <p className="flex items-center justify-center gap-2 text-xl font-bold text-slate-950">
-                <Trophy size={16} className="text-amber-400" />{" "}
-                {monthlyReferralCount}/{monthlyReferralLimit}
-              </p>
-            </div>
           </div>
         </div>
-
-        {/* Referral rewards */}
-        {showSecondarySections ? (
-          <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-4">
-            <div>
-              <h3 className="mb-6 flex items-center gap-2 text-lg font-bold text-slate-950">
-                <Sparkles size={20} className="text-amber-500" />{" "}
-                {copy.weeklyRewards}
-              </h3>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <span className="text-sm flex items-center gap-2">
-                    <Coins size={16} className="text-yellow-500" />{" "}
-                    {copy.referralRewardHint}
-                  </span>
-                  <span className="text-xs font-bold text-amber-600">
-                    +{referralRewardPoints.toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <span className="text-sm flex items-center gap-2">
-                    <TrendingUp size={16} className="text-emerald-500" />{" "}
-                    {copy.weeklyPoints}
-                  </span>
-                  <span className="text-xs font-bold text-slate-600">
-                    {monthlyReferralCount}/{monthlyReferralLimit}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <span className="text-sm flex items-center gap-2">
-                    <Trophy size={16} className="text-blue-500" />{" "}
-                    {copy.totalPoints}
-                  </span>
-                  <span className="text-xs font-bold text-orange-400">
-                    {monthlyReferralPoints.toLocaleString()}/{monthlyReferralPointsLimit.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="mt-6 flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <Info size={14} className="text-slate-500 mt-0.5 shrink-0" />
-              <p className="text-[10px] text-slate-500 leading-normal italic">
-                {copy.pointsRule}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-4">
-            <div className="h-6 w-40 animate-pulse rounded bg-slate-200" />
-            <div className="mt-4 space-y-2">
-              <div className="h-12 animate-pulse rounded-xl bg-slate-100" />
-              <div className="h-12 animate-pulse rounded-xl bg-slate-100" />
-              <div className="h-12 animate-pulse rounded-xl bg-slate-100" />
-            </div>
-          </div>
-        )}
 
         <section className="lg:col-span-12 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -1072,117 +885,9 @@ export function AccountCenter() {
           refreshLabel={copy.refresh}
         />
 
-        {/* Telegram Bot Section & Payment Details */}
+        {/* Payment Details & Wallet Management */}
         {showSecondarySections ? (
-          <div
-            className={`lg:col-span-12 grid grid-cols-1 items-start gap-6 ${
-              hasTelegramPanel ? "xl:grid-cols-[minmax(0,0.9fr)_minmax(620px,1.1fr)]" : ""
-            }`}
-          >
-            {isTrialSubscription && (
-              <section className="group relative min-w-0 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50 p-8 shadow-sm">
-                <Bot
-                  size={140}
-                  className="absolute -right-8 -bottom-8 -rotate-12 text-amber-100"
-                />
-                <div className="relative z-10">
-                  <h3 className="mb-2 flex items-center gap-2 text-lg font-bold text-amber-800">
-                    <Bot size={22} /> {copy.telegramBind}
-                  </h3>
-                  <p className="text-sm leading-6 text-amber-900">
-                    {copy.trialPaidGroupLocked}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={focusPaymentManagement}
-                    disabled={!canStartPayment}
-                    className="mt-5 inline-flex items-center gap-2 rounded-xl border border-amber-700 bg-amber-600 px-4 py-3 text-xs font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Crown size={14} />
-                    {copy.upgradePro}
-                  </button>
-                </div>
-              </section>
-            )}
-            {canAccessPaidTelegramGroup && (
-              <section className="group relative min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-                <Bot
-                  size={140}
-                  className="absolute -right-8 -bottom-8 -rotate-12 text-slate-100 transition-transform duration-1000 group-hover:rotate-0"
-                />
-                <div className="relative z-10">
-                  <h3 className="mb-2 flex items-center gap-2 text-lg font-bold text-blue-700">
-                    <Bot size={22} /> {copy.telegramBind}
-                  </h3>
-                  <p className="mb-6 text-sm text-slate-500">
-                    {copy.telegramHint}
-                  </p>
-
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    {TELEGRAM_TOPICS_GROUP_URL &&
-                      TELEGRAM_TOPICS_GROUP_URL !== TELEGRAM_GROUP_URL &&
-                      telegramBound ? (
-                      <Link
-                        href={TELEGRAM_TOPICS_GROUP_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                      >
-                        {copy.telegramTopicsGroupLink}
-                        <ExternalLink size={12} />
-                      </Link>
-                    ) : null}
-                    {TELEGRAM_GROUP_URL && telegramBound ? (
-                      <Link
-                        href={TELEGRAM_GROUP_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                      >
-                        {copy.telegramGroupLink}
-                        <ExternalLink size={12} />
-                      </Link>
-                    ) : null}
-                  </div>
-                  <div className="flex gap-2">
-                    <code className="flex-grow overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-xs text-blue-700">
-                      {bindCommand}
-                    </code>
-                    <button
-                      onClick={() => void openTelegramBotBindLink()}
-                      disabled={telegramBindOpening || !isAuthenticated}
-                      className="rounded-xl border border-cyan-700 bg-cyan-600 px-4 py-3 text-xs font-bold text-white shadow-sm transition-all hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      title={copy.telegramBotBindLink}
-                      aria-label={copy.telegramBotBindLink}
-                    >
-                      {telegramBindOpening
-                        ? "..."
-                        : copy.telegramBotBindLink}
-                    </button>
-                    <button
-                      onClick={() => void handleCopyTelegramBindCommand()}
-                      disabled={telegramBindOpening || !isAuthenticated}
-                      className="rounded-xl border border-blue-700 bg-blue-600 p-4 text-white shadow-sm transition-all hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      title={copy.copyCommand}
-                      aria-label={copy.copyCommand}
-                    >
-                      {copied ? (
-                        <CheckCircle2 size={20} />
-                      ) : (
-                        <Copy size={20} />
-                      )}
-                    </button>
-                  </div>
-                  <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                    {copy.telegramFallbackHint}
-                  </p>
-                  <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">
-                    {copy.paymentManualSupport}
-                  </div>
-                </div>
-              </section>
-            )}
-
+          <div className="lg:col-span-12 grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(620px,1.1fr)]">
             {/* Payment Details / Wallet Management */}
             <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:p-7">
               <div>
@@ -1197,16 +902,6 @@ export function AccountCenter() {
                 {!paymentError && paymentInfo ? (
                   <div className="mb-4 rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-[11px] text-cyan-800">
                     {paymentInfo}
-                    {telegramBindUrl ? (
-                      <a
-                        href={telegramBindUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1 block break-all text-cyan-700 underline hover:text-cyan-900"
-                      >
-                        {telegramBindUrl}
-                      </a>
-                    ) : null}
                   </div>
                 ) : null}
                 {!paymentHostAllowed ? (
@@ -1221,9 +916,7 @@ export function AccountCenter() {
                 <div
                   id="payment-management"
                   data-testid="payment-management-grid"
-                  className={`grid gap-6 lg:items-start ${
-                    hasTelegramPanel ? "" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]"
-                  }`}
+                  className="grid gap-6 lg:items-start lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]"
                 >
                   <div className="space-y-5">
                     <div>
@@ -1262,79 +955,10 @@ export function AccountCenter() {
                           );
                         })}
                       </div>
-                      {appliedReferralCode && selectedPlanCode === "pro_monthly" ? (
-                        <p className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
-                          {copy.referralDiscountHint}
-                        </p>
-                      ) : null}
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <p className="text-xs font-bold uppercase text-slate-700">
-                          {copy.referralTitle}
-                        </p>
-                        <span className="text-[10px] text-slate-500">
-                          {copy.referralInviteLimit}
-                        </span>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                        <div>
-                          <p className="mb-1 text-[10px] uppercase text-slate-500">
-                            {copy.referralMyCode}
-                          </p>
-                          <div className="flex gap-2">
-                            <code className="min-w-0 flex-1 truncate rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-blue-700">
-                              {referralCode || "--"}
-                            </code>
-                            {referralCode ? (
-                              <button
-                                type="button"
-                                onClick={() => handleCopy(referralCode)}
-                                className="rounded-xl border border-blue-700 bg-blue-600 px-3 text-xs font-bold text-white hover:bg-blue-700"
-                              >
-                                {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
-                              </button>
-                            ) : null}
-                          </div>
-                          <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                            {copy.referralRewardHint}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="mb-1 text-[10px] uppercase text-slate-500">
-                            {copy.referralApplyLabel}
-                          </p>
-                          {appliedReferralCode ? (
-                            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
-                              {appliedReferralCode}
-                            </div>
-                          ) : (
-                            <div className="flex gap-2">
-                              <input
-                                value={referralCodeInput}
-                                onChange={(event) => setReferralCodeInput(event.target.value)}
-                                placeholder={copy.referralApplyPlaceholder}
-                                className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => void applyReferralCode()}
-                                disabled={!canApplyReferralCode || referralApplying}
-                                className="rounded-xl border border-slate-900 bg-slate-900 px-3 text-xs font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {referralApplying ? "..." : copy.referralApplyButton}
-                              </button>
-                            </div>
-                          )}
-                          <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                            {copy.referralDiscountHint}
-                          </p>
-                        </div>
-                      </div>
                     </div>
                     <div
                       data-testid="payment-guard-grid"
-                      className={`grid gap-3 ${hasTelegramPanel ? "" : "sm:grid-cols-2"}`}
+                      className="grid gap-3 sm:grid-cols-2"
                     >
                       <InfoRow
                         icon={Mail}

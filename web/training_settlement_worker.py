@@ -8,6 +8,7 @@ import os
 import signal
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from types import FrameType
 from typing import Optional
 
@@ -62,13 +63,44 @@ def _parse_args() -> argparse.Namespace:
         default=_env_int("POLYWEATHER_TRAINING_SETTLEMENT_LOOKBACK_DAYS", 10),
     )
     parser.add_argument("--cities", nargs="*", default=None)
+    parser.add_argument(
+        "--analysis-batch-size",
+        type=int,
+        default=_env_int("POLYWEATHER_TRAINING_SETTLEMENT_ANALYSIS_BATCH_SIZE", 0),
+    )
     return parser.parse_args()
 
 
-def _run_once(*, lookback_days: int, cities: Optional[list[str]]) -> dict:
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name) or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _run_once(
+    *, lookback_days: int, cities: Optional[list[str]], analysis_batch_size: int = 0
+) -> dict:
+    skip_analysis = _env_bool(
+        "POLYWEATHER_TRAINING_SETTLEMENT_SKIP_ANALYSIS", default=False
+    )
+    # Reconcile is the settled-truth backfill path (METAR/HKO/NOAA per-city,
+    # incremental since the single-city load/upsert rework) and is now cheap;
+    # it keeps daily_records.actual_high fresh for training.
+    skip_reconcile = _env_bool(
+        "POLYWEATHER_TRAINING_SETTLEMENT_SKIP_RECONCILE", default=False
+    )
     result = run_training_settlement_cycle(
         cities=cities,
         lookback_days=lookback_days,
+        skip_analysis=skip_analysis,
+        skip_reconcile=skip_reconcile,
+        analysis_batch_size=analysis_batch_size,
+        analysis_interval_sec=max(
+            300, _env_int("POLYWEATHER_TRAINING_SETTLEMENT_INTERVAL_SEC", 21600)
+        ),
     )
     try:
         snapshot_result = refresh_deb_weight_snapshots(cities=cities)
@@ -77,23 +109,57 @@ def _run_once(*, lookback_days: int, cities: Optional[list[str]]) -> dict:
         logger.exception("deb weight snapshot refresh failed: {}", exc)
         result["weight_snapshots"] = {"error": str(exc)}
     try:
-        daily_records = DailyRecordRepository().load_all()
-        calibration = train_deb_quantile_calibrator(
-            daily_records,
-            model_dir=str(
-                os.getenv(
-                    "POLYWEATHER_DEB_ML_MODEL_DIR",
-                    "/app/data/models/deb_calibrator",
-                )
-                or "/app/data/models/deb_calibrator"
-            ).strip(),
+        # Retention guard: the probability snapshot archive is only consumed
+        # for lead derivation in training; it must not grow unbounded.
+        retention_days = max(
+            30,
+            int(
+                os.getenv("POLYWEATHER_PROBABILITY_SNAPSHOT_RETENTION_DAYS", "365")
+                or 365
+            ),
         )
-        result["deb_ml_calibration"] = calibration
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat(timespec="seconds")
+        from src.database.runtime_state import ProbabilitySnapshotRepository
+
+        pruned = ProbabilitySnapshotRepository().prune_before(cutoff)
+        result["snapshot_prune"] = {"retention_days": retention_days, "pruned": pruned}
+    except Exception as exc:
+        logger.exception("probability snapshot prune failed: {}", exc)
+        result["snapshot_prune"] = {"error": str(exc)}
+    try:
+        if not _env_bool("POLYWEATHER_DEB_ML_CALIBRATION"):
+            # Inference only applies the LightGBM residual path when this flag
+            # is on (deb_ml_calibration._deb_ml_flag_enabled); training it
+            # unconditionally burns memory/time on production for a model that
+            # is never applied.
+            result["deb_ml_calibration"] = {
+                "skipped": True,
+                "reason": "POLYWEATHER_DEB_ML_CALIBRATION disabled",
+            }
+        else:
+            daily_records = DailyRecordRepository().load_all(
+                fields=("forecasts", "actual_high", "deb_prediction", "mu")
+            )
+            calibration = train_deb_quantile_calibrator(
+                daily_records,
+                model_dir=str(
+                    os.getenv(
+                        "POLYWEATHER_DEB_ML_MODEL_DIR",
+                        "/app/data/models/deb_calibrator",
+                    )
+                    or "/app/data/models/deb_calibrator"
+                ).strip(),
+            )
+            result["deb_ml_calibration"] = calibration
     except Exception as exc:
         logger.exception("deb ml calibration training failed: {}", exc)
         result["deb_ml_calibration"] = {"error": str(exc)}
     try:
-        daily_records = DailyRecordRepository().load_all()
+        daily_records = DailyRecordRepository().load_all(
+            fields=("forecasts", "actual_high", "deb_prediction", "mu")
+        )
         stats = train_deb_lead_stats(daily_records)
         DebNormalResidualStatsRepository().upsert_stats(stats)
         result["deb_normal_residual_stats"] = {
@@ -116,16 +182,21 @@ def main() -> None:
     args = _parse_args()
 
     if args.once:
-        result = _run_once(lookback_days=args.lookback_days, cities=args.cities)
+        result = _run_once(
+            lookback_days=args.lookback_days,
+            cities=args.cities,
+            analysis_batch_size=args.analysis_batch_size,
+        )
         print(json.dumps(result, ensure_ascii=False))
         return
 
     interval_sec = max(300, int(args.interval_sec or 21600))
     initial_delay_sec = max(0, int(args.initial_delay_sec or 0))
     logger.info(
-        "training settlement worker started interval={}s lookback_days={}",
+        "training settlement worker started interval={}s lookback_days={} analysis_batch_size={}",
         interval_sec,
         args.lookback_days,
+        args.analysis_batch_size,
     )
     if initial_delay_sec and _STOP_EVENT.wait(initial_delay_sec):
         return
@@ -133,7 +204,11 @@ def main() -> None:
     while not _STOP_EVENT.is_set():
         started = time.time()
         try:
-            _run_once(lookback_days=args.lookback_days, cities=args.cities)
+            _run_once(
+                lookback_days=args.lookback_days,
+                cities=args.cities,
+                analysis_batch_size=args.analysis_batch_size,
+            )
         except Exception as exc:
             logger.exception("training settlement cycle failed: {}", exc)
         elapsed = time.time() - started

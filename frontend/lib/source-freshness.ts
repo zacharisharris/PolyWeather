@@ -32,15 +32,6 @@ const DEFAULT_SOURCE_PROFILE: SourceProfile = {
 };
 
 const SOURCE_PROFILES: Record<string, SourceProfile> = {
-  amos: {
-    code: "amos",
-    label: "AMOS",
-    nativeUpdateIntervalSec: DASHBOARD_REFRESH_POLICY_SEC.observation,
-    freshWindowSec: 180,
-    expectedGraceSec: 180,
-    staleAfterSec: 900,
-    pollIntervalSec: DASHBOARD_REFRESH_POLICY_SEC.observation,
-  },
   jma: {
     code: "jma",
     label: "JMA",
@@ -77,15 +68,6 @@ const SOURCE_PROFILES: Record<string, SourceProfile> = {
     staleAfterSec: 900,
     pollIntervalSec: DASHBOARD_REFRESH_POLICY_SEC.observation,
   },
-  mgm: {
-    code: "mgm",
-    label: "MGM",
-    nativeUpdateIntervalSec: 900,
-    freshWindowSec: 900,
-    expectedGraceSec: 900,
-    staleAfterSec: 3600,
-    pollIntervalSec: 300,
-  },
   metar: DEFAULT_SOURCE_PROFILE,
   noaa: DEFAULT_SOURCE_PROFILE,
   wunderground: DEFAULT_SOURCE_PROFILE,
@@ -103,12 +85,10 @@ const SOURCE_PROFILES: Record<string, SourceProfile> = {
 function canonicalSourceCode(value?: string | null) {
   const code = normalizeObservationSourceCode(value || "metar");
   if (!code) return "metar";
-  if (code.includes("amos")) return "amos";
   if (code.includes("jma")) return "jma";
   if (code.includes("fmi")) return "fmi";
   if (code.includes("knmi")) return "knmi";
   if (code.includes("hko")) return "hko";
-  if (code.includes("mgm")) return "mgm";
   if (code.includes("noaa")) return "noaa";
   if (code.includes("nmc")) return "nmc";
   return code;
@@ -195,21 +175,6 @@ export function buildObservationFreshness({
 
 export function getObservationFreshness(detail?: CityDetail | null) {
   if (!detail) return null;
-  const hasAmosRunway =
-    (detail.amos?.runway_obs?.temperatures?.length || 0) > 0 ||
-    (detail.amos?.runway_temps?.length || 0) > 0;
-  if (hasAmosRunway || detail.amos?.source === "amos") {
-    return buildObservationFreshness({
-      observedAt: detail.amos?.observation_time || null,
-      observedAtLocal:
-        detail.amos?.observation_time_local ||
-        detail.airport_current?.obs_time ||
-        detail.current?.obs_time ||
-        null,
-      sourceCode: detail.amos?.source || "amos",
-      sourceLabel: detail.amos?.source_label || "AMOS",
-    });
-  }
   const currentSource = canonicalSourceCode(
     detail.current?.source_code ||
       detail.current?.settlement_source ||

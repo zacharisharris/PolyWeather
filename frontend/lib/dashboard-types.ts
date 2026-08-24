@@ -186,17 +186,6 @@ export interface PeakInfo {
   status?: string;
 }
 
-export interface MgmData {
-  temp?: number | null;
-  time?: string | null;
-  today_high?: number | null;
-  today_low?: number | null;
-  hourly?: Array<{
-    time?: string | null;
-    temp?: number | null;
-  }>;
-}
-
 export interface ForecastDay {
   date: string;
   max_temp: number | null;
@@ -531,46 +520,6 @@ export interface ScanTerminalDiff {
   removed_row_ids?: string[];
 }
 
-export interface WeatherNext2Summary {
-  members: number;
-  mean: number | null;
-  median: number | null;
-  p10: number | null;
-  p25: number | null;
-  p75: number | null;
-  p90: number | null;
-  min: number | null;
-  max: number | null;
-  spread: number | null;
-}
-
-export interface WeatherNext2Bucket {
-  key: string;
-  label: string;
-  lower: number;
-  upper: number;
-  value: number;
-  probability: number;
-  member_count: number;
-  total_members: number;
-}
-
-export interface WeatherNext2CityData {
-  source: string;
-  provider: string;
-  city: string;
-  target_date: string | null;
-  source_run: string | null;
-  generated_at: string;
-  temp_symbol: string;
-  members: number;
-  member_highs: Record<string, number>;
-  member_high_times?: Record<string, string> | null;
-  summary: WeatherNext2Summary;
-  buckets: WeatherNext2Bucket[];
-  top_bucket: WeatherNext2Bucket | null;
-}
-
 export interface ScanOpportunityRow {
   id: string;
   rank?: number | null;
@@ -737,7 +686,6 @@ export interface ScanOpportunityRow {
   v4_metar_decision?: "approve" | "veto" | "downgrade" | "watchlist" | string | null;
   v4_metar_reason_zh?: string | null;
   v4_metar_reason_en?: string | null;
-  weathernext2?: WeatherNext2CityData | null;
 }
 
 export interface PrimarySignal extends ScanOpportunityRow {}
@@ -832,9 +780,8 @@ export interface CityDetail {
     time?: string;
     temp?: number | null;
   }>;
-  mgm?: MgmData;
-  mgm_nearby?: NearbyStation[];
-  official_nearby?: NearbyStation[];
+  nearby_stations?: NearbyStation[];
+  mgm_nearby?: NearbyStation[];  official_nearby?: NearbyStation[];
   nearby_source?: string;
   official_network_source?: string;
   official_network_status?: {
@@ -981,48 +928,8 @@ export interface CityDetail {
   source_forecasts?: SourceForecasts;
   market_scan?: MarketScan;
   intraday_meteorology?: IntradayMeteorology;
-  amos?: AmosData | null;
   top_buckets?: MarketTopBucket[] | null;
   all_buckets?: MarketTopBucket[] | null;
-}
-
-export interface AmosData {
-  temp?: number | null;
-  temp_c?: number | null;
-  dew?: number | null;
-  dew_c?: number | null;
-  pressure_hpa?: number | null;
-  wind_kt?: number | null;
-  temp_source?: string | null;
-  runway_temps?: Array<[number | null, number | null]> | null;
-  runway_temp_range?: [number, number] | null;
-  source?: string | null;
-  source_label?: string | null;
-  icao?: string | null;
-  station_label?: string | null;
-  raw_metar?: string | null;
-  raw_taf?: string | null;
-  runway_obs?: {
-    runway_pairs?: Array<[string, string]> | null;
-    temperatures?: Array<[number | null, number | null]> | null;
-    point_temperatures?: Array<{
-      runway?: string | null;
-      temp?: number | null;
-      tdz_temp?: number | null;
-      mid_temp?: number | null;
-      end_temp?: number | null;
-      target_runway_max?: number | null;
-    }> | null;
-    pressures_hpa?: Array<number | null> | null;
-    wind_directions?: Array<[number, number, number] | null> | null;
-    wind_speeds?: Array<[number, number, number] | null> | null;
-    visibility_mor?: Array<number | null> | null;
-    rvr?: Array<number | null> | null;
-  } | null;
-  observation_source?: string | null;
-  observation_source_zh?: string | null;
-  observation_time?: string | null;
-  observation_time_local?: string | null;
 }
 
 

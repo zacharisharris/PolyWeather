@@ -1,12 +1,76 @@
 # Changelog
 
-## 1.9.0 - 2026-08-01（待发布）
+## 1.9.1 - 2026-08-22
+
+### 训练数据链恢复
+- **训练结算 worker 轮转分析**：新增 `POLYWEATHER_TRAINING_SETTLEMENT_ANALYSIS_BATCH_SIZE`（默认 6），`SKIP_ANALYSIS=false` 时每周期只分析 N 城、按墙钟时间片轮转（无状态、重启安全），reconcile 保持全量；解决 6 月中旬起 forecast 快照断供导致的训练集饥饿，且不复辟 51 城全量分析的 OOM。生产已激活并跑通首轮（51 城 processed / 内存 ~100MB）。
+
+### 移除 MGM（土耳其气象局）
+- **MGM 数据源整套下线**：删除 `mgm_sources.py` 采集器、`TurkeyMgmNetworkProvider`、canonical 结算权重与适配映射、latest-observation 覆盖层、观测 collector profile 与健康探针；安卡拉/伊斯坦布尔结算与实况回归 METAR 机场报文（LTAC/LTFM）。
+- **前端同步清理**：MGM 图表线/图例/标签特判、`isTurkishMgmCity`、轴回退路径、`MgmData` 类型、公开内容页 MGM 来源页与安卡拉简报表述全部移除；周边站载荷键 `mgm_nearby` 改名 `nearby_stations`（读取兼容旧键）。
+
+### 预测 API 扩展
+- **deb-forecast 默认清单扩至 24 城**：新增东京 (RJTT)、吉隆坡 (WMKK, 补 `klia` 别名)、阿姆斯特丹 (EHAM)；registry 全量 51 城仍可通过 `cities` 参数查询。
+
+### 深圳结算源切换
+- **流浮山 HKO (LFS) 结算下线**：深圳结算源切为宝安机场 ZGSZ METAR；`hko_obs` 站表移除深圳条目、registry 删除 `disable_aviationweather`/LFS 站点配置、`laufaushan`/`流浮山` 别名清理（`lfs` 别名保留）；前端深圳 HKO 图表特判（曲线交换、紧凑标签、METAR 隐藏）全部移除。
+
+### 城市清单修正
+- **Jakarta 移除收尾**：静态城市清单删除 Jakarta、补齐此前缺失的济南/郑州，落地页城市数 50 → 51，与生产 registry 完全对齐。
+
+ ## 1.9.0 - 2026-08-16（待发布）
+
+### 预测 API（外部项目接入）
+- **新增 `/api/cities/deb-forecast`**：输出 23 城（10 中国 + 13 国际监控）的 DEB 融合预测 + 多模型 3 天日报（`models_daily`），鉴权同 pro 接口（entitlement token）；`cities` 参数可自定义任意 registry 城市。
+- **结果缓存 5 分钟**：全量计算一次，TTL 内单城/全量请求切片秒回（生产实测冷算 ~11s → 二次调用 ~1.4s）。
+- **事件循环安全**：并发计算改用 asyncio 门控（并发 2），不再阻塞 `/healthz` 与其他请求。
+- **新增 3 城到 registry**：济南 ZSJN、郑州 ZHCC 加入结算与预测；深圳即流浮山（HKO 站），`lau fau shan` 作为别名映射 `shenzhen`，不重复提供。
+
+### 移除机场报文曲线（用户强需求）
+- **METAR 报文曲线全部移除**：前端 1D 图表不再绘制普通 METAR 温度曲线（`metar 系列`），StatsBars 冗余温度块同步隐藏；MADIS 仅保留官方网络（MGM / JMA AMeDAS / HKO / 安卡拉与伊斯坦布尔 MGM fallback）。
+- TAF 信号、官方网络增强曲线（JMA/HKO/MGM 等）与结算源曲线保留。
+
+### DEB 校准与质量改进
+- **温度段独立 σ**：`temp_sigmas` 分层（≥37°C 等温度段独立稳健 σ，样本 ≥30 才产出，旧 stats 兼容回退）；≥37°C cov90 0.820→0.893、chi2 234→205。
+- **近期加权城市偏差**：`train_deb_lead_stats` 城市偏差由全历史中位数改为近 14 天指数衰减加权（0.9^天数），无近期样本回退全历史；7 月高估 → 8 月复热后中国城市偏差 2 周内翻转收敛。
+- **推理校正放开**：`max_adjustment` 3°C → 5°C（7 月多模型系统性高估 4-6°C 不再被截断）、`bias_lookback_days` 30 → 21 天；生产验证 mexico city / madrid / sao paulo 校正从 -3.0 放开至 -5.0。
+- **`load_history` 全量重载风暴修复**：SQLite 模式加缓存命中（此前每次城市分析全表加载 daily_records_store，并发分析打满 CPU 卡死）；reconcile/seed 直写后失效缓存。
+
+### 3 天 72 小时图表
+- 图表新增 3D 时间窗：观测/模型共识 median/min/max/DEB 锚点（`build72hChartData`），detail 构建时缓存缺 hourly 自动补拉（生产 4 城均 72 点）。
+- x 轴每小时刻度 + 午夜日期标记（`M/D`）；修复 72 刻度重叠错位：每 6 小时一个刻度（午夜仍在网格），字号调大。
+
+### 服务端事故修复（2026-08-16 生产事故）
+- **根因**：SQLite 膨胀至 18.9GB（`raw_observation_store` 8.6GB + `intraday_path_snapshots_store` 2.5GB + **312 万行 failed 观察刷新队列**）→ 慢查询与三进程锁竞争阻塞事件循环 → 源站假死（Cloudflare 侧无故障，对外表现为超时）。
+- **恢复**：清空 312 万行 failed 队列并加 `(city, source, status)` 索引；两表重建保留 30 天；训练快照表清空；`VACUUM` 收缩 18.9GB → 2GB；WAL 51GB 回收；磁盘 78G → 27G。
+- **防复发**：`METAR 空响应（204/非 JSON）` 不再中断分析链（降级为缺测）；预测 API 不再阻塞事件循环。
+- 修复后生产稳定：healthz 8ms、CPU <1%（此前周期 100%+ 空转）。
+
+### 新用户引导与性能
+- **终端三步引导**（`TerminalOnboardingTour`）：实况锚点 → DEB → 市场概率，`localStorage polyweather_terminal_onboarding_v1`。
+- 落地页次要路由 `prefetch=false`（Load 7.7s → 4.4s）、`tel.png` → `tel.webp`（352KB → 89KB）、Cloudflare 静态资源 1 年缓存。
+- 支付地址白名单拆分：合约模式校验新合约 `0x1fD90A`、manual 模式校验直转 EOA `0x351a1bca`（修复断链，旧 EOA 59.8 USDC 已取回）。
+
+### 训练与真值链
+- **训练 OOM 修复**：`load_all_rows()` 全量加载 65.9 万行快照 → SQL 聚合 `load_earliest_lead_days()`（内存 3GB → 94MB，cycle 40 分钟 → 3 分钟，samples 3472 → 3586+）。
+- **真值回填恢复**：reconcile 改单城增量（`load_city` / `upsert_record`），生产 `actual_high` 回填至当天。
+- **NOAA 免费接口**：SynopticData（需 token）→ aviationweather METAR（免费），生产零 401。
+
+### 移除套利对比
+- **Polymarket 套利对比整套下线**：删除 `/api/arbitrage/*` 路由与服务（`web/routers/arbitrage.py`、`web/services/arbitrage_service.py`）、Redis 结果缓存与 warmer 预热、前端 `ArbitrageDashboard` 与侧边栏第 5 项、`arbitrage-client`/`arbitrage-types` 客户端模块。
+- 相关配置（`POLYWEATHER_ARBITRAGE_*`、`POLYWEATHER_WARMER_ARBITRAGE_INTERVAL_SEC`）与文档清理。
+
+### 移除 WeatherNext2
+- **Google WeatherNext2 整套下线**：删除 `weathernext2_worker` 服务、GCS Zarr 读取（`weathernext2_fetcher.py`）、概率构建（`weathernext2_sources.py`）、LightGBM 分位校准（`weathernext2_calibration.py`）与 worker 入口；`docker-compose.yml`、`deploy.sh`、`.env.example` 对应配置清理。
+- 概率回退链收敛：`deb_normal` 为唯一概率引擎（失败时无概率载荷，`probability_engine=None`），不再有 weathernext2 fallback 分支。
+- 前端侧边栏移除 WeatherNext2 项与 `WeatherNext2Dashboard` 组件；`ScanOpportunityRow.weathernext2` 字段与类型删除。
+- NOAA 结算站实时/回填数据源从 SynopticData（需 token）切换为免费 aviationweather.gov METAR 接口，`NOAA_WRH_MESO_TOKEN` 配置移除。
+
 
 > 自 1.8.1（2026-05-28）以来共 393 个提交；`VERSION` 文件仍为 `1.8.1`，发布时同步。
 
 ### 新增能力
 - **WeatherNext2 接入**：新增 `weathernext2_worker` 服务，从 GCS Zarr 读取 Google WeatherNext2 集合预报（`WEATHERNEXT2_BACKEND=gcs_zarr`），6 小时周期生成 `weathernext2_city_highs.json` 高温度数文件（带 `.bak` 兜底），并通过 `src/analysis/weathernext2_calibration.py` 的 LightGBM 校准器输出 q10 / q50 / q90 分位。
-- **套利对比上线**：新增 Polymarket 套利对比模块（侧边栏第 5 项），提供 `/api/arbitrage/overview`、`/api/arbitrage/overview-batch`（全城市批量概览）与 `/api/arbitrage/cities`（动态城市列表，基于 Polymarket public-search 结果）；支持 Redis 共享缓存（默认 TTL 3600s）、批量并发（默认 4）与部分超时（默认 15s）。
 - **DEB 正态概率引擎**：新增 `src/analysis/deb_probability.py`，以正态分布计算整度温度概率 `P(T==τ)=Φ((τ+0.5-μ)/σ)-Φ((τ-0.5-μ)/σ)`，取代 legacy 高斯分桶成为主概率路径；引擎优先级为 `dead_market > deb_normal > weathernext2`，legacy 高斯保留为 `trend_engine.py` 回退分支（`engine_mode` 展示 `deb_normal` / `legacy`）。
 - **训练结算服务**：新增 `training_settlement` 服务（初始延迟 60s、周期 6h、回看 10 天），配合领域仓库重构（`src/database/repos/` 9 个领域仓库）与 SQLite 主路径收口。
 - **Ops 能力扩展**：新增 `/api/ops/leaderboard/weekly`、`/api/ops/memberships`、`/api/ops/feedback`、`/api/ops/users/grant-points`；后端 ops 逻辑收口为 `web/services/ops/` 子包（config / health / market_opportunities / payments / users）；`web/services/ops/health.py` 支持探测 14 个外部服务。
@@ -33,8 +97,7 @@
 
 ### 修复与优化
 - **DEB 正态引擎校准改进**：残差训练基准改为存储的 `deb_prediction`（与推理一致，消除 14% 记录因基准错位导致的调整错配）；σ 改为 MAD 稳健估计（退化池返回下限，避免单个离群值撑大，并按重尾残差加 1.05 膨胀）；城市/温度段偏差组样本门槛从 10 提到 30（剔除 >=37C 等小样本组的有害调整）。重跑校准对比：整体 PIT chi2 624→57、std 0.218→0.294（近理想 0.289）、cov90 0.925→0.824，33-36C 段 chi2 130→44、cov90 0.978→0.897。
-- 套利对比由单城市切为全城市同时展示（新增批量概览接口，HEAD `4a136d5ca`）。
-- 前端侧边栏扩展为 6 项（概览、日内分析、WeatherNext2、多日预报、套利对比、训练数据）。
+- 前端侧边栏（概览、日内分析、WeatherNext2、多日预报、训练数据）。
 
 ## 1.8.1 - 2026-05-28
 
@@ -119,7 +182,7 @@
 - 移除 dead code（1,697 行）：public/static/style.css + public/legacy/index.html
 - Dashboard.module.css 本地变量桥接至全局 token
 - 清理冗余文档：移除 FRONTEND_REDESIGN_REPORT.md、TECH_DEBT.md 重复文件、AGENTS.md
-- 参考：docs/frontend-ui-design-review.md 完整修复记录
+- 参考：docs/reviews/frontend-ui-design-review.md 完整修复记录
 
 ## 1.5.5 - 2026-04-27
 

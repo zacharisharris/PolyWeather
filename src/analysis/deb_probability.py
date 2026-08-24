@@ -1,4 +1,4 @@
-"""DEB normal-distribution probability engine (replaces weathernext2 as primary).
+"""DEB normal-distribution probability engine (primary).
 
 Serves Polymarket integer-degree bucket markets (e.g. "highest temperature in
 Shanghai on Aug 1": buckets 31C-or-below / 32 / ... / 41C-or-higher, resolved to
@@ -13,7 +13,7 @@ Distribution model (validated in data/deb_polymarket_buckets_report.json):
 {0, 1, 2} where 2 means "2+ days". bias(lead)/sigma(lead) are pooled across
 cities (53-city residual pool), trained walk-forward without leakage.
 
-The payload shape matches `_weathernext2_probability_payload` so downstream
+The payload shape keeps the legacy probability contract so downstream
 consumers (web/analysis_service.py probabilities block) work unchanged.
 """
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from src.database.runtime_state import (
     DebNormalResidualStatsRepository,
@@ -46,6 +46,13 @@ TEMP_BUCKET_KEYS = ("<=32", "33-36", ">=37")
 # James-Stein shrinkage strength for city / temperature-bucket bias adjustments:
 # adj = (n / (n + k)) * (group_median - lead_median). Small groups shrink to 0.
 BIAS_SHRINK_K = 5.0
+
+# Recency weighting for the city bias: residuals within this many days of the
+# latest settled date are exponentially weighted (RECENT_BIAS_DECAY ** days_ago)
+# so the bias tracks regime shifts instead of lagging them. Cities without
+# recent samples fall back to their full-history median.
+RECENT_BIAS_WINDOW_DAYS = 14
+RECENT_BIAS_DECAY = 0.9
 
 # Minimum group samples before a city / temperature-bucket bias adjustment is
 # emitted (below this the adjustment is treated as noise). 30 was chosen after
@@ -99,9 +106,20 @@ def _bias_for_lead(stats: Optional[Dict[str, Any]], lead_key: int) -> float:
     return value if value is not None else 0.0
 
 
-def _sigma_for_lead(stats: Optional[Dict[str, Any]], lead_key: int) -> float:
+def _sigma_for_lead(
+    stats: Optional[Dict[str, Any]], lead_key: int, temp_key: Optional[str] = None
+) -> float:
     if not stats:
         return 2.5
+    # Temperature-stratum sigma (per lead) wins when available: hot-day
+    # residual pools are much tighter than the pooled lead pool, and using the
+    # pooled sigma made >=37C PIT std collapse to ~0.19 (over-confident).
+    if temp_key:
+        temp_sigmas = stats.get("temp_sigmas") or {}
+        lead_temp = temp_sigmas.get(str(lead_key)) or {}
+        value = _sf(lead_temp.get(temp_key))
+        if value is not None:
+            return max(value, MIN_SIGMA)
     sigmas = stats.get("lead_sigmas") or {}
     value = _sf(sigmas.get(str(lead_key)))
     if value is None:
@@ -195,14 +213,15 @@ def _build_deb_normal_probability_payload(
     """Build the {engine, mu, probabilities, probabilities_all} probability payload.
 
     All internal math is Celsius. For Fahrenheit cities the buckets are converted
-    to whole Fahrenheit degrees before emission (matching Wunderground resolution).
+    to whole Fahrenheit degrees before emission (matching the NOAA METAR
+    whole-degree settlement resolution).
 
     `city` enables lead-stratified city bias adjustments (James-Stein shrunk),
     and the temperature stratum is derived from the *forecast* value so the
     33-36C warm-bias correction applies where it was measured.
 
     Returns None when stats are missing or deb_prediction is unusable (caller then
-    falls through to the weathernext2 branch).
+    falls through to the legacy Gaussian branch).
     """
     deb_c = _sf(deb_prediction)
     if deb_c is None:
@@ -214,7 +233,7 @@ def _build_deb_normal_probability_payload(
     bias = _bias_for_lead(stats, lead_key)
     temp_key = _temp_bucket_key(deb_c)
     bias += _bias_adjustment(stats, lead_key, city, temp_key)
-    sigma = _sigma_for_lead(stats, lead_key)
+    sigma = _sigma_for_lead(stats, lead_key, temp_key)
     mu_c = deb_c + bias
 
     # Celsius bucket range covering mu +- 4 sigma.
@@ -290,30 +309,14 @@ def _walk_forward_deb_residuals(
     # Earliest snapshot timestamp per (city, date) for lead computation.
     lead_by_cd: Dict[tuple[str, str], int] = {}
     try:
+        # SQL-side aggregation: the snapshot table grows to hundreds of
+        # thousands of rows (payload_json included); loading all of them just
+        # to derive one lead integer per (city, date) cost multiple GB of RAM
+        # and OOM-killed the training worker on production.
         snap_repo = ProbabilitySnapshotRepository()
-        snap_rows = snap_repo.load_all_rows()
-        from datetime import datetime
-
-        for row in snap_rows:
-            ts = row.get("timestamp")
-            date_str = row.get("target_date") or row.get("date")
-            if not ts or not date_str:
-                continue
-            try:
-                ts_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                tgt_dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
-            except Exception:
-                continue
-            key = (str(row.get("city") or "").strip().lower(), str(date_str)[:10])
-            if key[0] and key[1]:
-                lead = (tgt_dt.date() - ts_dt.date()).days
-                cur = lead_by_cd.get(key)
-                if cur is None or lead < cur:
-                    lead_by_cd[key] = lead
+        lead_by_cd.update(snap_repo.load_earliest_lead_days())
     except Exception:
         pass
-
-    from datetime import datetime
 
     rows: List[Dict[str, Any]] = []
     for city, by_date in (daily_records or {}).items():
@@ -389,17 +392,57 @@ def train_deb_lead_stats(
     """
     rows = _walk_forward_deb_residuals(daily_records)
     by_lead: Dict[int, List[float]] = {}
-    by_lead_city: Dict[tuple[int, str], List[float]] = {}
+    by_lead_city: Dict[tuple[int, str], Dict[str, List[float]]] = {}
     by_lead_temp: Dict[tuple[int, str], List[float]] = {}
+    # Baseline date for recency weighting: the latest settled target date.
+    latest_date: Optional[str] = None
     for row in rows:
         lead_key = _lead_key(row["lead"])
         by_lead.setdefault(lead_key, []).append(row["residual_c"])
         city = str(row.get("city") or "").strip().lower()
         if city:
-            by_lead_city.setdefault((lead_key, city), []).append(row["residual_c"])
+            by_lead_city.setdefault((lead_key, city), {"recent": [], "all": []})[
+                "all"
+            ].append(row["residual_c"])
+            if latest_date is None or str(row.get("target_date") or "") > latest_date:
+                latest_date = str(row.get("target_date") or "")[:10]
         temp_key = _temp_bucket_key(row.get("raw_c"))
         if temp_key:
             by_lead_temp.setdefault((lead_key, temp_key), []).append(row["residual_c"])
+
+    # Recency-weighted residuals for the city bias: weather regimes shift over
+    # weeks, so a full-history median bias lags (China 7月 high-bias episode:
+    # model over-predicted convective-cooled highs, then under-predicted the
+    # August reheat). Weight the recent window exponentially and fall back to
+    # the full history only when the city has no recent settled samples.
+    if latest_date:
+        from datetime import datetime
+
+        latest_dt = None
+        try:
+            latest_dt = datetime.strptime(latest_date, "%Y-%m-%d")
+        except Exception:
+            latest_dt = None
+        if latest_dt is not None:
+            for row in rows:
+                try:
+                    target_dt = datetime.strptime(
+                        str(row.get("target_date") or "")[:10], "%Y-%m-%d"
+                    )
+                except Exception:
+                    continue
+                days_ago = (latest_dt - target_dt).days
+                if days_ago < 0 or days_ago > RECENT_BIAS_WINDOW_DAYS:
+                    continue
+                city = str(row.get("city") or "").strip().lower()
+                if not city:
+                    continue
+                lead_key = _lead_key(row["lead"])
+                entry = by_lead_city.get((lead_key, city))
+                if entry is not None:
+                    entry["recent"].append(
+                        (row["residual_c"], RECENT_BIAS_DECAY ** days_ago)
+                    )
 
     lead_biases: Dict[str, float] = {}
     lead_sigmas: Dict[str, float] = {}
@@ -419,22 +462,53 @@ def train_deb_lead_stats(
             "samples": len(rows),
         }
 
-    def _shrunk_adjustment(group_resid: List[float], lead_bias: float) -> float:
-        if len(group_resid) < MIN_ADJUST_SAMPLES:
+    def _weighted_median(pairs: List[tuple[float, float]]) -> Optional[float]:
+        if not pairs:
+            return None
+        ordered = sorted(pairs, key=lambda item: item[0])
+        total = sum(weight for _value, weight in ordered)
+        if total <= 0:
+            return None
+        acc = 0.0
+        for value, weight in ordered:
+            acc += weight
+            if acc >= total / 2.0:
+                return value
+        return ordered[-1][0]
+
+    def _shrunk_adjustment(
+        group: Union[Dict[str, List[float]], List[float]], lead_bias: float
+    ) -> float:
+        if isinstance(group, dict):
+            all_resid = group.get("all") or []
+            recent = group.get("recent") or []
+        else:
+            all_resid = list(group)
+            recent = []
+        if len(all_resid) < MIN_ADJUST_SAMPLES:
             return 0.0
-        shrink = len(group_resid) / (len(group_resid) + BIAS_SHRINK_K)
-        return shrink * (statistics.median(group_resid) - lead_bias)
+        group_median = (
+            _weighted_median(recent)
+            if recent
+            else (statistics.median(all_resid) if all_resid else None)
+        )
+        if group_median is None:
+            return 0.0
+        sample_count = len(recent) if recent else len(all_resid)
+        shrink = sample_count / (sample_count + BIAS_SHRINK_K)
+        return shrink * (group_median - lead_bias)
 
     city_biases: Dict[str, Dict[str, float]] = {}
-    for (lead_key, city), resid in sorted(by_lead_city.items()):
+    for (lead_key, city), group in sorted(by_lead_city.items()):
         lead_bias = _sf(lead_biases.get(str(lead_key)))
         if lead_bias is None:
             continue
-        adj = _shrunk_adjustment(resid, lead_bias)
+        adj = _shrunk_adjustment(group, lead_bias)
         if abs(adj) >= 0.05:  # skip negligible adjustments
             city_biases.setdefault(str(lead_key), {})[city] = round(adj, 3)
 
     temp_biases: Dict[str, Dict[str, float]] = {}
+    temp_sigmas: Dict[str, Dict[str, float]] = {}
     for (lead_key, temp_key), resid in sorted(by_lead_temp.items()):
         lead_bias = _sf(lead_biases.get(str(lead_key)))
         if lead_bias is None:
@@ -442,6 +516,14 @@ def train_deb_lead_stats(
         adj = _shrunk_adjustment(resid, lead_bias)
         if abs(adj) >= 0.05:
             temp_biases.setdefault(str(lead_key), {})[temp_key] = round(adj, 3)
+        # Per-temperature-stratum sigma: hot-day residual pools are much
+        # tighter than the pooled lead pool (>=37C PIT std ~0.19 with the
+        # pooled sigma). Emit a stratum sigma only when the group is
+        # well-sampled; otherwise inference falls back to the lead sigma.
+        if len(resid) >= MIN_ADJUST_SAMPLES:
+            temp_sigmas.setdefault(str(lead_key), {})[temp_key] = round(
+                _robust_sigma(resid), 3
+            )
 
     dates = [row["target_date"] for row in rows]
     span_days = 0
@@ -462,6 +544,7 @@ def train_deb_lead_stats(
         "lead_sigmas": lead_sigmas,
         "city_biases": city_biases,
         "temp_biases": temp_biases,
+        "temp_sigmas": temp_sigmas,
         "samples": total_samples,
         "window_days": span_days,
         "per_lead_samples": {str(k): len(v) for k, v in by_lead.items()},

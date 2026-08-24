@@ -11,7 +11,6 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
-from src.data_collection.amos_station_sources import AMOS_AIRPORT_CODES
 from src.data_collection.city_registry import CITY_REGISTRY
 from src.data_collection.hko_obs_sources import HKO_STATIONS
 from src.database.db_manager import DBManager
@@ -523,22 +522,12 @@ def build_observation_source_profiles() -> List[ObservationSourceProfile]:
         for city, meta in CITY_REGISTRY.items()
         if str((meta or {}).get("icao") or "").strip().upper().startswith("K")
     ]
-    turkish_mgm_cities = [
-        city
-        for city in ("ankara", "istanbul")
-        if city in CITY_REGISTRY
-    ]
     metar_cities = [
         city
         for city, meta in CITY_REGISTRY.items()
         if str((meta or {}).get("icao") or "").strip()
     ]
     return [
-        ObservationSourceProfile(
-            source="amos",
-            cities=_normalized_cities(AMOS_AIRPORT_CODES.keys()),
-            interval_sec=max(30, _env_int("POLYWEATHER_OBSERVATION_COLLECTOR_AMOS_SEC", 60)),
-        ),
         ObservationSourceProfile(
             source="madis_hfmetar",
             cities=_normalized_cities(us_madis_cities),
@@ -553,11 +542,6 @@ def build_observation_source_profiles() -> List[ObservationSourceProfile]:
             source="hko_obs",
             cities=_normalized_cities(HKO_STATIONS.keys()),
             interval_sec=max(60, _env_int("POLYWEATHER_OBSERVATION_COLLECTOR_HKO_SEC", 600)),
-        ),
-        ObservationSourceProfile(
-            source="mgm",
-            cities=_normalized_cities(turkish_mgm_cities),
-            interval_sec=max(300, _env_int("POLYWEATHER_OBSERVATION_COLLECTOR_MGM_SEC", 300)),
         ),
         ObservationSourceProfile(
             source="jma_amedas",

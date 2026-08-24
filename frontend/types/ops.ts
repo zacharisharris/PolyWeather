@@ -269,9 +269,6 @@ export type BillingRiskPayload = {
     trial_gaps?: number;
     payment_incidents?: number;
     points_discount_issues?: number;
-    referral_settlement_issues?: number;
-    monthly_cap_hits?: number;
-    recent_referral_rewards?: number;
     recent_trial_claims?: number;
   };
   issues?: BillingRiskIssue[];
@@ -279,20 +276,14 @@ export type BillingRiskPayload = {
   trial_gaps?: Array<Record<string, unknown>>;
   payment_incidents?: Array<Record<string, unknown>>;
   points_discount_issues?: Array<Record<string, unknown>>;
-  referral_settlement_issues?: Array<Record<string, unknown>>;
-  monthly_cap_hits?: Array<Record<string, unknown>>;
-  recent_referral_rewards?: Array<Record<string, unknown>>;
   recent_trial_claims?: Array<Record<string, unknown>>;
   query_errors?: Array<{ table?: string; error?: string }>;
 };
 
 export type OpsUser = {
-  telegram_id?: number;
   username?: string;
   supabase_email?: string;
   points?: number;
-  weekly_points?: number;
-  message_count?: number;
 };
 
 export type UsersPayload = {
@@ -323,17 +314,6 @@ export type MembershipEntry = {
 export type MembershipsPayload = {
   memberships?: MembershipEntry[];
   total?: number;
-};
-
-export type LeaderboardEntry = {
-  telegram_id?: number;
-  username?: string;
-  weekly_points?: number;
-  rank?: number;
-};
-
-export type LeaderboardPayload = {
-  leaderboard?: LeaderboardEntry[];
 };
 
 export type FunnelPayload = {

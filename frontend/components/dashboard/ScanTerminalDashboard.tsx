@@ -52,8 +52,7 @@ import { useRelativeTime } from "@/hooks/useRelativeTime";
 import { Panel } from "@/components/dashboard/scan-terminal/Panel";
 import { UsageGuideDashboard } from "@/components/dashboard/scan-terminal/UsageGuideDashboard";
 import { ModelSummaryDashboard } from "@/components/dashboard/scan-terminal/ModelSummaryDashboard";
-import { ArbitrageDashboard } from "@/components/dashboard/scan-terminal/ArbitrageDashboard";
-import { WeatherNext2Dashboard } from "@/components/dashboard/scan-terminal/WeatherNext2Dashboard";
+import { TerminalOnboardingTour } from "@/components/dashboard/scan-terminal/TerminalOnboardingTour";
 import {
   LiveTemperatureThresholdChart,
   clearCityDetailCache,
@@ -106,9 +105,7 @@ const ONLINE_USERS_REFRESH_MS = 5 * 60_000;
 const TERMINAL_NAV_ITEMS = [
   { key: "thresholds", Icon: Activity, labelEn: "Decision", labelZh: "天气决策" },
   { key: "modelSummary", Icon: Table2, labelEn: "Model Summary", labelZh: "模型汇总" },
-  { key: "weathernext2", Icon: Cloud, labelEn: "WeatherNext 2", labelZh: "WeatherNext 2" },
   { key: "training", Icon: GraduationCap, labelEn: "Training", labelZh: "训练数据" },
-  { key: "arbitrage", Icon: Scale, labelEn: "Arbitrage", labelZh: "套利对比" },
   { key: "guide", Icon: BookOpenCheck, labelEn: "Guide", labelZh: "使用指南" },
 ] as const;
 const AUTH_PROFILE_REQUEST_TIMEOUT_MS = 4500;
@@ -814,20 +811,6 @@ function PolyWeatherTerminal({
     onTerminalActivated();
   }, [activeNavKey, onTerminalActivated]);
 
-  const wn2StaleRef = useRef(false);
-  useEffect(() => {
-    if (activeNavKey !== "weathernext2") {
-      wn2StaleRef.current = false;
-      return;
-    }
-    if (wn2StaleRef.current) return;
-    const hasWn2 = rows.some((r) => r.weathernext2?.summary?.median != null);
-    if (!hasWn2 && !refreshing) {
-      wn2StaleRef.current = true;
-      onRefresh();
-    }
-  }, [activeNavKey, rows, onRefresh, refreshing]);
-
   useEffect(() => {
     const fetchOnline = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
@@ -1114,6 +1097,7 @@ function PolyWeatherTerminal({
         onFeedbackClick={openTerminalFeedback}
         onSelectNav={handleSelectNav}
       />
+      <TerminalOnboardingTour isEn={isEn} hasData={rows.length > 0} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#d2d9e2] bg-white px-4 text-slate-800">
@@ -1181,10 +1165,6 @@ function PolyWeatherTerminal({
               isEn={isEn}
               generatedText={modelSummaryGeneratedText}
             />
-          ) : activeNavKey === "weathernext2" ? (
-            <WeatherNext2Dashboard rows={rows} isEn={isEn} />
-          ) : activeNavKey === "arbitrage" ? (
-            <ArbitrageDashboard isEn={isEn} />
           ) : activeNavKey === "guide" ? (
             <UsageGuideDashboard isEn={isEn} />
           ) : (

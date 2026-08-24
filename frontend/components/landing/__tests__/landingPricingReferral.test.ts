@@ -65,7 +65,7 @@ export function runTests() {
     "landing route must prefer an explicit locale query before cookie or Accept-Language",
   );
   assert(source.includes("3 天免费试用"), "landing page must advertise the 3-day trial");
-  assert(source.includes("试用期权益和 Pro 一致，除了不显示付费 Telegram 群链接"), "landing page must state trial access matches Pro except the paid group link");
+  assert(source.includes("试用期权益和 Pro 一致") && !source.includes("付费 Telegram 群"), "landing page must state trial access matches Pro without a paid Telegram group link");
   assert(!source.includes("高频刷新与 API 仍为 Pro 权益"), "landing page must not incorrectly exclude high-frequency refresh or API from trial access");
   assert(source.includes("bg-[#fbfbfa]"), "landing page must use a light Notion-style background");
   assert(source.includes("WeatherWorkflowIllustration"), "landing page must include a friendly illustration surface");
@@ -77,14 +77,9 @@ export function runTests() {
   );
   assert(!fs.existsSync(publicPngPath), "heavy PNG preview must not remain in public static assets");
   assert(fs.existsSync(fixturePngPath), "PNG preview may only remain as a test fixture");
-  assert(fs.existsSync(webpPath), "landing page must ship a WebP preview image for the LCP product screenshot");
-  assert(
-    fs.statSync(webpPath).size < fs.statSync(fixturePngPath).size * 0.65,
-    "WebP preview must be materially smaller than the PNG LCP image",
-  );
-  assert(source.includes("/static/web.webp"), "landing page must load the lighter WebP product preview image");
-  assert(source.includes("/static/tel.png"), "landing page must include the Telegram alert screenshot");
-  assert(source.includes("#screenshots"), "landing navigation must expose the product screenshot section");
+  assert(!fs.existsSync(webpPath), "outdated terminal screenshot must not remain in public static assets");
+  assert(!source.includes("/static/web.webp"), "landing page must not embed the outdated terminal screenshot");
+  assert(!source.includes("/static/tel.webp"), "Telegram alert screenshot should stay removed after group-push sunset");
   assert(source.includes("#supported-cities"), "landing navigation must expose the supported cities section");
   assert(source.includes('id="supported-cities"'), "landing page must include a supported cities section");
   assert(source.includes("当前支持城市"), "landing page must tell Chinese users which cities are currently supported");
@@ -117,11 +112,8 @@ export function runTests() {
   assert(source.includes("结算源优先") && source.includes("差异化卖点"), "landing page must explain the differentiated settlement-source positioning");
   assert(!source.includes('src="/static/web.png"'), "landing hero must not use the heavy PNG as its primary LCP image");
   assert(
-    source.includes('width="680"') &&
-      source.includes('height="340"') &&
-      source.includes('fetchPriority="high"') &&
-      source.includes('decoding="async"'),
-    "landing product preview must expose stable intrinsic dimensions and high fetch priority",
+    !source.includes("/static/web.webp") && !source.includes("/static/tel.webp"),
+    "landing page must be free of outdated product screenshots",
   );
   assert(
     analyticsSource.includes('"landing_view"') &&
@@ -135,7 +127,7 @@ export function runTests() {
   assert(!source.includes("Request API") && !source.includes("申请 API"), "landing page must not invite users to buy or request API access");
   assert(source.includes("Team") && source.includes("团队"), "landing page must describe the Team tier");
   assert(source.includes("Trial") && source.includes("Pro") && source.includes("API") && source.includes("Team"), "landing pricing ladder must clearly name Trial / Pro / API / Team");
-  assert(source.includes("20 USDC") && source.includes("+3500 积分"), "landing page must describe referral discount and reward");
+  assert(!source.includes("20 USDC") && !source.includes("+3500 积分"), "landing page must remove referral discount and reward copy");
   assert(!source.includes("AI 气象证据链解读"), "legacy AI evidence-chain wording must be removed");
   assert(!source.includes("AI weather evidence"), "legacy AI evidence wording must be removed");
   assert(!source.includes("$10"), "legacy $10/month pricing must be removed from landing page");

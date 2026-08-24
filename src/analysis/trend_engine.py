@@ -24,7 +24,9 @@ from src.analysis.deb_probability import (
 from src.analysis.settlement_rounding import apply_city_settlement
 from src.data_collection.city_registry import CITY_REGISTRY
 from src.data_collection.city_risk_profiles import get_city_risk_profile
-from src.data_collection.multi_model_freshness import multi_model_forecasts_for_local_date
+from src.data_collection.multi_model_freshness import (
+    multi_model_forecasts_for_local_date,
+)
 
 # Fahrenheit cities (module-level to avoid local-import shadowing inside functions).
 _FAHRENHEIT_CITY_KEYS = {
@@ -37,7 +39,6 @@ SETTLEMENT_SOURCE_LABELS = {
     "metar": "METAR",
     "hko": "HKO",
     "noaa": "NOAA",
-    "mgm": "MGM",
 }
 
 _CLOUD_RANK_LABELS = {
@@ -57,49 +58,6 @@ def _sf(v):
         return float(v)
     except Exception:
         return None
-
-
-def _weathernext2_probability_payload(
-    weather_data: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    source = weather_data.get("weathernext2")
-    if not isinstance(source, dict):
-        return None
-    raw_buckets = source.get("buckets")
-    if not isinstance(raw_buckets, list) or not raw_buckets:
-        return None
-
-    buckets = []
-    for bucket in raw_buckets:
-        if not isinstance(bucket, dict):
-            continue
-        probability = _sf(bucket.get("probability"))
-        if probability is None or probability <= 0:
-            continue
-        copied = dict(bucket)
-        copied["probability"] = round(probability, 3)
-        buckets.append(copied)
-    if not buckets:
-        return None
-
-    summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
-    mu = _sf(summary.get("median"))
-    if mu is None:
-        mu = _sf(summary.get("mean"))
-    if mu is None:
-        top_bucket = max(buckets, key=lambda item: _sf(item.get("probability")) or 0)
-        mu = _sf(top_bucket.get("value"))
-
-    return {
-        "engine": "weathernext2",
-        "mu": mu,
-        "probabilities": sorted(
-            buckets,
-            key=lambda item: _sf(item.get("probability")) or 0,
-            reverse=True,
-        )[:4],
-        "probabilities_all": buckets,
-    }
 
 
 def _median(values: List[float]) -> Optional[float]:
@@ -268,7 +226,9 @@ def _resolve_peak_hours(
             if peak_hours:
                 return peak_hours
 
-    multi_model = weather_data.get("multi_model") if isinstance(weather_data, dict) else {}
+    multi_model = (
+        weather_data.get("multi_model") if isinstance(weather_data, dict) else {}
+    )
     if isinstance(multi_model, dict):
         hourly_times = multi_model.get("hourly_times") or []
         hourly_forecasts = multi_model.get("hourly_forecasts") or {}
@@ -388,7 +348,9 @@ def _describe_recent_structure(
     lines: List[str] = []
 
     if cloud_delta >= 2 and temp_delta is not None and temp_delta >= 0:
-        lines.append("云层明显增厚，但近报尚未跟随降温，短时更像中高云增多或暖湿输送前段。")
+        lines.append(
+            "云层明显增厚，但近报尚未跟随降温，短时更像中高云增多或暖湿输送前段。"
+        )
     elif cloud_delta >= 2 and temp_delta is not None and temp_delta <= -0.5:
         lines.append("云量抬升且温度同步回落，云雨压温的约束正在增强。")
     elif cloud_delta <= -2 and temp_delta is not None and temp_delta >= 0.5:
@@ -405,12 +367,18 @@ def _describe_recent_structure(
         if altim_delta <= -1.5 and trend_direction != "falling":
             lines.append("气压继续走低，边界层仍偏活跃，峰值尚不能轻判结束。")
         elif altim_delta >= 1.5 and peak_status != "before":
-            lines.append("气压回升信号更明显，若后续再配合回落，日高温锁定概率会继续上升。")
+            lines.append(
+                "气压回升信号更明显，若后续再配合回落，日高温锁定概率会继续上升。"
+            )
 
     if humidity is not None and humidity >= 80 and not wx_desc:
-        lines.append(f"湿度已到 {humidity:.0f}% 左右，后续若云层继续增厚，需要防范压温。")
+        lines.append(
+            f"湿度已到 {humidity:.0f}% 左右，后续若云层继续增厚，需要防范压温。"
+        )
     elif wx_desc:
-        lines.append(f"当前伴随“{wx_desc}”天气现象，短时体感与实测升温效率通常都会受抑制。")
+        lines.append(
+            f"当前伴随“{wx_desc}”天气现象，短时体感与实测升温效率通常都会受抑制。"
+        )
 
     if max_so_far is not None and cur_temp is not None:
         gap = max_so_far - cur_temp
@@ -466,7 +434,6 @@ def analyze_weather_trend(
 
     metar = weather_data.get("metar", {})
     open_meteo = weather_data.get("open-meteo", {})
-    mgm = weather_data.get("mgm") or {}
     settlement_current = weather_data.get("settlement_current") or {}
     if not isinstance(settlement_current, dict):
         settlement_current = {}
@@ -476,24 +443,22 @@ def analyze_weather_trend(
     nws = weather_data.get("nws", {})
 
     empty_result = ("", "", {})
-    if not metar and not mgm and not settlement_now:
+    if not metar and not settlement_now:
         return empty_result
 
     max_so_far = _sf(settlement_now.get("max_temp_so_far"))
     if max_so_far is None:
         max_so_far = (
-            _sf(metar.get("current", {}).get("max_temp_so_far"))
-            if metar
-            else _sf(mgm.get("current", {}).get("mgm_max_temp"))
+            _sf(metar.get("current", {}).get("max_temp_so_far")) if metar else None
         )
     cur_temp = _sf(settlement_now.get("temp"))
     if cur_temp is None:
-        cur_temp = (
-            _sf(metar.get("current", {}).get("temp"))
-            if metar
-            else _sf(mgm.get("current", {}).get("temp"))
-        )
-    primary_current = settlement_now if settlement_now else (metar.get("current", {}) if metar else {})
+        cur_temp = _sf(metar.get("current", {}).get("temp")) if metar else None
+    primary_current = (
+        settlement_now
+        if settlement_now
+        else (metar.get("current", {}) if metar else {})
+    )
 
     daily = open_meteo.get("daily", {})
     hourly = open_meteo.get("hourly", {})
@@ -506,11 +471,7 @@ def analyze_weather_trend(
         current_forecasts["Open-Meteo"] = _sf(daily.get("temperature_2m_max")[0])
     if nws.get("today_high") is not None:
         current_forecasts["NWS"] = _sf(nws.get("today_high"))
-    
-    mgm = weather_data.get("mgm", {})
-    if mgm and mgm.get("today_high") is not None:
-        current_forecasts["MGM"] = _sf(mgm.get("today_high"))
-        
+
     if weather_data.get("hko_forecast") is not None:
         current_forecasts["HKO(港天文)"] = _sf(weather_data.get("hko_forecast"))
 
@@ -543,7 +504,9 @@ def analyze_weather_trend(
         except Exception:
             city_now = None
 
-    local_time_full = str((open_meteo.get("current") or {}).get("local_time") or "").strip()
+    local_time_full = str(
+        (open_meteo.get("current") or {}).get("local_time") or ""
+    ).strip()
     if city_now is not None:
         local_date_str = city_now.strftime("%Y-%m-%d")
         local_hour = city_now.hour
@@ -582,9 +545,7 @@ def analyze_weather_trend(
         try:
             local_day_idx = daily_dates.index(local_date_str)
             local_day_high = _sf(
-                daily_highs[local_day_idx]
-                if local_day_idx < len(daily_highs)
-                else None
+                daily_highs[local_day_idx] if local_day_idx < len(daily_highs) else None
             )
             if local_day_high is not None:
                 current_forecasts["Open-Meteo"] = local_day_high
@@ -597,18 +558,6 @@ def analyze_weather_trend(
     for m_name, m_val in mm_forecasts.items():
         if m_val is not None and not _is_excluded_model_name(m_name):
             current_forecasts[m_name] = _sf(m_val)
-    weathernext2 = weather_data.get("weathernext2")
-    if isinstance(weathernext2, dict):
-        weathernext2_summary = (
-            weathernext2.get("summary")
-            if isinstance(weathernext2.get("summary"), dict)
-            else {}
-        )
-        weathernext2_median = _sf(weathernext2_summary.get("median"))
-        if weathernext2_median is None:
-            weathernext2_median = _sf(weathernext2_summary.get("mean"))
-        if weathernext2_median is not None:
-            current_forecasts["WeatherNext 2"] = weathernext2_median
     forecast_highs = [h for h in current_forecasts.values() if h is not None]
     forecast_high = max(forecast_highs) if forecast_highs else None
     forecast_median = (
@@ -762,10 +711,10 @@ def analyze_weather_trend(
 
     if city_name and current_forecasts and deb_prediction is not None:
         # DEB blending uses the already-computed set of model forecasts
-                if ai_features and "DEB系统已通过历史偏差矫正算出期待点是" in ai_features[0]:
-                    ai_features[0] = (
-                        f"🧬 DEB系统已通过历史偏差矫正算出期待点是: {deb_prediction}{temp_symbol}。"
-                    )
+        if ai_features and "DEB系统已通过历史偏差矫正算出期待点是" in ai_features[0]:
+            ai_features[0] = (
+                f"🧬 DEB系统已通过历史偏差矫正算出期待点是: {deb_prediction}{temp_symbol}。"
+            )
 
     if trend_direction == "stagnant":
         if peak_status == "before":
@@ -843,9 +792,7 @@ def analyze_weather_trend(
                     f"⚡ 预报偏高：确定性预报 {om_today}{temp_symbol} 超集合90%上限，"
                     f"更可能接近 {ens_median}{temp_symbol}。"
                 )
-            elif om_today < ens_p10 and (
-                max_so_far is None or max_so_far < ens_median
-            ):
+            elif om_today < ens_p10 and (max_so_far is None or max_so_far < ens_median):
                 ai_features.append(
                     f"⚡ 预报偏低：确定性预报 {om_today}{temp_symbol} 低于集合90%下限，"
                     f"更可能接近 {ens_median}{temp_symbol}。"
@@ -864,7 +811,6 @@ def analyze_weather_trend(
     probabilities_all: List[Dict[str, Any]] = []
     probability_engine = None
     forecast_miss_deg = 0.0
-    weathernext2_probs = _weathernext2_probability_payload(weather_data)
 
     # DEB normal distribution engine (primary): mu = deb_prediction + bias(lead),
     # sigma from lead-stratified residual pool. Anchors on the DEB blend, not on
@@ -875,7 +821,9 @@ def analyze_weather_trend(
         is_f_city = str(city_name or "").strip().lower() in _FAHRENHEIT_CITY_KEYS
         lead_raw = 1
         try:
-            target_date_str = weather_data.get("target_date") or weather_data.get("date")
+            target_date_str = weather_data.get("target_date") or weather_data.get(
+                "date"
+            )
             if target_date_str:
                 lead_raw = max(
                     0,
@@ -900,7 +848,11 @@ def analyze_weather_trend(
 
     if is_dead_market:
         probability_engine = "dead_market"
-        settled_wu = apply_city_settlement(city_name, max_so_far) if max_so_far is not None else 0
+        settled_wu = (
+            apply_city_settlement(city_name, max_so_far)
+            if max_so_far is not None
+            else 0
+        )
         dead_msg = (
             f"🎲 <b>结算预测</b>：已锁定 {settled_wu}{temp_symbol} "
             f"({settlement_source_label} 死盘确认)"
@@ -910,7 +862,11 @@ def analyze_weather_trend(
         if max_so_far is not None:
             mu = max_so_far
             probabilities = [
-                {"value": settled_wu, "range": f"[{settled_wu-0.5}~{settled_wu+0.5})", "probability": 1.0}
+                {
+                    "value": settled_wu,
+                    "range": f"[{settled_wu - 0.5}~{settled_wu + 0.5})",
+                    "probability": 1.0,
+                }
             ]
             probabilities_all = probabilities
     elif deb_normal_payload:
@@ -923,7 +879,9 @@ def analyze_weather_trend(
         probabilities_all = deb_normal_payload.get("probabilities_all", probabilities)
         prob_parts = []
         for bucket in probabilities[:4]:
-            label = str(bucket.get("label") or bucket.get("range") or bucket.get("value") or "").strip()
+            label = str(
+                bucket.get("label") or bucket.get("range") or bucket.get("value") or ""
+            ).strip()
             probability = _sf(bucket.get("probability"))
             if label and probability is not None:
                 prob_parts.append(f"{label} {probability * 100:.0f}%")
@@ -932,31 +890,16 @@ def analyze_weather_trend(
             prob_str = " | ".join(prob_parts)
             insights.append(f"🎲 <b>DEB 正态概率</b> ({mu_label})：{prob_str}")
             ai_features.append(f"🎲 DEB 正态概率分布：{prob_str}")
-    elif weathernext2_probs:
-        # WeatherNext2 retained as fallback / reference.
-        if max_so_far is not None and forecast_median is not None:
-            forecast_miss_deg = round(forecast_median - max_so_far, 1)
-        probability_engine = "weathernext2"
-        mu = weathernext2_probs.get("mu") or mu
-        probabilities = weathernext2_probs.get("probabilities", [])
-        probabilities_all = weathernext2_probs.get("probabilities_all", probabilities)
-        prob_parts = []
-        for bucket in probabilities[:4]:
-            label = str(bucket.get("label") or bucket.get("range") or bucket.get("value") or "").strip()
-            probability = _sf(bucket.get("probability"))
-            if label and probability is not None:
-                prob_parts.append(f"{label} {probability * 100:.0f}%")
-        if prob_parts:
-            mu_label = f"μ={mu:.1f}" if mu is not None else "μ=--"
-            prob_str = " | ".join(prob_parts)
-            insights.append(f"🎲 <b>WeatherNext 2 概率</b> ({mu_label})：{prob_str}")
-            ai_features.append(f"🎲 WeatherNext 2 概率分布：{prob_str}")
 
     # === Settlement center (mu) ===
-    # When a probability engine (weathernext2 / dead_market) already anchored mu,
+    # When a probability engine (deb_normal / dead_market) already anchored mu,
     # keep it. Otherwise blend the deterministic forecast median with the ensemble
     # center and anchor on the observed max once the peak window is past or a bust.
-    if forecast_miss_deg == 0.0 and max_so_far is not None and forecast_median is not None:
+    if (
+        forecast_miss_deg == 0.0
+        and max_so_far is not None
+        and forecast_median is not None
+    ):
         forecast_miss_deg = round(forecast_median - max_so_far, 1)
 
     if mu is None:
@@ -989,9 +932,15 @@ def analyze_weather_trend(
 
     # === Forecast miss severity for AI ===
     if forecast_miss_deg > 2.0 and peak_status in ("past", "in_window"):
-        severity = "重" if forecast_miss_deg > 5.0 else ("中" if forecast_miss_deg > 3.0 else "轻")
+        severity = (
+            "重"
+            if forecast_miss_deg > 5.0
+            else ("中" if forecast_miss_deg > 3.0 else "轻")
+        )
         min_fc = min((v for v in forecast_highs if v is not None), default=None)
-        _trend_dir = "降温" if is_cooling else ("停滞" if "停滞" in trend_desc else "升温")
+        _trend_dir = (
+            "降温" if is_cooling else ("停滞" if "停滞" in trend_desc else "升温")
+        )
         ai_features.append(
             f"🚨 预报崩盘 [{severity}级失准]: 最低预报 {min_fc}{temp_symbol} vs "
             f"实测最高 {max_so_far}{temp_symbol}，偏差 {forecast_miss_deg}°。当前趋势: {_trend_dir}。"
@@ -1046,7 +995,9 @@ def analyze_weather_trend(
         )
         if local_hour <= last_peak_h:
             if last_peak_h < 6:
-                ai_features.append("⚠️ <b>提示</b>：预测最热在凌晨，后续气温可能一路走低。")
+                ai_features.append(
+                    "⚠️ <b>提示</b>：预测最热在凌晨，后续气温可能一路走低。"
+                )
             elif local_hour < first_peak_h and (
                 max_so_far is None or max_so_far < forecast_high
             ):
@@ -1058,7 +1009,9 @@ def analyze_weather_trend(
         remain_hrs = first_peak_h - local_hour_frac
         if local_hour_frac > last_peak_h:
             ai_features.append(f"⏱️ 状态: 预报峰值时段已过 ({window})。")
-            ai_features.append("✅ 判定约束: 峰值窗口已过，可结合回落幅度判断是否锁定。")
+            ai_features.append(
+                "✅ 判定约束: 峰值窗口已过，可结合回落幅度判断是否锁定。"
+            )
         elif first_peak_h <= local_hour_frac <= last_peak_h:
             remain_in_window = last_peak_h - local_hour_frac
             if remain_in_window < 1:
@@ -1069,14 +1022,18 @@ def analyze_weather_trend(
                 ai_features.append(
                     f"⏱️ 状态: 正处于预报最热窗口 ({window})内，距窗口结束约 {remain_in_window:.1f}h。"
                 )
-            ai_features.append("⚠️ 判定约束: 窗口内即使停滞，也需后续2报确认未再创新高。")
+            ai_features.append(
+                "⚠️ 判定约束: 窗口内即使停滞，也需后续2报确认未再创新高。"
+            )
         elif remain_hrs < 1:
             ai_features.append(
                 f"⏱️ 状态: 距最热时段开始还有约 {int(remain_hrs * 60)} 分钟 ({window})，尚未进入峰值窗口。"
             )
             ai_features.append("🚫 判定约束: 峰值窗口前禁止判定‘已锁定/已确认底线’。")
         else:
-            ai_features.append(f"⏱️ 状态: 距最热时段开始还有约 {remain_hrs:.1f}h ({window})。")
+            ai_features.append(
+                f"⏱️ 状态: 距最热时段开始还有约 {remain_hrs:.1f}h ({window})。"
+            )
             ai_features.append("🚫 判定约束: 峰值窗口前禁止判定‘已锁定/已确认底线’。")
 
     # === AI fact features ===
@@ -1101,7 +1058,9 @@ def analyze_weather_trend(
     clouds = primary_current.get("clouds", [])
     if clouds:
         cover = clouds[-1].get("cover", "")
-        c_desc = {"OVC": "全阴", "BKN": "多云", "SCT": "散云", "FEW": "少云"}.get(cover, cover)
+        c_desc = {"OVC": "全阴", "BKN": "多云", "SCT": "散云", "FEW": "少云"}.get(
+            cover, cover
+        )
         ai_features.append(f"☁️ 天空状况: {c_desc}。")
 
     wx_desc = primary_current.get("wx_desc")
@@ -1115,7 +1074,10 @@ def analyze_weather_trend(
             max_temp_rad = 0.0
             hourly_rad = hourly.get("shortwave_radiation", [])
             for t_str, rad in zip(times, hourly_rad):
-                if t_str.startswith(local_date_str) and int(t_str.split("T")[1][:2]) == max_h:
+                if (
+                    t_str.startswith(local_date_str)
+                    and int(t_str.split("T")[1][:2]) == max_h
+                ):
                     max_temp_rad = rad if rad is not None else 0.0
                     break
             if max_temp_rad < 50:
@@ -1130,12 +1092,20 @@ def analyze_weather_trend(
         _prob_list = None
         if probabilities_all:
             _prob_list = [
-                {"value": int(b.get("value")), "probability": round(float(b.get("probability") or 0), 3)}
+                {
+                    "value": int(b.get("value")),
+                    "probability": round(float(b.get("probability") or 0), 3),
+                }
                 for b in probabilities_all[:4]
                 if b.get("value") is not None and float(b.get("probability") or 0) > 0
             ]
         elif is_dead_market and max_so_far is not None:
-            _prob_list = [{"value": apply_city_settlement(city_name, max_so_far), "probability": 1.0}]
+            _prob_list = [
+                {
+                    "value": apply_city_settlement(city_name, max_so_far),
+                    "probability": 1.0,
+                }
+            ]
 
         update_daily_record(
             city_name,
@@ -1148,7 +1118,12 @@ def analyze_weather_trend(
             actual_is_final=False,
         )
     except Exception as exc:
-        logger.warning("update_daily_record failed city={} date={}: {}", city_name, local_date_str, exc)
+        logger.warning(
+            "update_daily_record failed city={} date={}: {}",
+            city_name,
+            local_date_str,
+            exc,
+        )
 
     # === Build recent list for trend_info ===
     recent_list = []
@@ -1162,7 +1137,7 @@ def analyze_weather_trend(
         "probabilities_all": probabilities_all or probabilities,
         "probability_engine": probability_engine,
         "trend_info": {
-            "direction": trend_direction if 'trend_direction' in dir() else "unknown",
+            "direction": trend_direction if "trend_direction" in dir() else "unknown",
             "recent": recent_list,
             "is_cooling": is_cooling,
             "is_dead_market": is_dead_market,
@@ -1185,7 +1160,9 @@ def analyze_weather_trend(
         "forecast_miss_deg": forecast_miss_deg,
         "max_so_far": max_so_far,
         "cur_temp": cur_temp,
-        "settlement": apply_city_settlement(city_name, max_so_far) if max_so_far is not None else None,
+        "settlement": apply_city_settlement(city_name, max_so_far)
+        if max_so_far is not None
+        else None,
         "dynamic_commentary": {
             "summary": dynamic_summary,
             "notes": dynamic_notes,

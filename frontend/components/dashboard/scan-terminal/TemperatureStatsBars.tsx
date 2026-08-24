@@ -10,8 +10,6 @@ const OBSERVATION_LABEL_EN: Record<string, string> = {
   "航站楼温度": "Terminal Temperature",
   "官方机场观测 (15分钟)": "Official Airport Obs (15m)",
   "气象站实测": "Weather Station Live",
-  "跑道实测 (1分钟)": "Runway Live (1m)",
-  "跑道实测 (3分钟)": "Runway Live (3m)",
   "机场报文": "Airport METAR",
   "METAR 结算 (30分钟)": "METAR Settlement (30m)",
 };
@@ -24,7 +22,6 @@ const HIGH_LABEL_EN: Record<string, string> = {
   "航站楼": "Terminal",
   "官方机场观测": "Official Airport Obs",
   "气象站": "Weather Station",
-  "跑道实测": "Runway",
   "机场报文": "Airport METAR",
   "METAR 官方": "Official METAR",
 };
@@ -123,28 +120,28 @@ function DebQualityBadge({ quality, isEn }: { quality?: DebQuality | null; isEn:
 
 function buildStatsLabels({
   isEn,
-  isShenzhen,
-  runwayHeaderLabel,
+  metarRedundant,
+  obsHeaderLabel,
   metarHeaderLabel,
-  runwayHighLabel,
+  obsHighLabel,
   metarHighLabel,
 }: {
   isEn: boolean;
-  isShenzhen: boolean;
-  runwayHeaderLabel: string;
+  metarRedundant: boolean;
+  obsHeaderLabel: string;
   metarHeaderLabel: string;
-  runwayHighLabel: string;
+  obsHighLabel: string;
   metarHighLabel: string;
 }) {
-  const primary = observationLabel(runwayHeaderLabel, isEn);
+  const primary = observationLabel(obsHeaderLabel, isEn);
   const secondaryObservation = observationLabel(metarHeaderLabel, isEn);
   const dailyHigh = isEn ? "Daily High" : "当日最高";
   return {
     primary,
-    compactSecondary: isShenzhen ? dailyHigh : secondaryObservation,
+    compactSecondary: secondaryObservation,
     expandedSecondary: `${secondaryObservation} · ${dailyHigh}`,
     dailyPeakTitle: isEn ? "Daily Peak" : "当日最高气温",
-    runwayHigh: highLabel(runwayHighLabel, isEn),
+    obsHigh: highLabel(obsHighLabel, isEn),
     metarHigh: highLabel(metarHighLabel, isEn),
   };
 }
@@ -154,16 +151,15 @@ export function TemperatureStatsBars({
   compact,
   timeframe,
   tempSymbol,
-  runwayHeaderLabel,
+  obsHeaderLabel,
   metarHeaderLabel,
-  runwayHighLabel,
+  obsHighLabel,
   metarHighLabel,
-  isShenzhen,
-  displayRunwayTemp,
+  metarRedundant,
+  displayObsTemp,
   displayMetarTemp,
   observedHighMetar,
-  observedHighRunway,
-  wundergroundDailyHigh,
+  observedHighObs,
   debVal,
   debQuality,
   modelMin,
@@ -177,16 +173,15 @@ export function TemperatureStatsBars({
   compact: boolean;
   timeframe: string;
   tempSymbol: string;
-  runwayHeaderLabel: string;
+  obsHeaderLabel: string;
   metarHeaderLabel: string;
-  runwayHighLabel: string;
+  obsHighLabel: string;
   metarHighLabel: string;
-  isShenzhen: boolean;
-  displayRunwayTemp: number | null;
+  metarRedundant: boolean;
+  displayObsTemp: number | null;
   displayMetarTemp: number | null;
   observedHighMetar: number | null;
-  observedHighRunway: number | null;
-  wundergroundDailyHigh: number | null;
+  observedHighObs: number | null;
   debVal: number | null;
   debQuality?: DebQuality | null;
   modelMin: number | null;
@@ -198,10 +193,10 @@ export function TemperatureStatsBars({
 }) {
   const labels = buildStatsLabels({
     isEn,
-    isShenzhen,
-    runwayHeaderLabel,
+    metarRedundant,
+    obsHeaderLabel,
     metarHeaderLabel,
-    runwayHighLabel,
+    obsHighLabel,
     metarHighLabel,
   });
 
@@ -212,13 +207,17 @@ export function TemperatureStatsBars({
           <div className="flex items-center gap-4 text-[11px]">
             <span className="font-semibold text-slate-500">
               {labels.primary}:{" "}
-              <strong className="text-[#009688] font-mono">{temp(displayRunwayTemp, tempSymbol)}</strong>
+              <strong className="text-[#009688] font-mono">{temp(displayObsTemp, tempSymbol)}</strong>
             </span>
-            <span className="text-slate-300">|</span>
-            <span className="font-semibold text-slate-500">
-              {labels.compactSecondary}:{" "}
-              <strong className="text-blue-600 font-mono">{temp(displayMetarTemp, tempSymbol)}</strong>
-            </span>
+            {!metarRedundant && (
+              <>
+                <span className="text-slate-300">|</span>
+                <span className="font-semibold text-slate-500">
+                  {labels.compactSecondary}:{" "}
+                  <strong className="text-blue-600 font-mono">{temp(displayMetarTemp, tempSymbol)}</strong>
+                </span>
+              </>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-4 text-[11px]">
@@ -256,17 +255,19 @@ export function TemperatureStatsBars({
                 {labels.primary}
               </span>
               <span className="text-2xl font-bold font-mono text-[#009688] mt-1">
-                {temp(displayRunwayTemp, tempSymbol)}
+                {temp(displayObsTemp, tempSymbol)}
               </span>
             </div>
-            <div className="flex flex-col">
-              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                {labels.expandedSecondary}
-              </span>
-              <span className="text-2xl font-bold font-mono text-blue-600 mt-1">
-                {temp(observedHighMetar, tempSymbol)}
-              </span>
-            </div>
+            {!metarRedundant && (
+              <div className="flex flex-col">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  {labels.expandedSecondary}
+                </span>
+                <span className="text-2xl font-bold font-mono text-blue-600 mt-1">
+                  {temp(observedHighMetar, tempSymbol)}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-12">
@@ -295,13 +296,11 @@ export function TemperatureStatsBars({
             {labels.dailyPeakTitle}
           </span>
           <div className="mt-1 flex items-center gap-2 text-xs font-mono text-slate-600">
-            <span>{labels.runwayHigh}: <strong className="text-[#009688]">{temp(observedHighRunway, tempSymbol)}</strong></span>
-            <span>|</span>
-            <span>{labels.metarHigh}: <strong className="text-blue-600">{temp(observedHighMetar, tempSymbol)}</strong></span>
-            {wundergroundDailyHigh !== null && (
+            <span>{labels.obsHigh}: <strong className="text-[#009688]">{temp(observedHighObs, tempSymbol)}</strong></span>
+            {!metarRedundant && (
               <>
                 <span>|</span>
-                <span>WU: <strong className="text-purple-600">{temp(wundergroundDailyHigh, tempSymbol)}</strong></span>
+                <span>{labels.metarHigh}: <strong className="text-blue-600">{temp(observedHighMetar, tempSymbol)}</strong></span>
               </>
             )}
           </div>

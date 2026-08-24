@@ -34,12 +34,10 @@ const LABELS: Record<string, string> = {
   madis: "MADIS (NOAA)",
   telegram: "Telegram Bot",
   jma: "JMA (日本)",
-  mgm: "MGM (土耳其)",
   fmi: "FMI (芬兰)",
   kma: "KMA (韩国)",
   hko: "HKO (香港)",
   singapore_mss: "Singapore MSS",
-  amos: "AMOS (韩国跑道)",
   noaa_wrh: "NOAA WRH (美国结算)",
 };
 

@@ -69,7 +69,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "guide.title": "📎 PolyWeather 系统技术说明",
     "guide.closeAria": "关闭技术说明",
     "guide.footer":
-      "数据源以 METAR、香港天文台(HKO)、NOAA 指定站点、Turkish MGM、Open-Meteo、weather.gov 为主。",
+      "数据源以 METAR、香港天文台(HKO)、NOAA 指定站点、Open-Meteo、weather.gov 为主。",
 
 
     "future.todayTitle": "{city} · 今日日内分析",
@@ -85,7 +85,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "future.todayForecastHigh": "今日预报高温",
     "future.targetForecast": "目标日预报",
     "future.deb": "DEB 预测",
-    "future.mu": "动态分布中心",
     "future.score": "趋势评分",
     "future.todayTempTrend": "今日温度走势",
     "future.targetTempTrend": "目标日小时走势",
@@ -110,7 +109,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "section.todayTempTrend": "今日温度走势",
     "section.chartEmpty": "暂无小时级数据",
     "section.probability": "校准模型概率",
-    "section.mu": "动态分布中心 μ = {value}{unit}",
     "section.noProb": "暂无概率数据",
     "section.models": "多模型预报",
     "section.noModels": "暂无多模型预报",
@@ -139,7 +137,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "filter.scanCta": "开始扫描",
 
     "account.title": "账户中心",
-    "account.subtitle": "查看身份、权限与 Bot 绑定信息",
+    "account.subtitle": "查看身份与权限状态",
     "account.backDashboard": "返回看板",
     "account.refresh": "刷新",
     "account.signIn": "登录 / 注册",
@@ -156,7 +154,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "account.card.membership": "会员与权限",
     "account.card.identity": "身份信息",
     "account.card.backend": "后端鉴权",
-    "account.card.bot": "Bot 绑定",
     "account.field.email": "邮箱",
     "account.field.userId": "用户 ID",
     "account.field.provider": "登录方式",
@@ -165,9 +162,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "account.field.backendStatus": "后端状态",
     "account.field.subscription": "订阅结果",
     "account.field.requirement": "订阅要求",
-    "account.field.bindCommand": "绑定命令",
-    "account.field.bindHint":
-      "将下面命令发送到 Telegram Bot，可把网页账户与机器人权限绑定。",
     "account.mode.supabaseRequired": "Supabase 强制登录",
     "account.mode.supabaseOptional": "Supabase 可选登录",
     "account.mode.supabase": "Supabase 会话鉴权",
@@ -251,7 +245,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "guide.title": "📎 PolyWeather Technical Overview",
     "guide.closeAria": "Close technical overview",
     "guide.footer":
-      "Primary data sources are METAR, Hong Kong Observatory (HKO), designated NOAA stations, Turkish MGM, Open-Meteo, and weather.gov.",
+      "Primary data sources are METAR, Hong Kong Observatory (HKO), designated NOAA stations, Open-Meteo, and weather.gov.",
 
 
     "future.todayTitle": "{city} · Intraday Analysis",
@@ -267,7 +261,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "future.todayForecastHigh": "Today's Forecast High",
     "future.targetForecast": "Target-day Forecast",
     "future.deb": "DEB Forecast",
-    "future.mu": "Dynamic Distribution Center",
     "future.score": "Trend Score",
     "future.todayTempTrend": "Today's Temperature Trend",
     "future.targetTempTrend": "Target-day Hourly Trend",
@@ -294,7 +287,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "section.todayTempTrend": "Today's Temperature Trend",
     "section.chartEmpty": "No hourly data available",
     "section.probability": "Calibrated Model Probability",
-    "section.mu": "Dynamic center μ = {value}{unit}",
     "section.noProb": "No probability data available",
     "section.models": "Multi-model Forecast",
     "section.noModels": "No multi-model forecast available",
@@ -324,7 +316,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "filter.scanCta": "Start Scan",
 
     "account.title": "Account Center",
-    "account.subtitle": "Review identity, access status, and bot binding info",
+    "account.subtitle": "Review identity and access status",
     "account.backDashboard": "Back to Dashboard",
     "account.refresh": "Refresh",
     "account.signIn": "Sign in / Sign up",
@@ -341,7 +333,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "account.card.membership": "Membership & Access",
     "account.card.identity": "Identity",
     "account.card.backend": "Backend Auth",
-    "account.card.bot": "Bot Binding",
     "account.field.email": "Email",
     "account.field.userId": "User ID",
     "account.field.provider": "Sign-in method",
@@ -350,9 +341,6 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     "account.field.backendStatus": "Backend status",
     "account.field.subscription": "Subscription result",
     "account.field.requirement": "Subscription policy",
-    "account.field.bindCommand": "Binding command",
-    "account.field.bindHint":
-      "Send this command to the Telegram bot to bind web account identity.",
     "account.mode.supabaseRequired": "Supabase required auth",
     "account.mode.supabaseOptional": "Supabase optional auth",
     "account.mode.supabase": "Supabase session auth",
