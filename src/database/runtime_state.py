@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from loguru import logger
 
@@ -123,28 +123,6 @@ class RuntimeStateDB:
             )
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS telegram_alert_last_by_city (
-                    city TEXT PRIMARY KEY,
-                    signature TEXT,
-                    trigger_key TEXT,
-                    severity TEXT,
-                    ts INTEGER,
-                    active INTEGER DEFAULT 0,
-                    cleared_ts INTEGER,
-                    evidence_json TEXT
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS telegram_alert_signature_state (
-                    signature TEXT PRIMARY KEY,
-                    ts INTEGER NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS probability_training_snapshots_store (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     city TEXT NOT NULL,
@@ -162,6 +140,10 @@ class RuntimeStateDB:
                 """
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_probability_snapshots_ts "
+                "ON probability_training_snapshots_store(timestamp)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_probability_snapshot_city_date ON probability_training_snapshots_store(city, target_date, id DESC)"
             )
             conn.execute(
@@ -177,6 +159,25 @@ class RuntimeStateDB:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_training_feature_records_city_date ON training_feature_records_store(city, target_date)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS deb_weight_snapshots_store (
+                    city TEXT PRIMARY KEY,
+                    weights_json TEXT NOT NULL,
+                    maes_json TEXT NOT NULL,
+                    biases_json TEXT NOT NULL,
+                    forecast_models_json TEXT NOT NULL,
+                    samples INTEGER NOT NULL,
+                    days_used INTEGER NOT NULL,
+                    lookback_days INTEGER NOT NULL,
+                    decay_factor REAL NOT NULL,
+                    bias_penalty REAL NOT NULL,
+                    divergence_threshold REAL NOT NULL,
+                    weights_info TEXT,
+                    computed_at REAL NOT NULL
+                )
+                """
             )
             conn.execute(
                 """
@@ -212,13 +213,54 @@ class RuntimeStateDB:
                     observation_time TEXT NOT NULL,
                     value REAL NOT NULL,
                     payload_json TEXT,
-                    PRIMARY KEY (source_code, station_code, observation_time)
+                    PRIMARY KEY (source_code, station_code, target_date, observation_time)
                 )
                 """
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_official_intraday_obs_station_date ON official_intraday_observations_store(source_code, station_code, target_date, observation_time)"
             )
+            # Idempotent migration: older official_intraday_observations_store
+            # tables keyed (source_code, station_code, observation_time) without
+            # target_date let same-instant observations across days overwrite
+            # each other, so intraday history never accumulates. Rebuild with
+            # target_date in the primary key, preserving existing rows.
+            _intraday_legacy = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='official_intraday_observations_store'"
+            ).fetchone()
+            if _intraday_legacy:
+                _intraday_sql = str(_intraday_legacy["sql"] or "")
+                _pk_pos = _intraday_sql.find("PRIMARY KEY")
+                if _pk_pos != -1 and "target_date" not in _intraday_sql[_pk_pos : _pk_pos + 160]:
+                    conn.execute(
+                        "ALTER TABLE official_intraday_observations_store RENAME TO official_intraday_observations_store_legacy"
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE official_intraday_observations_store (
+                            source_code TEXT NOT NULL,
+                            station_code TEXT NOT NULL,
+                            target_date TEXT NOT NULL,
+                            observation_time TEXT NOT NULL,
+                            value REAL NOT NULL,
+                            payload_json TEXT,
+                            PRIMARY KEY (source_code, station_code, target_date, observation_time)
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO official_intraday_observations_store (
+                            source_code, station_code, target_date, observation_time, value, payload_json
+                        )
+                        SELECT source_code, station_code, target_date, observation_time, value, payload_json
+                        FROM official_intraday_observations_store_legacy
+                        """
+                    )
+                    conn.execute("DROP TABLE official_intraday_observations_store_legacy")
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_official_intraday_obs_station_date ON official_intraday_observations_store(source_code, station_code, target_date, observation_time)"
+                    )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS intraday_path_snapshots_store (
@@ -261,6 +303,36 @@ class RuntimeStateDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_observation_collector_status_source ON observation_collector_status_store(source, updated_at DESC)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS deb_normal_residual_stats_store (
+                    stats_key TEXT PRIMARY KEY,
+                    lead_biases_json TEXT NOT NULL,
+                    lead_sigmas_json TEXT NOT NULL,
+                    samples INTEGER NOT NULL,
+                    window_days INTEGER NOT NULL,
+                    computed_at REAL NOT NULL
+                )
+                """
+            )
+            # Idempotent migration: older tables lack the city/temperature-stratum
+            # bias columns; add them in place so training can persist the extended
+            # stats without a destructive table rebuild.
+            cols = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(deb_normal_residual_stats_store)"
+                ).fetchall()
+            }
+            for col, ddl in (
+                ("city_biases_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("temp_biases_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("temp_sigmas_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                if col not in cols:
+                    conn.execute(
+                        f"ALTER TABLE deb_normal_residual_stats_store ADD COLUMN {col} {ddl}"
+                    )
             conn.commit()
 
 
@@ -501,7 +573,17 @@ class DailyRecordRepository:
     def __init__(self, db: Optional[RuntimeStateDB] = None):
         self.db = db or RuntimeStateDB.instance()
 
-    def load_all(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    def load_all(
+        self, fields: Optional[Iterable[str]] = None
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Load all daily records as {city: {target_date: payload}}.
+
+        ``fields`` optionally restricts each payload to the given top-level keys
+        so memory-heavy training loads (forecasts / actual_high / deb_prediction)
+        do not pull full analysis payloads (which can be tens of KB per row) into
+        RAM.  Defaults to the full payload for backward compatibility.
+        """
+        keep: Optional[set] = set(fields) if fields is not None else None
         out: Dict[str, Dict[str, Dict[str, Any]]] = {}
         with self.db.connect() as conn:
             rows = conn.execute(
@@ -512,9 +594,33 @@ class DailyRecordRepository:
                 payload = json.loads(row["payload_json"])
             except Exception:
                 continue
+            if keep is not None:
+                payload = {k: payload[k] for k in keep if k in payload}
             city = str(row["city"])
             date_str = str(row["target_date"])
             out.setdefault(city, {})[date_str] = payload
+        return out
+
+    def load_city(self, city: str) -> Dict[str, Dict[str, Any]]:
+        """Load one city's daily records as {target_date: payload}.
+
+        Used by the truth-backfill path so per-city reconcile passes no longer
+        load (and later rewrite) the whole daily_records_store.
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT target_date, payload_json FROM daily_records_store "
+                "WHERE city = ? ORDER BY target_date",
+                (city,),
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                out[str(row["target_date"])] = payload
         return out
 
     def load_recent_settled_rows(
@@ -924,79 +1030,6 @@ class TruthRevisionRepository:
         return out
 
 
-class TelegramAlertStateRepository:
-    def __init__(self, db: Optional[RuntimeStateDB] = None):
-        self.db = db or RuntimeStateDB.instance()
-
-    def load_state(self) -> Dict[str, Any]:
-        state = {"last_by_city": {}, "by_signature": {}}
-        with self.db.connect() as conn:
-            city_rows = conn.execute(
-                "SELECT city, signature, trigger_key, severity, ts, active, cleared_ts, evidence_json FROM telegram_alert_last_by_city"
-            ).fetchall()
-            sig_rows = conn.execute(
-                "SELECT signature, ts FROM telegram_alert_signature_state"
-            ).fetchall()
-        for row in city_rows:
-            entry = {
-                "signature": row["signature"],
-                "trigger_key": row["trigger_key"],
-                "severity": row["severity"],
-                "ts": row["ts"],
-                "active": bool(row["active"]),
-            }
-            if row["cleared_ts"] is not None:
-                entry["cleared_ts"] = row["cleared_ts"]
-            if row["evidence_json"]:
-                try:
-                    entry["evidence"] = json.loads(row["evidence_json"])
-                except Exception:
-                    pass
-            state["last_by_city"][str(row["city"])] = entry
-        for row in sig_rows:
-            state["by_signature"][str(row["signature"])] = int(row["ts"] or 0)
-        return state
-
-    def save_state(self, state: Dict[str, Any]) -> None:
-        last_by_city = state.get("last_by_city") or {}
-        by_signature = state.get("by_signature") or {}
-        with self.db.connect() as conn:
-            conn.execute("DELETE FROM telegram_alert_last_by_city")
-            conn.execute("DELETE FROM telegram_alert_signature_state")
-            for city, row in last_by_city.items():
-                if not isinstance(row, dict):
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO telegram_alert_last_by_city (
-                        city, signature, trigger_key, severity, ts, active, cleared_ts, evidence_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        city,
-                        row.get("signature"),
-                        row.get("trigger_key"),
-                        row.get("severity"),
-                        int(row.get("ts") or 0),
-                        1 if row.get("active") else 0,
-                        row.get("cleared_ts"),
-                        json.dumps(row.get("evidence"), ensure_ascii=False)
-                        if row.get("evidence") is not None
-                        else None,
-                    ),
-                )
-            for signature, ts in by_signature.items():
-                conn.execute(
-                    "INSERT INTO telegram_alert_signature_state (signature, ts) VALUES (?, ?)",
-                    (signature, int(ts or 0)),
-                )
-            conn.commit()
-
-    def replace_from_state(self, state: Dict[str, Any]) -> int:
-        self.save_state(state)
-        return len((state.get("last_by_city") or {})) + len((state.get("by_signature") or {}))
-
-
 class ProbabilitySnapshotRepository:
     def __init__(self, db: Optional[RuntimeStateDB] = None):
         self.db = db or RuntimeStateDB.instance()
@@ -1079,6 +1112,53 @@ class ProbabilitySnapshotRepository:
             except Exception:
                 continue
         return out
+
+    def load_earliest_lead_days(self) -> Dict[tuple[str, str], int]:
+        """Earliest snapshot timestamp per (city, target_date) as lead days.
+
+        Replaces ``load_all_rows`` in training walk-forwards: the full snapshot
+        table can hold hundreds of thousands of rows (payload_json included),
+        which loads gigabytes into RAM just to derive one lead integer per
+        (city, date).  Aggregating in SQL keeps the result to one row per
+        (city, date).
+        """
+        from datetime import datetime
+
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT city, target_date, MIN(timestamp) AS first_ts
+                FROM probability_training_snapshots_store
+                GROUP BY city, target_date
+                """
+            ).fetchall()
+        out: Dict[tuple[str, str], int] = {}
+        for row in rows:
+            city = str(row["city"] or "").strip().lower()
+            date_str = str(row["target_date"] or "")[:10]
+            ts = row["first_ts"]
+            if not city or not date_str or not ts:
+                continue
+            try:
+                ts_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                tgt_dt = datetime.strptime(date_str, "%Y-%m-%d")
+            except Exception:
+                continue
+            lead = (tgt_dt.date() - ts_dt.date()).days
+            cur = out.get((city, date_str))
+            if cur is None or lead < cur:
+                out[(city, date_str)] = lead
+        return out
+
+    def prune_before(self, timestamp: str) -> int:
+        """Delete snapshots older than an ISO timestamp (lexicographic = chronological for ISO-8601)."""
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM probability_training_snapshots_store WHERE timestamp < ?",
+                (timestamp,),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
 
     def replace_all(self, rows: List[Dict[str, Any]]) -> int:
         count = 0
@@ -1324,8 +1404,7 @@ class OfficialIntradayObservationRepository:
                 INSERT INTO official_intraday_observations_store (
                     source_code, station_code, target_date, observation_time, value, payload_json
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source_code, station_code, observation_time) DO UPDATE SET
-                    target_date = excluded.target_date,
+                ON CONFLICT(source_code, station_code, target_date, observation_time) DO UPDATE SET
                     value = excluded.value,
                     payload_json = excluded.payload_json
                 """,
@@ -1493,3 +1572,197 @@ def get_runtime_data_dir() -> str:
         return raw
     project_root = Path(__file__).resolve().parents[2]
     return str(project_root / "data")
+
+
+class DebWeightSnapshotRepository:
+    """Persist per-city DEB weight snapshots produced by offline training.
+
+    Each snapshot records the computed blend weights plus the hyperparameters
+    and sample counts that produced them, so any prediction day can be traced
+    back to the exact weight state it used.
+    """
+
+    def __init__(self, db: Optional[RuntimeStateDB] = None):
+        self.db = db or RuntimeStateDB.instance()
+
+    def upsert_snapshot(self, city: str, snapshot: Dict[str, Any]) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO deb_weight_snapshots_store (
+                    city, weights_json, maes_json, biases_json, forecast_models_json,
+                    samples, days_used, lookback_days, decay_factor, bias_penalty,
+                    divergence_threshold, weights_info, computed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(city) DO UPDATE SET
+                    weights_json = excluded.weights_json,
+                    maes_json = excluded.maes_json,
+                    biases_json = excluded.biases_json,
+                    forecast_models_json = excluded.forecast_models_json,
+                    samples = excluded.samples,
+                    days_used = excluded.days_used,
+                    lookback_days = excluded.lookback_days,
+                    decay_factor = excluded.decay_factor,
+                    bias_penalty = excluded.bias_penalty,
+                    divergence_threshold = excluded.divergence_threshold,
+                    weights_info = excluded.weights_info,
+                    computed_at = excluded.computed_at
+                """,
+                (
+                    city,
+                    json.dumps(snapshot.get("weights") or {}, ensure_ascii=False),
+                    json.dumps(snapshot.get("maes") or {}, ensure_ascii=False),
+                    json.dumps(snapshot.get("biases") or {}, ensure_ascii=False),
+                    json.dumps(
+                        snapshot.get("forecast_models") or [], ensure_ascii=False
+                    ),
+                    int(snapshot.get("samples") or 0),
+                    int(snapshot.get("days_used") or 0),
+                    int(snapshot.get("lookback_days") or 7),
+                    float(snapshot.get("decay_factor") or 0.85),
+                    float(snapshot.get("bias_penalty") or 0.5),
+                    float(snapshot.get("divergence_threshold") or 3.0),
+                    snapshot.get("weights_info"),
+                    time.time(),
+                ),
+            )
+            conn.commit()
+
+    def load_snapshot(self, city: str) -> Optional[Dict[str, Any]]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT weights_json, maes_json, biases_json, forecast_models_json,
+                       samples, days_used, lookback_days, decay_factor, bias_penalty,
+                       divergence_threshold, weights_info, computed_at
+                FROM deb_weight_snapshots_store
+                WHERE city = ?
+                """,
+                (city,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "weights": json.loads(row["weights_json"] or "{}"),
+            "maes": json.loads(row["maes_json"] or "{}"),
+            "biases": json.loads(row["biases_json"] or "{}"),
+            "forecast_models": json.loads(row["forecast_models_json"] or "[]"),
+            "samples": int(row["samples"] or 0),
+            "days_used": int(row["days_used"] or 0),
+            "lookback_days": int(row["lookback_days"] or 7),
+            "decay_factor": float(row["decay_factor"] or 0.85),
+            "bias_penalty": float(row["bias_penalty"] or 0.5),
+            "divergence_threshold": float(row["divergence_threshold"] or 3.0),
+            "weights_info": row["weights_info"],
+            "computed_at": float(row["computed_at"] or 0),
+        }
+
+    def load_all(self) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT city, weights_json, maes_json, biases_json,
+                       forecast_models_json, samples, days_used, lookback_days,
+                       decay_factor, bias_penalty, divergence_threshold,
+                       weights_info, computed_at
+                FROM deb_weight_snapshots_store
+                ORDER BY city
+                """
+            ).fetchall()
+        for row in rows:
+            out[str(row["city"])] = {
+                "weights": json.loads(row["weights_json"] or "{}"),
+                "maes": json.loads(row["maes_json"] or "{}"),
+                "biases": json.loads(row["biases_json"] or "{}"),
+                "forecast_models": json.loads(row["forecast_models_json"] or "[]"),
+                "samples": int(row["samples"] or 0),
+                "days_used": int(row["days_used"] or 0),
+                "lookback_days": int(row["lookback_days"] or 7),
+                "decay_factor": float(row["decay_factor"] or 0.85),
+                "bias_penalty": float(row["bias_penalty"] or 0.5),
+                "divergence_threshold": float(row["divergence_threshold"] or 3.0),
+                "weights_info": row["weights_info"],
+                "computed_at": float(row["computed_at"] or 0),
+            }
+        return out
+
+    def delete_older_than(self, computed_at_cutoff: float) -> int:
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM deb_weight_snapshots_store WHERE computed_at < ?",
+                (float(computed_at_cutoff),),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+
+class DebNormalResidualStatsRepository:
+    """Persist lead-stratified DEB residual statistics for the normal probability engine.
+
+    Single global row (stats_key='global'): bias(lead) = residual median,
+    sigma(lead) = residual std, pooled across cities per lead stratum.
+    """
+
+    STATS_KEY = "global"
+
+    def __init__(self, db: Optional[RuntimeStateDB] = None):
+        self.db = db or RuntimeStateDB.instance()
+
+    def upsert_stats(self, stats: Dict[str, Any]) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO deb_normal_residual_stats_store (
+                    stats_key, lead_biases_json, lead_sigmas_json,
+                    city_biases_json, temp_biases_json, temp_sigmas_json,
+                    samples, window_days, computed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stats_key) DO UPDATE SET
+                    lead_biases_json = excluded.lead_biases_json,
+                    lead_sigmas_json = excluded.lead_sigmas_json,
+                    city_biases_json = excluded.city_biases_json,
+                    temp_biases_json = excluded.temp_biases_json,
+                    temp_sigmas_json = excluded.temp_sigmas_json,
+                    samples = excluded.samples,
+                    window_days = excluded.window_days,
+                    computed_at = excluded.computed_at
+                """,
+                (
+                    self.STATS_KEY,
+                    json.dumps(stats.get("lead_biases") or {}, ensure_ascii=False),
+                    json.dumps(stats.get("lead_sigmas") or {}, ensure_ascii=False),
+                    json.dumps(stats.get("city_biases") or {}, ensure_ascii=False),
+                    json.dumps(stats.get("temp_biases") or {}, ensure_ascii=False),
+                    json.dumps(stats.get("temp_sigmas") or {}, ensure_ascii=False),
+                    int(stats.get("samples") or 0),
+                    int(stats.get("window_days") or 0),
+                    time.time(),
+                ),
+            )
+            conn.commit()
+
+    def load_stats(self) -> Optional[Dict[str, Any]]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT lead_biases_json, lead_sigmas_json,
+                       city_biases_json, temp_biases_json, temp_sigmas_json,
+                       samples, window_days, computed_at
+                FROM deb_normal_residual_stats_store
+                WHERE stats_key = ?
+                """,
+                (self.STATS_KEY,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "lead_biases": json.loads(row["lead_biases_json"] or "{}"),
+            "lead_sigmas": json.loads(row["lead_sigmas_json"] or "{}"),
+            "city_biases": json.loads(row["city_biases_json"] or "{}"),
+            "temp_biases": json.loads(row["temp_biases_json"] or "{}"),
+            "temp_sigmas": json.loads(row["temp_sigmas_json"] or "{}"),
+            "samples": int(row["samples"] or 0),
+            "window_days": int(row["window_days"] or 0),
+            "computed_at": float(row["computed_at"] or 0),
+        }

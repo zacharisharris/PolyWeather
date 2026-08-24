@@ -14,11 +14,16 @@ from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 
+from src.data_collection.forecast_source_bundle import (
+    _multi_model_cache_key,
+    fetch_open_meteo_forecast_bundle,
+)
+from src.data_collection.multi_model_freshness import multi_model_forecasts_for_local_date
 import web.routes as legacy_routes
-from web.analysis_service import _runway_history_temp_for_city
 from web.services.canonical_temperature import build_city_weather_from_canonical
 from web.services.latest_observation_overlay import (
-    overlay_latest_amsc_observation,
+    overlay_latest_hko_observation,
+    overlay_latest_jma_amedas_observation,
     parse_observation_epoch,
 )
 from web.services.request_timing import ServerTimingRecorder
@@ -73,11 +78,11 @@ def _city_detail_batch_response_cache_ttl() -> float:
 def _city_chart_optional_overlay_timeout_sec() -> float:
     try:
         timeout_ms = int(
-            os.getenv("POLYWEATHER_CITY_CHART_OPTIONAL_OVERLAY_TIMEOUT_MS", "500")
-            or "500"
+            os.getenv("POLYWEATHER_CITY_CHART_OPTIONAL_OVERLAY_TIMEOUT_MS", "3000")
+            or "3000"
         )
     except ValueError:
-        timeout_ms = 500
+        timeout_ms = 3000
     return max(0.001, min(3.0, timeout_ms / 1000.0))
 
 
@@ -111,6 +116,45 @@ async def _run_optional_city_chart_overlay(
             exc,
         )
         return payload
+
+
+async def _run_latest_observation_city_chart_overlay(
+    *,
+    city: str,
+    overlay_name: str,
+    payload: Dict[str, Any],
+    fn: Callable[..., Dict[str, Any]],
+    args: Tuple[Any, ...],
+) -> Dict[str, Any]:
+    try:
+        return await run_in_threadpool(fn, *args)
+    except Exception as exc:
+        logger.debug(
+            "city chart latest observation overlay skipped city={} overlay={}: {}",
+            city,
+            overlay_name,
+            exc,
+        )
+        return payload
+
+
+async def _overlay_latest_observation_sources(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    latest_payload = payload
+    latest_payload = await _run_latest_observation_city_chart_overlay(
+        city=city,
+        overlay_name="jma_amedas_latest",
+        payload=latest_payload,
+        fn=overlay_latest_jma_amedas_observation,
+        args=(legacy_routes._weather, city, latest_payload, legacy_routes._CACHE_DB),
+    )
+    latest_payload = await _run_latest_observation_city_chart_overlay(
+        city=city,
+        overlay_name="hko_latest_raw",
+        payload=latest_payload,
+        fn=overlay_latest_hko_observation,
+        args=(legacy_routes._CACHE_DB, city, latest_payload),
+    )
+    return latest_payload
 
 
 async def _get_cached_city_payload(city: str, kind: str) -> Dict[str, Any]:
@@ -155,12 +199,7 @@ async def _get_canonical_city_payload(city: str, *, detail_depth: str = "panel")
             "probabilities": {"mu": None, "distribution": []},
         }
     )
-    return await run_in_threadpool(
-        overlay_latest_amsc_observation,
-        legacy_routes._CACHE_DB,
-        city,
-        payload,
-    )
+    return payload
 
 
 def _enqueue_collector_refresh_request(
@@ -270,13 +309,7 @@ async def _refresh_city_payload_with_stale_timeout(
         city,
         kind,
     )
-    latest_payload = await run_in_threadpool(
-        overlay_latest_amsc_observation,
-        legacy_routes._CACHE_DB,
-        city,
-        cached_before_refresh,
-    )
-    return await _overlay_cached_wunderground(city, latest_payload)
+    return await _overlay_cached_wunderground(city, cached_before_refresh)
 
 
 async def _refresh_city_cache_with_stale_timeout(
@@ -302,17 +335,8 @@ def _start_city_cache_stale_refresh(
 
 async def _overlay_cached_wunderground(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     latest_payload = await _overlay_cached_canonical_observation(city, payload)
-    latest_payload = await run_in_threadpool(
-        overlay_latest_amsc_observation,
-        legacy_routes._CACHE_DB,
-        city,
-        latest_payload,
-    )
-    return await run_in_threadpool(
-        legacy_routes._overlay_latest_wunderground_current,
-        city,
-        latest_payload,
-    )
+    latest_payload = await _overlay_latest_observation_sources(city, latest_payload)
+    return latest_payload
 
 
 def _observation_block_epoch(block: Any) -> Optional[int]:
@@ -361,7 +385,7 @@ _SOURCE_BOUND_OBSERVATION_FIELDS = {
     "visibility_mi",
     "wind_dir",
     "wind_speed_kt",
-    "wu_settlement",
+    "settlement",
     "wx_desc",
 }
 
@@ -458,44 +482,6 @@ def _clear_previous_day_observation_series(payload: Dict[str, Any], *, local_dat
         metar_status["current_local_date"] = local_date
 
 
-def _sync_latest_mgm_summary(
-    payload: Dict[str, Any],
-    latest_payload: Dict[str, Any],
-    *,
-    local_time: str,
-) -> None:
-    latest_current = latest_payload.get("current") if isinstance(latest_payload.get("current"), dict) else {}
-    latest_airport = (
-        latest_payload.get("airport_primary")
-        if isinstance(latest_payload.get("airport_primary"), dict)
-        else {}
-    )
-    latest_source = _observation_source_code(latest_current) or _observation_source_code(latest_airport)
-    if latest_source != "mgm":
-        return
-    temp = _float_or_none(latest_airport.get("temp") if latest_airport else None)
-    if temp is None:
-        temp = _float_or_none(latest_current.get("temp") if latest_current else None)
-    if temp is None:
-        return
-    payload["mgm"] = {
-        "temp": round(float(temp), 1),
-        "time": local_time,
-        "feels_like": round(float(temp), 1),
-        "humidity": None,
-        "wind_dir": None,
-        "wind_speed_ms": None,
-        "pressure": None,
-        "cloud_cover": None,
-        "rain_24h": None,
-        "today_high": None,
-        "today_low": None,
-        "station_code": latest_airport.get("station_code") or latest_current.get("station_code"),
-        "station_name": latest_airport.get("station_name") or latest_current.get("station_name"),
-        "hourly": [],
-    }
-
-
 def _merge_latest_observation_payload(
     city: str,
     payload: Dict[str, Any],
@@ -536,11 +522,6 @@ def _merge_latest_observation_payload(
                 ),
             )
             _clear_previous_day_observation_series(next_payload, local_date=local_context["local_date"])
-        _sync_latest_mgm_summary(
-            next_payload,
-            latest_payload,
-            local_time=local_context["local_time"],
-        )
     return next_payload
 
 
@@ -551,65 +532,6 @@ async def _overlay_cached_canonical_observation(city: str, payload: Dict[str, An
     if not canonical_payload:
         return payload
     return _merge_latest_observation_payload(city, payload, canonical_payload)
-
-
-def _overlay_cached_runway_history_from_db(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict) or not payload:
-        return payload
-    normalized_city = str(city or payload.get("name") or payload.get("city") or "").strip().lower()
-    if not normalized_city:
-        return payload
-
-    risk = payload.get("risk") if isinstance(payload.get("risk"), dict) else {}
-    city_risk = legacy_routes.CITY_RISK_PROFILES.get(normalized_city, {}) or {}
-    city_meta = legacy_routes.CITY_REGISTRY.get(normalized_city, {}) or {}
-    icao = str(
-        risk.get("icao")
-        or city_risk.get("icao")
-        or city_meta.get("icao")
-        or ""
-    ).strip().upper()
-    if not icao:
-        return payload
-
-    try:
-        rows = legacy_routes._CACHE_DB.get_runway_obs_recent(icao, minutes=24 * 60)
-    except Exception as exc:
-        logger.debug("chart runway DB overlay skipped city={} icao={}: {}", normalized_city, icao, exc)
-        return payload
-    if not rows:
-        return payload
-
-    use_fahrenheit = (
-        "F" in str(payload.get("temp_symbol") or "").upper()
-        or bool((legacy_routes.CITIES.get(normalized_city, {}) or {}).get("f"))
-    )
-    runway_history: Dict[str, List[Dict[str, Any]]] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        runway = str(row.get("runway") or "").strip().upper()
-        time_val = row.get("otime_utc") or row.get("created_at")
-        if not runway or not time_val:
-            continue
-        temp_val = _runway_history_temp_for_city(normalized_city, row)
-        if temp_val is None:
-            continue
-        if use_fahrenheit:
-            temp_val = temp_val * 9.0 / 5.0 + 32.0
-        runway_history.setdefault(runway, []).append(
-            {
-                "time": str(time_val),
-                "temp": round(float(temp_val), 1),
-            }
-        )
-
-    if not runway_history:
-        return payload
-
-    next_payload = deepcopy(payload)
-    next_payload["runway_plate_history"] = runway_history
-    return next_payload
 
 
 def _start_city_full_stale_refresh(city: str) -> None:
@@ -651,25 +573,13 @@ async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, A
         payload = await _overlay_cached_canonical_observation(city, payload)
         payload = await _run_optional_city_chart_overlay(
             city=city,
-            overlay_name="runway_history",
+            overlay_name="multi_model_hourly",
             payload=payload,
-            fn=_overlay_cached_runway_history_from_db,
+            fn=_overlay_cached_multi_model_hourly,
             args=(city, payload),
         )
-        payload = await _run_optional_city_chart_overlay(
-            city=city,
-            overlay_name="amsc_latest_raw",
-            payload=payload,
-            fn=overlay_latest_amsc_observation,
-            args=(legacy_routes._CACHE_DB, city, payload),
-        )
-        return await _run_optional_city_chart_overlay(
-            city=city,
-            overlay_name="wunderground_current",
-            payload=payload,
-            fn=legacy_routes._overlay_latest_wunderground_current,
-            args=(city, payload),
-        )
+        payload = await _overlay_latest_observation_sources(city, payload)
+        return _floor_chart_forecast_with_observed_high(payload)
 
     cached_entry = await run_in_threadpool(legacy_routes._CACHE_DB.get_city_cache, "full", city)
     if cached_entry:
@@ -680,30 +590,445 @@ async def _get_city_chart_data(city: str, *, force_refresh: bool) -> Dict[str, A
             payload = await _overlay_cached_canonical_observation(city, payload)
             payload = await _run_optional_city_chart_overlay(
                 city=city,
-                overlay_name="runway_history",
+                overlay_name="multi_model_hourly",
                 payload=payload,
-                fn=_overlay_cached_runway_history_from_db,
+                fn=_overlay_cached_multi_model_hourly,
                 args=(city, payload),
             )
-            payload = await _run_optional_city_chart_overlay(
-                city=city,
-                overlay_name="amsc_latest_raw",
-                payload=payload,
-                fn=overlay_latest_amsc_observation,
-                args=(legacy_routes._CACHE_DB, city, payload),
-            )
-            return await _run_optional_city_chart_overlay(
-                city=city,
-                overlay_name="wunderground_current",
-                payload=payload,
-                fn=legacy_routes._overlay_latest_wunderground_current,
-                args=(city, payload),
-            )
+            payload = await _overlay_latest_observation_sources(city, payload)
+            return _floor_chart_forecast_with_observed_high(payload)
 
     return {
         "name": city,
         "display_name": str((legacy_routes.CITY_REGISTRY.get(city, {}) or {}).get("display_name") or city.title()),
     }
+
+
+def _overlay_cached_multi_model_hourly(city: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    current_multi_model = payload.get("multi_model") if isinstance(payload.get("multi_model"), dict) else {}
+    local_date = _payload_local_date(payload)
+    if _multi_model_hourly_covers_local_date(current_multi_model, local_date):
+        return payload
+
+    city_info = legacy_routes.CITIES.get(city) if isinstance(getattr(legacy_routes, "CITIES", None), dict) else None
+    if not isinstance(city_info, dict):
+        return payload
+    lat = city_info.get("lat")
+    lon = city_info.get("lon")
+    if lat is None or lon is None:
+        return payload
+
+    cached_bundle = fetch_open_meteo_forecast_bundle(
+        legacy_routes._weather,
+        city=city,
+        lat=lat,
+        lon=lon,
+        use_fahrenheit=bool(city_info.get("f")),
+        include_multi_model=True,
+        cache_only=True,
+    )
+    cached_multi_model = cached_bundle.get("multi_model") if isinstance(cached_bundle, dict) else None
+    if isinstance(cached_multi_model, dict) and _multi_model_hourly_covers_local_date(cached_multi_model, local_date):
+        return {
+            **payload,
+            "multi_model": {
+                **current_multi_model,
+                **cached_multi_model,
+            },
+        }
+
+    fresh_multi_model = _refresh_multi_model_hourly_if_stale(
+        city=city,
+        lat=float(lat),
+        lon=float(lon),
+        use_fahrenheit=bool(city_info.get("f")),
+        local_date=local_date,
+        cached_multi_model=cached_multi_model,
+    )
+    if not _multi_model_hourly_covers_local_date(fresh_multi_model, local_date):
+        return payload
+
+    return {
+        **payload,
+        "multi_model": {
+            **current_multi_model,
+            **fresh_multi_model,
+        },
+    }
+
+
+def _floor_chart_forecast_with_observed_high(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict) or not payload:
+        return payload
+
+    local_date = _payload_local_date(payload)
+    observed_floor = _observed_temperature_floor(payload)
+    daily_models = _multi_model_daily_models_for_date(payload.get("multi_model"), local_date)
+
+    next_payload = payload
+    if daily_models and local_date:
+        existing_daily = (
+            payload.get("multi_model_daily")
+            if isinstance(payload.get("multi_model_daily"), dict)
+            else {}
+        )
+        current_entry = existing_daily.get(local_date) if isinstance(existing_daily, dict) else {}
+        current_models = current_entry.get("models") if isinstance(current_entry, dict) else {}
+        merged_models = {
+            **(current_models if isinstance(current_models, dict) else {}),
+            **daily_models,
+        }
+        if current_models != merged_models:
+            next_payload = deepcopy(next_payload)
+            next_daily = dict(next_payload.get("multi_model_daily") or {})
+            next_entry = dict(next_daily.get(local_date) or {})
+            next_entry["models"] = merged_models
+            next_daily[local_date] = next_entry
+            next_payload["multi_model_daily"] = next_daily
+
+    if observed_floor is None:
+        return next_payload
+
+    rounded_floor = round(float(observed_floor), 1)
+    next_payload = _floor_forecast_today_high(next_payload, local_date, rounded_floor)
+    next_payload = _floor_deb_prediction(next_payload, rounded_floor)
+    next_payload = _floor_deb_hourly_path(next_payload, rounded_floor)
+    next_payload = _floor_multi_model_daily_deb(next_payload, local_date, rounded_floor)
+    next_payload = _floor_probability_mu(next_payload, rounded_floor)
+    return next_payload
+
+
+def _observed_temperature_floor(payload: Dict[str, Any]) -> Optional[float]:
+    values: List[float] = []
+
+    def add(value: Any) -> None:
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            values.append(parsed)
+
+    for key in ("current", "airport_current", "airport_primary", "canonical_temperature"):
+        block = payload.get(key) if isinstance(payload.get(key), dict) else {}
+        for value_key in ("max_so_far", "max_temp_so_far", "today_high", "temp", "temp_c"):
+            add(block.get(value_key))
+
+    for series_key in ("airport_primary_today_obs", "metar_today_obs", "settlement_today_obs"):
+        _collect_observed_series_temps(payload.get(series_key), values)
+
+    timeseries = payload.get("timeseries") if isinstance(payload.get("timeseries"), dict) else {}
+    for series_key in ("airport_primary_today_obs", "metar_today_obs", "settlement_today_obs"):
+        _collect_observed_series_temps(timeseries.get(series_key), values)
+
+    return max(values) if values else None
+
+
+def _collect_observed_series_temps(series: Any, values: List[float]) -> None:
+    if not isinstance(series, list):
+        return
+    for point in series:
+        if not isinstance(point, dict):
+            continue
+        parsed = _first_float(point, ("temp", "temperature", "value"))
+        if parsed is not None:
+            values.append(parsed)
+
+
+def _first_float(block: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[float]:
+    for key in keys:
+        parsed = _float_or_none(block.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _multi_model_daily_models_for_date(multi_model: Any, local_date: str) -> Dict[str, float]:
+    return {
+        model: round(value, 1)
+        for model, value in multi_model_forecasts_for_local_date(
+            multi_model,
+            local_date,
+        ).items()
+    }
+
+
+def _multi_model_daily_models_from_hourly(multi_model: Dict[str, Any], local_date: str) -> Dict[str, float]:
+    times = multi_model.get("hourly_times") if isinstance(multi_model.get("hourly_times"), list) else []
+    forecasts = (
+        multi_model.get("hourly_forecasts")
+        if isinstance(multi_model.get("hourly_forecasts"), dict)
+        else {}
+    )
+    if not times or not forecasts:
+        return {}
+
+    day_indexes = [
+        idx
+        for idx, raw_time in enumerate(times)
+        if str(raw_time or "").startswith(local_date)
+    ]
+    if not day_indexes:
+        return {}
+
+    models: Dict[str, float] = {}
+    for model, raw_values in forecasts.items():
+        if not isinstance(raw_values, list):
+            continue
+        model_values = [
+            parsed
+            for idx in day_indexes
+            if idx < len(raw_values)
+            for parsed in [_float_or_none(raw_values[idx])]
+            if parsed is not None
+        ]
+        if model_values:
+            models[str(model)] = round(max(model_values), 1)
+    return models
+
+
+def _floor_forecast_today_high(
+    payload: Dict[str, Any],
+    local_date: str,
+    observed_floor: float,
+) -> Dict[str, Any]:
+    forecast = payload.get("forecast") if isinstance(payload.get("forecast"), dict) else {}
+    today_high = _float_or_none(forecast.get("today_high"))
+    daily = forecast.get("daily") if isinstance(forecast.get("daily"), list) else []
+    needs_today_high = today_high is None or today_high < observed_floor
+    needs_daily = False
+    if local_date:
+        found_today = False
+        for entry in daily:
+            if not isinstance(entry, dict) or str(entry.get("date") or "") != local_date:
+                continue
+            found_today = True
+            max_temp = _first_float(entry, ("max_temp", "today_high"))
+            if max_temp is None or max_temp < observed_floor:
+                needs_daily = True
+            break
+        if daily and not found_today:
+            needs_daily = True
+
+    if not needs_today_high and not needs_daily:
+        return payload
+
+    next_payload = deepcopy(payload)
+    next_forecast = dict(next_payload.get("forecast") or {})
+    if needs_today_high:
+        next_forecast["today_high"] = observed_floor
+    if needs_daily and local_date:
+        next_daily = []
+        found_today = False
+        for entry in daily:
+            if not isinstance(entry, dict):
+                next_daily.append(entry)
+                continue
+            next_entry = dict(entry)
+            if str(next_entry.get("date") or "") == local_date:
+                found_today = True
+                max_temp = _first_float(next_entry, ("max_temp", "today_high"))
+                if max_temp is None or max_temp < observed_floor:
+                    next_entry["max_temp"] = observed_floor
+            next_daily.append(next_entry)
+        if not found_today:
+            next_daily.insert(0, {"date": local_date, "max_temp": observed_floor})
+        next_forecast["daily"] = next_daily
+    next_payload["forecast"] = next_forecast
+    return next_payload
+
+
+def _floor_deb_prediction(payload: Dict[str, Any], observed_floor: float) -> Dict[str, Any]:
+    deb = payload.get("deb") if isinstance(payload.get("deb"), dict) else {}
+    prediction = _float_or_none(deb.get("prediction"))
+    raw_prediction = _float_or_none(deb.get("raw_prediction"))
+    needs_prediction = prediction is None or prediction < observed_floor
+    needs_raw = raw_prediction is not None and raw_prediction < observed_floor
+    overview = payload.get("overview") if isinstance(payload.get("overview"), dict) else {}
+    overview_deb = _float_or_none(overview.get("deb_prediction"))
+    needs_overview = overview_deb is not None and overview_deb < observed_floor
+    if not needs_prediction and not needs_raw and not needs_overview:
+        return payload
+
+    next_payload = deepcopy(payload)
+    next_deb = dict(next_payload.get("deb") or {})
+    if needs_prediction:
+        next_deb["prediction"] = observed_floor
+        next_deb["observed_floor_applied"] = True
+    if needs_raw:
+        next_deb["raw_prediction"] = observed_floor
+    next_payload["deb"] = next_deb
+    if needs_overview:
+        next_overview = dict(next_payload.get("overview") or {})
+        next_overview["deb_prediction"] = observed_floor
+        next_payload["overview"] = next_overview
+    return next_payload
+
+
+def _floor_deb_hourly_path(payload: Dict[str, Any], observed_floor: float) -> Dict[str, Any]:
+    deb = payload.get("deb") if isinstance(payload.get("deb"), dict) else {}
+    path = deb.get("hourly_path") if isinstance(deb.get("hourly_path"), dict) else {}
+    temps = path.get("temps") if isinstance(path.get("temps"), list) else []
+    parsed_temps = [_float_or_none(value) for value in temps]
+    valid_temps = [value for value in parsed_temps if value is not None]
+    if not valid_temps:
+        return payload
+    path_max = max(valid_temps)
+    if path_max >= observed_floor:
+        return payload
+
+    offset = observed_floor - path_max
+    next_payload = deepcopy(payload)
+    next_deb = dict(next_payload.get("deb") or {})
+    next_path = dict(next_deb.get("hourly_path") or {})
+    next_path["temps"] = [
+        round(value + offset, 1) if value is not None else raw_value
+        for raw_value, value in zip(temps, parsed_temps)
+    ]
+    next_path["observed_floor_applied"] = True
+    next_path["observed_floor_offset"] = round(offset, 1)
+    next_deb["hourly_path"] = next_path
+    next_deb["observed_floor_applied"] = True
+    next_payload["deb"] = next_deb
+    return next_payload
+
+
+def _floor_multi_model_daily_deb(
+    payload: Dict[str, Any],
+    local_date: str,
+    observed_floor: float,
+) -> Dict[str, Any]:
+    if not local_date:
+        return payload
+    daily = payload.get("multi_model_daily") if isinstance(payload.get("multi_model_daily"), dict) else {}
+    if not daily or local_date not in daily:
+        return payload
+    entry = daily.get(local_date) if isinstance(daily.get(local_date), dict) else {}
+    deb = entry.get("deb") if isinstance(entry.get("deb"), dict) else {}
+    prediction = _float_or_none(deb.get("prediction"))
+    raw_prediction = _float_or_none(deb.get("raw_prediction"))
+    if (
+        prediction is not None
+        and prediction >= observed_floor
+        and (raw_prediction is None or raw_prediction >= observed_floor)
+    ):
+        return payload
+
+    next_payload = deepcopy(payload)
+    next_daily = dict(next_payload.get("multi_model_daily") or {})
+    next_entry = dict(next_daily.get(local_date) or {})
+    next_deb = dict(next_entry.get("deb") or {})
+    if prediction is None or prediction < observed_floor:
+        next_deb["prediction"] = observed_floor
+        next_deb["observed_floor_applied"] = True
+    if raw_prediction is not None and raw_prediction < observed_floor:
+        next_deb["raw_prediction"] = observed_floor
+    next_entry["deb"] = next_deb
+    next_daily[local_date] = next_entry
+    next_payload["multi_model_daily"] = next_daily
+    return next_payload
+
+
+def _floor_probability_mu(payload: Dict[str, Any], observed_floor: float) -> Dict[str, Any]:
+    probabilities = (
+        payload.get("probabilities")
+        if isinstance(payload.get("probabilities"), dict)
+        else {}
+    )
+    mu = _float_or_none(probabilities.get("mu"))
+    if mu is None or mu >= observed_floor:
+        return payload
+    next_payload = deepcopy(payload)
+    next_probabilities = dict(next_payload.get("probabilities") or {})
+    next_probabilities["mu"] = observed_floor
+    next_payload["probabilities"] = next_probabilities
+    return next_payload
+
+
+def _payload_local_date(payload: Dict[str, Any]) -> str:
+    overview = payload.get("overview") if isinstance(payload.get("overview"), dict) else {}
+    return str(payload.get("local_date") or overview.get("local_date") or "").strip()
+
+
+def _multi_model_has_hourly_payload(multi_model: Any) -> bool:
+    if not isinstance(multi_model, dict):
+        return False
+    times = multi_model.get("hourly_times")
+    forecasts = multi_model.get("hourly_forecasts")
+    return bool(times) and isinstance(forecasts, dict) and bool(forecasts)
+
+
+def _multi_model_hourly_covers_local_date(multi_model: Any, local_date: str) -> bool:
+    if not _multi_model_has_hourly_payload(multi_model):
+        return False
+    wanted_date = str(local_date or "").strip()
+    if not wanted_date:
+        return True
+
+    times = multi_model.get("hourly_times") or []
+    forecasts = multi_model.get("hourly_forecasts") or {}
+    for idx, raw_time in enumerate(times):
+        if not str(raw_time or "").startswith(wanted_date):
+            continue
+        for values in forecasts.values():
+            if isinstance(values, list) and idx < len(values) and values[idx] is not None:
+                return True
+    return False
+
+
+def _evict_stale_multi_model_cache_entry(
+    *,
+    city: str,
+    lat: float,
+    lon: float,
+    use_fahrenheit: bool,
+    local_date: str,
+    cached_multi_model: Any,
+) -> None:
+    if _multi_model_hourly_covers_local_date(cached_multi_model, local_date):
+        return
+    try:
+        key = _multi_model_cache_key(
+            legacy_routes._weather,
+            city,
+            lat,
+            lon,
+            use_fahrenheit=use_fahrenheit,
+        )
+        with legacy_routes._weather._multi_model_cache_lock:
+            entry = legacy_routes._weather._multi_model_cache.get(key)
+            data = entry.get("data") if isinstance(entry, dict) else None
+            if isinstance(data, dict) and not _multi_model_hourly_covers_local_date(data, local_date):
+                legacy_routes._weather._multi_model_cache.pop(key, None)
+    except Exception as exc:
+        logger.debug("stale multi-model cache eviction skipped city={}: {}", city, exc)
+
+
+def _refresh_multi_model_hourly_if_stale(
+    *,
+    city: str,
+    lat: float,
+    lon: float,
+    use_fahrenheit: bool,
+    local_date: str,
+    cached_multi_model: Any,
+) -> Dict[str, Any]:
+    _evict_stale_multi_model_cache_entry(
+        city=city,
+        lat=lat,
+        lon=lon,
+        use_fahrenheit=use_fahrenheit,
+        local_date=local_date,
+        cached_multi_model=cached_multi_model,
+    )
+    try:
+        fresh = legacy_routes._weather.fetch_multi_model(
+            lat,
+            lon,
+            city=city,
+            use_fahrenheit=use_fahrenheit,
+        )
+    except Exception as exc:
+        logger.debug("multi-model chart refresh skipped city={}: {}", city, exc)
+        return {}
+    return fresh if isinstance(fresh, dict) else {}
 
 
 def _city_detail_payload_cache_key(
@@ -1224,14 +1549,11 @@ def _chart_scoped_city_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
         },
         "multi_model_daily": detail.get("multi_model_daily") or {},
         "probabilities": detail.get("probabilities") or {"mu": None, "distribution": []},
-        "runway_plate_history": detail.get("runway_plate_history") or {},
-        "runway_band_history": detail.get("runway_band_history") or [],
-        "amos": detail.get("amos") or {},
         "airport_current": detail.get("airport_current") or {},
         "airport_primary": detail.get("airport_primary") or overview.get("airport_primary") or {},
         "airport_primary_today_obs": airport_primary_today_obs,
         "official": {"airport_primary_today_obs": airport_primary_today_obs},
-        "wunderground_current": detail.get("wunderground_current") or {},
+
         "settlement_station": detail.get("settlement_station") or overview.get("settlement_station") or {},
     }
     return scoped

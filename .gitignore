@@ -1,8 +1,18 @@
 # Secrets
 .env
+secrets/
+*.service-account.json
+gcp-sa.json
 
 # Scratch / temp scripts
 scratch/
+
+# Private trading layer (never commit strategy/bot execution code here)
+private-trading/
+trading-private/
+polyweather-trading-private/
+internal-trading/
+ops-trading-private/
 
 # Data and Logs
 data/*.db
@@ -79,3 +89,4 @@ tmp_rctp.html
 .codex-backend-*.log
 frontend-next-*.log
 *.stackdump
+.omo/

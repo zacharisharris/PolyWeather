@@ -1,48 +1,4 @@
-def test_source_adapter_normalizes_amsc_awos_payload_to_observation_record():
-    from web.services.observation_source_adapters import collect_observation_source
 
-    calls = []
-
-    class FakeWeather:
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
-            calls.append((city, use_fahrenheit))
-            results["amos"] = {
-                "source": "amsc_awos",
-                "source_label": "AMSC AWOS",
-                "temp_c": "24.3",
-                "observation_time": "2026-06-14T01:00:00+00:00",
-                "observation_time_local": "2026-06-14 09:00",
-                "icao": "ZSQD",
-                "station_label": "Qingdao Jiaodong",
-                "runway": "17L",
-            }
-
-    result = collect_observation_source(
-        FakeWeather(),
-        "AMSC_AWOS",
-        "Qingdao",
-        use_fahrenheit=False,
-    )
-
-    assert calls == [("qingdao", False)]
-    assert result.source == "amsc_awos"
-    assert result.city == "qingdao"
-    assert result.status == "ok"
-    assert result.error == ""
-    assert len(result.records) == 1
-
-    record = result.records[0]
-    assert record.source == "amsc_awos"
-    assert record.city == "qingdao"
-    assert record.value == 24.3
-    assert record.observed_at == "2026-06-14T01:00:00+00:00"
-    assert record.observed_at_local == "2026-06-14 09:00"
-    assert record.station_code == "ZSQD"
-    assert record.station_name == "Qingdao Jiaodong"
-    assert record.runway == "17L"
-    assert record.value_unit == "c"
-    assert record.source_label == "AMSC AWOS"
-    assert record.payload["temp_c"] == "24.3"
 
 
 def test_source_adapter_flattens_nearby_source_lists():
@@ -81,67 +37,85 @@ def test_source_adapter_flattens_nearby_source_lists():
     assert [record.value for record in result.records] == [28.1, 27.6]
 
 
-def test_source_adapter_collects_mgm_with_keyword_flags_and_station_metadata():
+def test_source_adapter_collects_jma_official_nearby_rows():
     from web.services.observation_source_adapters import collect_observation_source
 
     calls = []
 
     class FakeWeather:
-        def _attach_turkish_mgm_data(
-            self,
-            results,
-            city,
-            *,
-            include_mgm=True,
-            include_nearby=True,
-        ):
-            calls.append((city, include_mgm, include_nearby))
-            if not include_mgm:
-                return
-            results["mgm"] = {
-                "source": "mgm",
-                "source_label": "MGM",
-                "station_code": "17128",
-                "station_name": "Esenboga Airport",
-                "obs_time": "2026-06-15T14:20:00Z",
-                "current": {"temp": 19.0},
+        def _attach_japan_official_nearby(self, results, city, use_fahrenheit):
+            calls.append((city, use_fahrenheit))
+            results["jma_current"] = {
+                "source": "jma_amedas",
+                "source_label": "JMA",
+                "temp": 23.4,
+                "obs_time": "2026-06-16T06:00:00+09:00",
+                "station_code": "44166",
+                "station_name": "Haneda",
             }
 
     result = collect_observation_source(
         FakeWeather(),
-        "mgm",
-        "ankara",
+        "jma_amedas",
+        "tokyo",
         use_fahrenheit=False,
     )
 
-    assert calls == [("ankara", True, True)]
+    assert calls == [("tokyo", False)]
     assert result.status == "ok"
     assert len(result.records) == 1
+    assert result.records[0].source == "jma_amedas"
+    assert result.records[0].value == 23.4
+    assert result.records[0].observed_at == "2026-06-16T06:00:00+09:00"
+    assert result.records[0].station_code == "44166"
 
-    record = result.records[0]
-    assert record.source == "mgm"
-    assert record.source_label == "MGM"
-    assert record.value == 19.0
-    assert record.observed_at == "2026-06-15T14:20:00Z"
-    assert record.station_code == "17128"
-    assert record.station_name == "Esenboga Airport"
+
+def test_source_adapter_collects_metar_for_low_frequency_cities():
+    from web.services.observation_source_adapters import collect_observation_source
+
+    calls = []
+
+    class FakeWeather:
+        def fetch_metar(self, city, use_fahrenheit=False, utc_offset=0):
+            calls.append((city, use_fahrenheit, utc_offset))
+            return {
+                "source": "metar",
+                "icao": "LEMD",
+                "station_name": "Madrid Barajas",
+                "observation_time": "2026-06-16T12:00:00.000Z",
+                "current": {"temp": 28.0},
+            }
+
+    result = collect_observation_source(
+        FakeWeather(),
+        "metar",
+        "madrid",
+        use_fahrenheit=False,
+    )
+
+    assert calls == [("madrid", False, 3600)]
+    assert result.status == "ok"
+    assert result.records[0].source == "metar"
+    assert result.records[0].value == 28.0
+    assert result.records[0].observed_at == "2026-06-16T12:00:00.000Z"
+    assert result.records[0].station_code == "LEMD"
 
 
 def test_source_adapter_reports_parse_error_for_unusable_source_rows():
     from web.services.observation_source_adapters import collect_observation_source
 
     class FakeWeather:
-        def _attach_china_amsc_awos_data(self, results, city, use_fahrenheit):
+        def _attach_israel_ims_data(self, results, city):
             results["bad"] = {
-                "source": "amsc_awos",
+                "source": "ims",
                 "observation_time": "2026-06-14T01:00:00+00:00",
-                "icao": "ZSQD",
+                "station_id": "LLBG",
             }
 
     result = collect_observation_source(
         FakeWeather(),
-        "amsc_awos",
-        "qingdao",
+        "ims",
+        "tel aviv",
         use_fahrenheit=False,
     )
 

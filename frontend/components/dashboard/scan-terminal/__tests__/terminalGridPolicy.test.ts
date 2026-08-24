@@ -101,9 +101,10 @@ export function runTests() {
     "terminal guide must describe the new 3x2 maximum layout instead of 3x3",
   );
   assert(
-    dashboardSource.includes("if (!cityInSlot || !rowForSlot)") &&
+    dashboardSource.includes("LoadingSlotCard") &&
+      dashboardSource.includes("cityInSlot && !rowForSlot && refreshing") &&
       dashboardSource.includes("handleSelectCityForSlot(slotIndex, null);"),
-    "stale saved chart slots must render the empty city picker instead of a row=null Temperature Chart",
+    "terminal must show a loading chart card for saved cities while the first scan rows are still loading, then fall back to the empty picker for stale slots",
   );
   assert(
     dashboardSource.includes("absolute left-1/2 top-12 z-50") &&
@@ -177,7 +178,7 @@ export function runTests() {
   assert(
     scanQuerySource.includes("MAX_STALE_SCAN_CACHE_MS") &&
       scanQuerySource.includes("allowStale") &&
-      scanQuerySource.includes("setCachedRows(readScanCache(tradingRegion || \"\", { allowStale: true }))"),
+      scanQuerySource.includes("setCachedRows(readScanCache(tradingRegion || \"\", cacheScope, { allowStale: true }))"),
     "terminal data hook must render stale scan rows immediately while revalidating the first-screen API",
   );
   assert(
@@ -215,7 +216,6 @@ export function runTests() {
       row: { city: "Moscow" } as any,
       isHourlyLoading: true,
       activeSeries: [],
-      probabilityOverlay: null,
       zoomedData: [
         { label: "00:00", ts: 1 },
         { label: "05:00", ts: 2 },
@@ -224,11 +224,16 @@ export function runTests() {
     "temperature chart should show the loading skeleton while the first detail fetch is in flight and no drawable data exists",
   );
   assert(
+    chartCanvasSource.includes("animate-pulse") &&
+      chartCanvasSource.includes("Loading chart") &&
+      chartCanvasSource.includes("bg-gradient-to-r"),
+    "temperature chart loading skeleton must include visible animation on cold first-open charts",
+  );
+  assert(
     !__shouldKeepTemperatureChartLoadingForTest({
       row: { city: "Moscow" } as any,
       isHourlyLoading: false,
       activeSeries: [],
-      probabilityOverlay: null,
       zoomedData: [
         { label: "00:00", ts: 1 },
         { label: "05:00", ts: 2 },
@@ -249,7 +254,6 @@ export function runTests() {
           values: [13, 13],
         },
       ] as any,
-      probabilityOverlay: null,
       zoomedData: [
         { label: "00:00", ts: 1, current: 13 },
         { label: "05:00", ts: 2, current: 13 },
@@ -258,7 +262,7 @@ export function runTests() {
     "temperature chart should render once a visible series has drawable values",
   );
   assert(
-    !__shouldKeepTemperatureChartLoadingForTest({
+    __shouldKeepTemperatureChartLoadingForTest({
       row: { city: "Moscow" } as any,
       isHourlyLoading: true,
       activeSeries: [
@@ -270,12 +274,11 @@ export function runTests() {
           values: [13, 13],
         },
       ] as any,
-      probabilityOverlay: null,
       zoomedData: [
         { label: "00:00", ts: 1, current: 13 },
         { label: "05:00", ts: 2, current: 13 },
       ],
     }),
-    "temperature chart must render seeded or cached data immediately while full detail continues loading in the background",
+    "temperature chart should keep the loading overlay when the only drawable series is the fallback Current reference line",
   );
 }

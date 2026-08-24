@@ -94,13 +94,23 @@ def _integration_summary(config: dict) -> Dict[str, Any]:
         ),
         "weather_sources": {
             "openweather": bool(weather_cfg.get("openweather_api_key")),
-            "wunderground": bool(weather_cfg.get("wunderground_api_key")),
+
             "visualcrossing": bool(weather_cfg.get("visualcrossing_api_key")),
         },
     }
 
 
 def _probability_summary() -> Dict[str, Any]:
+    from src.analysis.deb_probability import _load_deb_normal_stats
+
+    stats = _load_deb_normal_stats()
+    if stats:
+        return {
+            "engine_mode": "deb_normal",
+            "samples": stats.get("samples"),
+            "lead_biases": stats.get("lead_biases"),
+            "computed_at": stats.get("computed_at"),
+        }
     return {
         "engine_mode": "legacy",
     }
@@ -133,13 +143,26 @@ def _table_date_summary(conn, table_name: str) -> Dict[str, Any]:
     except Exception as exc:
         return {"ok": False, "error": str(exc), "row_count": 0, "cities_count": 0}
 
+    max_date = row["max_date"]
     return {
         "ok": True,
         "row_count": int(row["row_count"] or 0),
         "cities_count": int(row["cities_count"] or 0),
         "min_date": row["min_date"],
-        "max_date": row["max_date"],
+        "max_date": max_date,
+        "stale_days": _target_date_stale_days(max_date),
     }
+
+
+def _target_date_stale_days(target_date: Optional[str]) -> Optional[int]:
+    raw = str(target_date or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return max(0, (datetime.now(timezone.utc).date() - parsed).days)
 
 
 def _truth_source_counts(conn) -> Dict[str, int]:
@@ -293,11 +316,17 @@ def _training_data_summary(account_db, city_registry) -> Dict[str, Any]:
     import sqlite3
 
     db_path = account_db.db_path
+    daily_records = {"ok": False, "row_count": 0, "cities_count": 0}
     truth_records = {"ok": False, "row_count": 0, "cities_count": 0}
     truth_revisions = {"ok": False, "row_count": 0}
     training_features = {"ok": False, "row_count": 0, "cities_count": 0}
+    stale_threshold_days = max(
+        0,
+        int(os.getenv("POLYWEATHER_TRAINING_DATA_STALE_WARN_DAYS", "2") or "2"),
+    )
     try:
         with connect_sqlite(db_path, row_factory=sqlite3.Row) as conn:
+            daily_records = _table_date_summary(conn, "daily_records_store")
             truth_records = _table_date_summary(conn, "truth_records_store")
             if truth_records.get("ok"):
                 truth_records["source_counts"] = _truth_source_counts(conn)
@@ -311,19 +340,36 @@ def _training_data_summary(account_db, city_registry) -> Dict[str, Any]:
             "db_path": db_path,
             "db_ok": False,
             "error": str(exc),
+            "daily_records": daily_records,
             "truth_records": truth_records,
             "truth_revisions": truth_revisions,
             "training_features": training_features,
+            "stale": True,
+            "stale_threshold_days": stale_threshold_days,
             "city_coverage": {},
             "model_city_coverage": {},
         }
 
+    stale_days = [
+        value
+        for value in (
+            daily_records.get("stale_days"),
+            truth_records.get("stale_days"),
+            training_features.get("stale_days"),
+        )
+        if value is not None
+    ]
     return {
         "db_path": db_path,
         "db_ok": True,
+        "daily_records": daily_records,
         "truth_records": truth_records,
         "truth_revisions": truth_revisions,
         "training_features": training_features,
+        "stale": any(int(value) > stale_threshold_days for value in stale_days)
+        if stale_days
+        else True,
+        "stale_threshold_days": stale_threshold_days,
         "city_coverage": city_coverage,
         "model_city_coverage": _model_city_coverage_summary(
             city_coverage.get("entries") or [],

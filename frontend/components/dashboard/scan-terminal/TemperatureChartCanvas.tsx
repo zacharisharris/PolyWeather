@@ -3,7 +3,6 @@
 import clsx from "clsx";
 import { memo, useEffect, useRef, useState } from "react";
 import {
-  Area,
   CartesianGrid,
   ComposedChart as ReComposedChart,
   Line,
@@ -15,11 +14,7 @@ import {
 } from "recharts";
 import type { ScanOpportunityRow } from "@/lib/dashboard-types";
 import { TemperatureTooltipContent } from "@/components/dashboard/scan-terminal/TemperatureTooltipContent";
-import {
-  getTemperatureSeriesForRunwayDetailsMode,
-  type EvidenceSeries,
-  type ProbabilityOverlay,
-} from "@/components/dashboard/scan-terminal/temperature-chart-logic";
+import type { EvidenceSeries } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
 type CityThreshold = {
   threshold: number;
@@ -34,14 +29,11 @@ function isFiniteChartValue(value: unknown) {
 
 function hasDrawableTemperatureChartContent({
   activeSeries,
-  probabilityOverlay,
   zoomedData,
 }: {
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
 }) {
-  void probabilityOverlay;
   return activeSeries.some((series) =>
     zoomedData.some((point, index) => {
       const value = point?.[series.key] ?? series.values[index];
@@ -50,22 +42,37 @@ function hasDrawableTemperatureChartContent({
   );
 }
 
+function isFallbackReferenceSeries(series: EvidenceSeries) {
+  return series.key === "current" && series.label === "Current reference";
+}
+
+function hasDrawablePrimaryTemperatureChartContent({
+  activeSeries,
+  zoomedData,
+}: {
+  activeSeries: EvidenceSeries[];
+  zoomedData: Array<Record<string, any>>;
+}) {
+  return hasDrawableTemperatureChartContent({
+    activeSeries: activeSeries.filter((series) => !isFallbackReferenceSeries(series)),
+    zoomedData,
+  });
+}
+
 function shouldKeepTemperatureChartLoading({
   row,
   isHourlyLoading,
   activeSeries,
-  probabilityOverlay,
   zoomedData,
 }: {
   row: ScanOpportunityRow | null;
   isHourlyLoading: boolean;
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
 }) {
   if (!row?.city) return false;
   if (!isHourlyLoading) return false;
-  return !hasDrawableTemperatureChartContent({ activeSeries, probabilityOverlay, zoomedData });
+  return !hasDrawablePrimaryTemperatureChartContent({ activeSeries, zoomedData });
 }
 
 function TemperatureChartSkeleton({ compact }: { compact: boolean }) {
@@ -89,7 +96,8 @@ function TemperatureChartSkeleton({ compact }: { compact: boolean }) {
             style={{ left: `${(index / Math.max(1, verticalLines - 1)) * 100}%` }}
           />
         ))}
-        <div className="absolute inset-x-10 top-1/3 h-10 rounded bg-slate-100/60" />
+        <div className="absolute inset-x-10 top-1/3 h-10 animate-pulse rounded bg-gradient-to-r from-slate-100 via-blue-100 to-slate-100" />
+        <div className="absolute inset-y-0 -left-1/3 w-1/3 animate-pulse bg-gradient-to-r from-transparent via-white/80 to-transparent" />
       </div>
     </div>
   );
@@ -103,12 +111,9 @@ function TemperatureChartCanvasComponent({
   cityThresholds,
   chartSeries,
   activeSeries,
-  probabilityOverlay,
   zoomedData,
   chartDomain,
   intDegreeTicks,
-  hasRunwayData,
-  showRunwayDetails,
   isHourlyLoading,
   detailError,
   detailStatus,
@@ -122,7 +127,6 @@ function TemperatureChartCanvasComponent({
   onZoomReset,
   isSeriesVisible,
   onSeriesToggle,
-  onShowRunwayDetailsChange,
   onRetryDetail,
 }: {
   isEn: boolean;
@@ -132,12 +136,9 @@ function TemperatureChartCanvasComponent({
   cityThresholds: CityThreshold[];
   chartSeries: EvidenceSeries[];
   activeSeries: EvidenceSeries[];
-  probabilityOverlay: ProbabilityOverlay | null;
   zoomedData: Array<Record<string, any>>;
   chartDomain: [number, number] | ["auto", "auto"];
   intDegreeTicks: number[] | null;
-  hasRunwayData: boolean;
-  showRunwayDetails: boolean;
   isHourlyLoading: boolean;
   detailError?: string | null;
   detailStatus?: string | null;
@@ -151,7 +152,6 @@ function TemperatureChartCanvasComponent({
   onZoomReset: () => void;
   isSeriesVisible: (seriesKey: string) => boolean;
   onSeriesToggle: (seriesKey: string) => void;
-  onShowRunwayDetailsChange: (value: boolean) => void;
   onRetryDetail?: () => void;
 }) {
   const chartHostRef = useRef<HTMLDivElement | null>(null);
@@ -198,36 +198,23 @@ function TemperatureChartCanvasComponent({
   const chartWidth = Math.max(1, chartSize.width);
   const minChartHeight = compact ? 120 : 220;
   const chartHeight = Math.max(minChartHeight, chartSize.height);
-  const individualRunwaySeriesCount = chartSeries.filter(
-    (series) => series.key.startsWith("runway_") && series.key !== "runway_max",
-  ).length;
-  const collapsedRunwaySeries = getTemperatureSeriesForRunwayDetailsMode(
-    row?.city || "",
-    chartSeries,
-    false,
-  );
-  const canToggleRunwayDetails =
-    hasRunwayData &&
-    individualRunwaySeriesCount > 1 &&
-    collapsedRunwaySeries.length < chartSeries.length;
   const hasDrawableChartContent = hasDrawableTemperatureChartContent({
     activeSeries,
-    probabilityOverlay,
     zoomedData,
   });
   const shouldShowChartLoading = shouldKeepTemperatureChartLoading({
     row,
     isHourlyLoading,
     activeSeries,
-    probabilityOverlay,
     zoomedData,
   });
   const shouldRenderChart = canRenderChart && hasDrawableChartContent;
   const shouldShowEmptyState = Boolean(row?.city) && !isHourlyLoading && !hasDrawableChartContent;
-  const shouldShowBackgroundRefresh = isHourlyLoading && hasDrawableChartContent;
+  const shouldShowBackgroundRefresh = isHourlyLoading && hasDrawableChartContent && !shouldShowChartLoading;
   const shouldShowUnavailableState = Boolean(row?.city) && Boolean(detailError) && !isHourlyLoading && !hasDrawableChartContent;
   const shouldShowBackgroundError =
-    showDetailErrorBadge && Boolean(row?.city) && Boolean(detailError) && !isHourlyLoading && hasDrawableChartContent;
+    showDetailErrorBadge && Boolean(row?.city) && !isHourlyLoading && hasDrawableChartContent &&
+    (Boolean(detailError) || showingStaleDetail || detailStatus === "stale_cache");
   const backgroundErrorLabel =
     showingStaleDetail || detailStatus === "stale_cache"
       ? (isEn ? "Detail cache" : "详情缓存")
@@ -237,11 +224,7 @@ function TemperatureChartCanvasComponent({
     <div className={clsx("relative flex flex-1 flex-col p-2", compact ? "min-h-[120px]" : "min-h-[240px]")}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-1.5 text-[11px] border-b border-[#e2e8f0] bg-white">
         {chartSeries.length > 1 &&
-          getTemperatureSeriesForRunwayDetailsMode(
-            row?.city || "",
-            chartSeries,
-            showRunwayDetails,
-          )
+          chartSeries
             .map((s) => (
               <button
                 key={s.key}
@@ -256,19 +239,6 @@ function TemperatureChartCanvasComponent({
                 <span className="text-slate-700 font-bold">{s.label}</span>
               </button>
             ))}
-
-        {canToggleRunwayDetails && (
-          <label className="inline-flex items-center gap-1.5 ml-auto cursor-pointer text-slate-600 hover:text-slate-800 font-semibold select-none">
-            <input
-              type="checkbox"
-              checked={showRunwayDetails}
-              onChange={(e) => onShowRunwayDetailsChange(e.target.checked)}
-              className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 h-3.5 w-3.5 cursor-pointer"
-            />
-            <span>{isEn ? "Show Runway Details" : "显示跑道明细"}</span>
-          </label>
-        )}
-
       </div>
       <div ref={chartHostRef} className={clsx("relative flex-1", compact ? "min-h-[120px]" : "min-h-[220px]")}>
         {!shouldRenderChart && <TemperatureChartSkeleton compact={compact} />}
@@ -286,11 +256,26 @@ function TemperatureChartCanvasComponent({
             <CartesianGrid stroke="#dbe6ef" strokeDasharray="2 2" />
             <XAxis
               dataKey="label"
-              tick={{ fontSize: 9, fill: "#64748b" }}
-              tickLine={false}
+              tick={{
+                fontSize: timeframe === "3D" ? 8 : 9,
+                fill: "#64748b",
+                ...(timeframe === "3D"
+                  ? { angle: -45, textAnchor: "end", dy: 4 }
+                  : {}),
+              }}
+              tickLine={timeframe === "3D"}
               axisLine={{ stroke: "#cbd5e1" }}
-              interval={Math.max(0, Math.floor(zoomedData.length / (compact ? 6 : 10)))}
-              minTickGap={compact ? 24 : 32}
+              interval={
+                timeframe === "3D"
+                  ? // One tick every 6 hours (indices 0/6/12/…): midnight
+                    // (index 0/24/48) stays on the grid so the M/D date
+                    // markers survive, and the 72 labels no longer overlap
+                    // and shift off their data points on narrow cards.
+                    6
+                  : Math.max(0, Math.floor(zoomedData.length / (compact ? 6 : 10)))
+              }
+              minTickGap={timeframe === "3D" ? 12 : compact ? 24 : 32}
+              height={timeframe === "3D" ? 34 : undefined}
             />
             <YAxis
               orientation="right"
@@ -339,7 +324,6 @@ function TemperatureChartCanvasComponent({
                   payload={props.payload as ReadonlyArray<{ payload?: Record<string, any> }> | undefined}
                   data={zoomedData}
                   series={activeSeries}
-                  probabilityOverlay={probabilityOverlay}
                   tempSymbol={tempSymbol}
                   isEn={isEn}
                 />
@@ -355,17 +339,6 @@ function TemperatureChartCanvasComponent({
                 return Number.isFinite(num) ? `${num.toFixed(2)}${tempSymbol}` : String(value);
               }}
             />
-            {hasRunwayData && (
-              <Area
-                dataKey="runway_band"
-                name={isEn ? "Runway Range" : "跑道区间"}
-                stroke="none"
-                fill="#009688"
-                fillOpacity={showRunwayDetails ? 0.08 : 0.18}
-                connectNulls={true}
-                isAnimationActive={false}
-              />
-            )}
             {refAreaLeft !== null && refAreaRight !== null && zoomedData[refAreaLeft] && zoomedData[refAreaRight] && (
               <ReferenceArea
                 x1={zoomedData[refAreaLeft].label}

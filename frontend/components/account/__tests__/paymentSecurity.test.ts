@@ -95,6 +95,12 @@ export function runTests() {
     "manual payment flow must validate tx hashes with the backend before submission",
   );
   assert(
+    paymentFlowSource.includes("confirmRes.status === 503") &&
+      paymentFlowSource.includes('lowerRaw.includes("cannot connect payment rpc")') &&
+      paymentFlowSource.includes('lowerRaw.includes("payment rpc chain mismatch")'),
+    "manual payment confirm must treat transient payment RPC failures as pending after tx hash submission",
+  );
+  assert(
     paymentFlowSource.includes("await waitForReceipt(txHashNorm, eth)") &&
       paymentFlowSource.indexOf("await waitForReceipt(txHashNorm, eth)") <
         paymentFlowSource.indexOf("const submitRes = await fetch(`/api/payments/intents/${intentId}/submit`"),
@@ -175,7 +181,6 @@ export function runTests() {
     "app/api/ops/analytics/funnel/route.ts",
     "app/api/ops/config/route.ts",
     "app/api/ops/health-check/route.ts",
-    "app/api/ops/leaderboard/weekly/route.ts",
     "app/api/ops/memberships/route.ts",
     "app/api/ops/memberships/growth/route.ts",
     "app/api/ops/memberships/overview/route.ts",
@@ -184,7 +189,6 @@ export function runTests() {
     "app/api/ops/payments/incidents/[eventId]/resolve/route.ts",
     "app/api/ops/subscriptions/extend/route.ts",
     "app/api/ops/subscriptions/grant/route.ts",
-    "app/api/ops/telegram/members-audit/route.ts",
     "app/api/ops/training/accuracy/route.ts",
     "app/api/ops/truth-history/route.ts",
     "app/api/ops/users/route.ts",

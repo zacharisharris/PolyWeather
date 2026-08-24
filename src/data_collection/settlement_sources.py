@@ -24,8 +24,6 @@ _official_intraday_repo = OfficialIntradayObservationRepository()
 class SettlementSourceMixin:
     IMGW_METEO_API_BASE = "https://meteo.imgw.pl/api/v1"
     IMGW_METEO_API_TOKEN = os.environ.get("IMGW_METEO_API_TOKEN", "")
-    NOAA_WRH_MESO_TOKEN = os.environ.get("NOAA_WRH_MESO_TOKEN", "")
-    NOAA_WRH_TIMESERIES_REFERER_BASE = "https://www.weather.gov/wrh/timeseries?site="
 
     def _get_settlement_cache(self, key: str) -> Optional[Dict[str, Any]]:
         now_ts = time.time()
@@ -307,91 +305,6 @@ class SettlementSourceMixin:
             logger.warning(f"HKO settlement fetch failed station={normalized_station_code}: {exc}")
             return None
 
-    def fetch_cwa_taipei_settlement_current(self) -> Optional[Dict[str, Any]]:
-        cache_key = "cwa:466920"
-        cached = self._get_settlement_cache(cache_key)
-        if cached:
-            return cached
-
-        try:
-            url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001"
-            response = self._http_get(
-                url,
-                params={"Authorization": self.cwa_open_data_auth, "format": "JSON", "StationId": "466920"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json() if response.content else {}
-            stations = (data.get("records") or {}).get("Station") or []
-            if isinstance(stations, dict):
-                station = stations
-            elif isinstance(stations, list) and stations:
-                station = stations[0]
-            else:
-                station = None
-            if not isinstance(station, dict):
-                return None
-
-            wx = station.get("WeatherElement") or {}
-            if not isinstance(wx, dict):
-                wx = {}
-            daily_extreme = wx.get("DailyExtreme") or {}
-            high_info = (((daily_extreme.get("DailyHigh") or {}).get("TemperatureInfo") or {}))
-            low_info = (((daily_extreme.get("DailyLow") or {}).get("TemperatureInfo") or {}))
-            high_time_raw = (((high_info.get("Occurred_at") or {}).get("DateTime")))
-            high_hhmm = None
-            if high_time_raw and "T" in str(high_time_raw):
-                try:
-                    high_hhmm = datetime.fromisoformat(str(high_time_raw)).strftime("%H:%M")
-                except Exception:
-                    high_hhmm = str(high_time_raw).split("T")[1][:5]
-
-            obs_time_raw = (station.get("ObsTime") or {}).get("DateTime")
-            wind_speed_ms = self._safe_float(wx.get("WindSpeed"))
-            payload: Dict[str, Any] = {
-                "source": "cwa",
-                "source_label": "CWA",
-                "station_code": str(station.get("StationId") or "466920"),
-                "station_name": str(station.get("StationName") or "臺北"),
-                "observation_time": str(obs_time_raw or "").strip() or None,
-                "current": {
-                    "temp": self._safe_float(wx.get("AirTemperature")),
-                    "max_temp_so_far": self._safe_float(high_info.get("AirTemperature")),
-                    "max_temp_time": high_hhmm,
-                    "today_low": self._safe_float(low_info.get("AirTemperature")),
-                    "humidity": self._safe_float(wx.get("RelativeHumidity")),
-                    "wind_speed_kt": round(float(wind_speed_ms) * 1.943844, 1) if wind_speed_ms is not None else None,
-                    "wind_dir": self._safe_float(wx.get("WindDirection")),
-                },
-                "unit": "celsius",
-            }
-            today_obs = self._update_official_today_obs(
-                source_code="cwa",
-                station_code=payload["station_code"],
-                obs_iso=payload.get("observation_time"),
-                current_temp=payload["current"]["temp"],
-                utc_offset_seconds=28800,
-            )
-            if today_obs:
-                payload["today_obs"] = today_obs
-            self._set_settlement_cache(cache_key, payload)
-            # Write to airport obs log for high-freq monitoring
-            try:
-                from src.database.db_manager import DBManager
-                DBManager().append_airport_obs(
-                    icao="466920",
-                    city="taipei",
-                    temp_c=payload["current"]["temp"],
-                    wind_kt=payload["current"].get("wind_speed_kt"),
-                    obs_time=str(obs_time_raw or "").strip() or datetime.now().isoformat(),
-                )
-            except Exception:
-                logger.exception("airport_obs_log append failed for cwa")
-            return payload
-        except Exception as exc:
-            logger.warning(f"CWA settlement fetch failed: {exc}")
-            return None
-
     def fetch_hko_forecast(self) -> Optional[float]:
         try:
             url = "https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=fnd&lang=tc"
@@ -401,33 +314,12 @@ class SettlementSourceMixin:
             logger.warning(f"HKO Forecast request failed: {exc}")
             return None
 
-    def fetch_cwa_taipei_forecast(self) -> Optional[float]:
-        try:
-            if not self.cwa_open_data_auth:
-                return None
-            url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-061"
-            res = self._http_get_json(
-                url,
-                params={"Authorization": self.cwa_open_data_auth, "format": "JSON", "elementName": "MaxT"},
-                timeout=self.timeout,
-            )
-            locs = res.get("records", {}).get("Locations", [])[0].get("Location", [])
-            if not locs:
-                return None
-            loc = locs[0]
-            for weather_element in loc.get("WeatherElement", []):
-                if weather_element.get("ElementName") == "MaxT":
-                    return float(weather_element["Time"][0]["ElementValue"][0]["Temperature"])
-            return None
-        except Exception as exc:
-            logger.warning(f"CWA Forecast request failed: {exc}")
-            return None
-
     def fetch_noaa_station_settlement_current(
         self,
         *,
         station_code: str = "RCTP",
         station_name: Optional[str] = None,
+        tz_offset_seconds: int = 0,
     ) -> Optional[Dict[str, Any]]:
         normalized_station_code = str(station_code or "RCTP").strip().upper() or "RCTP"
         cache_key = f"noaa:{normalized_station_code.lower()}"
@@ -436,76 +328,59 @@ class SettlementSourceMixin:
             return cached
 
         try:
+            # NOAA aviationweather METAR API: free, no token, global ICAO
+            # coverage. Replaces the SynopticData/MesoWest timeseries endpoint,
+            # which required a token (401 with an empty NOAA_WRH_MESO_TOKEN).
             response = self._http_get(
-                "https://api.synopticdata.com/v2/stations/timeseries",
+                "https://aviationweather.gov/api/data/metar",
                 params={
-                    "STID": normalized_station_code,
-                    "showemptystations": 1,
-                    "recent": 2880,
-                    "complete": 1,
-                    "token": self.NOAA_WRH_MESO_TOKEN,
-                    "obtimezone": "local",
-                },
-                headers={
-                    "Referer": f"{self.NOAA_WRH_TIMESERIES_REFERER_BASE}{normalized_station_code}",
-                    "Origin": "https://www.weather.gov",
-                    "User-Agent": "Mozilla/5.0",
+                    "ids": normalized_station_code,
+                    "format": "json",
+                    "hours": 3,
                 },
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            payload = response.json() if response.content else {}
-            stations = payload.get("STATION") or []
-            station = stations[0] if isinstance(stations, list) and stations else None
-            if not isinstance(station, dict):
+            rows = response.json() if response.content else []
+            if not isinstance(rows, list) or not rows:
                 return None
 
-            obs = station.get("OBSERVATIONS") or {}
-            stamps = obs.get("date_time") or []
-            temps = obs.get("air_temp_set_1") or []
-            humidity_list = obs.get("relative_humidity_set_1") or []
-            wind_speed_list = obs.get("wind_speed_set_1") or []
-            wind_dir_list = obs.get("wind_direction_set_1") or []
-            if not isinstance(stamps, list) or not isinstance(temps, list) or not stamps or not temps:
+            parsed: List[
+                tuple[datetime, int, Optional[float], Optional[float], Optional[float]]
+            ] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                temp = self._safe_float(row.get("temp"))
+                obs_ts = row.get("obsTime")
+                if temp is None or obs_ts is None:
+                    continue
+                try:
+                    dt = datetime.fromtimestamp(int(obs_ts), tz=timezone.utc)
+                except Exception:
+                    continue
+                parsed.append(
+                    (
+                        dt,
+                        int(round(temp)),
+                        self._safe_float(row.get("dewp")),
+                        self._safe_float(row.get("wspd")),
+                        self._safe_float(row.get("wdir")),
+                    )
+                )
+            if not parsed:
                 return None
+            parsed.sort(key=lambda item: item[0])
+
+            tz_delta = timedelta(seconds=int(tz_offset_seconds or 0))
+            latest_dt, latest_temp, latest_dewp, latest_wspd, latest_wdir = parsed[-1]
+            target_date = (latest_dt + tz_delta).date()
 
             today_rows: List[tuple[datetime, int]] = []
-            latest_dt: Optional[datetime] = None
-            latest_temp: Optional[int] = None
-            latest_humidity: Optional[float] = None
-            latest_wind_speed_ms: Optional[float] = None
-            latest_wind_dir: Optional[float] = None
-
-            for idx, stamp in enumerate(stamps):
-                raw_temp = temps[idx] if idx < len(temps) else None
-                rounded_temp = self._js_round(raw_temp)
-                if rounded_temp is None:
-                    continue
-                try:
-                    dt = datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%S%z")
-                except Exception:
-                    continue
-                if latest_dt is None or dt >= latest_dt:
-                    latest_dt = dt
-                    latest_temp = rounded_temp
-                    latest_humidity = self._safe_float(humidity_list[idx] if idx < len(humidity_list) else None)
-                    latest_wind_speed_ms = self._safe_float(wind_speed_list[idx] if idx < len(wind_speed_list) else None)
-                    latest_wind_dir = self._safe_float(wind_dir_list[idx] if idx < len(wind_dir_list) else None)
-            if latest_dt is None or latest_temp is None:
-                return None
-
-            target_date = latest_dt.date()
-            for idx, stamp in enumerate(stamps):
-                raw_temp = temps[idx] if idx < len(temps) else None
-                rounded_temp = self._js_round(raw_temp)
-                if rounded_temp is None:
-                    continue
-                try:
-                    dt = datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%S%z")
-                except Exception:
-                    continue
-                if dt.date() == target_date:
-                    today_rows.append((dt, rounded_temp))
+            for dt, temp, _dewp, _wspd, _wdir in parsed:
+                local_dt = dt + tz_delta
+                if local_dt.date() == target_date:
+                    today_rows.append((local_dt, temp))
 
             max_so_far = None
             max_temp_time = None
@@ -522,20 +397,34 @@ class SettlementSourceMixin:
                 for dt, temp in today_rows
             ]
 
+            humidity = None
+            if latest_dewp is not None and latest_temp is not None:
+                try:
+                    # Magnus-formula relative humidity from dew point (METAR
+                    # has no direct humidity field).
+                    e_t = math.exp((17.625 * latest_temp) / (243.04 + latest_temp))
+                    e_td = math.exp((17.625 * latest_dewp) / (243.04 + latest_dewp))
+                    humidity = round(min(100.0, max(0.0, 100.0 * e_td / e_t)), 1)
+                except Exception:
+                    humidity = None
+
             result = {
                 "source": "noaa",
                 "source_label": "NOAA",
                 "station_code": normalized_station_code,
-                "station_name": str(station_name or station.get("NAME") or normalized_station_code),
+                "station_name": str(station_name or normalized_station_code),
                 "observation_time": latest_dt.isoformat(),
                 "current": {
                     "temp": latest_temp,
                     "max_temp_so_far": max_so_far,
                     "max_temp_time": max_temp_time,
                     "today_low": today_low,
-                    "humidity": round(latest_humidity, 1) if latest_humidity is not None else None,
-                    "wind_speed_kt": round(float(latest_wind_speed_ms) * 1.943844, 1) if latest_wind_speed_ms is not None else None,
-                    "wind_dir": latest_wind_dir,
+                    "humidity": humidity,
+                    # aviationweather wspd is already knots (METAR standard).
+                    "wind_speed_kt": round(float(latest_wspd), 1)
+                    if latest_wspd is not None
+                    else None,
+                    "wind_dir": latest_wdir,
                 },
                 "today_obs": today_obs,
                 "unit": "celsius",
@@ -633,9 +522,6 @@ class SettlementSourceMixin:
 
             city_meta = CITY_REGISTRY.get(normalized) or {}
             settlement_source = str(city_meta.get("settlement_source") or "").strip().lower()
-            if settlement_source == "wunderground":
-                logger.info("Settlement current skipped city={} source=wunderground reason=crawler_removed", city)
-                return None
             if settlement_source == "hko":
                 raw_candidates = city_meta.get("settlement_station_candidates") or []
                 if isinstance(raw_candidates, str):
@@ -660,8 +546,6 @@ class SettlementSourceMixin:
                     station_name=station_name,
                     station_candidates=station_candidates,
                 )
-            if settlement_source == "cwa":
-                return self.fetch_cwa_taipei_settlement_current()
             if settlement_source == "noaa":
                 station_code = (
                     str(city_meta.get("settlement_station_code") or "").strip()
@@ -675,9 +559,8 @@ class SettlementSourceMixin:
                 return self.fetch_noaa_station_settlement_current(
                     station_code=station_code,
                     station_name=station_name,
+                    tz_offset_seconds=int(city_meta.get("tz_offset") or 0),
                 )
         except Exception as exc:
             logger.warning(f"Settlement source dispatch failed city={city}: {exc}")
-        if normalized == "taipei":
-            return self.fetch_cwa_taipei_settlement_current()
         return None

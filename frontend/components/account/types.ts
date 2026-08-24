@@ -3,8 +3,7 @@ export type AuthMeResponse = {
   user_id?: string | null;
   email?: string | null;
   points?: number;
-  weekly_points?: number;
-  weekly_rank?: number | string | null;
+  points_ledger?: PointsLedgerSummary;
   entitlement_mode?: string | null;
   auth_required?: boolean;
   subscription_required?: boolean;
@@ -17,38 +16,28 @@ export type AuthMeResponse = {
   subscription_total_expires_at?: string | null;
   subscription_queued_days?: number | null;
   subscription_queued_count?: number | null;
-  telegram_pricing?: TelegramPricing | null;
-  referral?: ReferralSummary | null;
   degraded_auth_profile?: boolean | null;
   degraded_reason?: string | null;
   entitlement_snapshot?: boolean | null;
   entitlement_snapshot_reason?: string | null;
 };
 
-export type ReferralSummary = {
-  code?: string;
-  discount_usdc?: string;
-  discounted_monthly_amount_usdc?: string;
-  reward_days?: number;
-  reward_points?: number;
-  monthly_reward_limit?: number;
-  monthly_reward_days_limit?: number;
-  monthly_reward_points_limit?: number;
-  monthly_reward_count?: number;
-  monthly_reward_days?: number;
-  monthly_reward_points?: number;
-  applied_code?: string;
-  attribution_status?: string;
+export type PointsLedgerEntry = {
+  id?: number;
+  source?: string;
+  delta_points?: number;
+  balance_after?: number;
+  actor_email?: string;
+  reference_type?: string;
+  reference_id?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
 };
 
-export type TelegramPricing = {
-  configured?: boolean;
-  telegram_id?: number | null;
-  telegram_status?: string | null;
-  is_group_member?: boolean;
-  is_private_group_member?: boolean;
-  amount_usdc?: string;
-  pricing_source?: string;
+export type PointsLedgerSummary = {
+  balance?: number;
+  recent?: PointsLedgerEntry[];
+  by_source?: Record<string, { points?: number; count?: number }>;
 };
 
 export type PaymentPlan = {

@@ -29,6 +29,7 @@ import {
 import { trackAppEvent } from "@/lib/app-analytics";
 import { buildAuthMePath } from "@/lib/auth-snapshot";
 import {
+  assertExpectedDirectPaymentReceiver,
   assertExpectedPaymentReceiver,
   EXPECTED_PAYMENT_RECEIVER_ADDRESS,
 } from "@/lib/payment-receiver";
@@ -750,7 +751,7 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
       if (!intentId || !direct?.receiver_address || !direct?.amount_usdc) {
         throw new Error(copy.manualPaymentInvalid);
       }
-      assertExpectedPaymentReceiver(direct.receiver_address, "manual payment receiver");
+      assertExpectedDirectPaymentReceiver(direct.receiver_address, "manual payment receiver");
       setLastIntentId(intentId);
       setManualPayment(direct);
       setPaymentMethodTab("manual");
@@ -826,6 +827,9 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
         const lowerRaw = raw.toLowerCase();
         const maybePending =
           confirmRes.status === 408 ||
+          (confirmRes.status === 503 &&
+            (lowerRaw.includes("cannot connect payment rpc") ||
+              lowerRaw.includes("payment rpc chain mismatch"))) ||
           (confirmRes.status === 409 && (lowerRaw.includes("confirmations not enough") || lowerRaw.includes("tx indexed partially")));
         if (maybePending) {
           setPaymentInfo(`交易已提交: ${shortAddress(txHashNorm)}，等待链上确认中...`);

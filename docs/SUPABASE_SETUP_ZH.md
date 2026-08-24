@@ -1,6 +1,6 @@
-# Supabase + 登录 + 支付接入说明（v1.8.1）
+# Supabase + 登录 + 支付接入说明（v1.9.0）
 
-最后更新：`2026-05-29`
+最后更新：`2026-08-01`
 
 ## 1. 目标
 
@@ -58,9 +58,6 @@ POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN=
 # WalletConnect（支持手机钱包扫码）
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
 NEXT_PUBLIC_WALLETCONNECT_POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com
-
-# Overlay 跳转
-NEXT_PUBLIC_TELEGRAM_GROUP_URL=https://t.me/<your_group>
 ```
 
 ### 4.2 后端 / Bot（.env）
@@ -74,6 +71,10 @@ SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_HTTP_TIMEOUT_SEC=8
+
+# 增量同步节流（默认值即代码默认，可按需调小）
+POLYWEATHER_SUPABASE_PROFILE_SYNC_MIN_INTERVAL_SEC=3600
+POLYWEATHER_SUPABASE_POINTS_SYNC_MIN_INTERVAL_SEC=60
 
 POLYWEATHER_PAYMENT_ENABLED=true
 # 默认链仍是 Polygon，因为当前 checkout 合约部署在 Polygon。

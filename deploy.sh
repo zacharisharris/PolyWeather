@@ -29,61 +29,6 @@ unset GHCR_PAT
 cd "$COMPOSE_DIR"
 git fetch origin main && git reset --hard origin/main
 
-sync_city_thread_ids() {
-    local runtime_dir="${POLYWEATHER_RUNTIME_DATA_DIR:-/var/lib/polyweather}"
-    local repo_file="$COMPOSE_DIR/data/city_thread_ids.json"
-    local target_file="$runtime_dir/city_thread_ids.json"
-
-    if [ ! -f "$repo_file" ]; then
-        echo "No repository city_thread_ids.json to sync"
-        return 0
-    fi
-
-    mkdir -p "$runtime_dir"
-    REPO_CITY_THREAD_IDS_FILE="$repo_file" TARGET_CITY_THREAD_IDS_FILE="$target_file" python3 - <<'PY'
-import json
-import os
-import time
-
-repo_file = os.environ["REPO_CITY_THREAD_IDS_FILE"]
-target_file = os.environ["TARGET_CITY_THREAD_IDS_FILE"]
-
-with open(repo_file, "r", encoding="utf-8") as f:
-    repo_data = json.load(f)
-if not isinstance(repo_data, dict):
-    raise SystemExit("repository city_thread_ids.json must contain an object")
-
-target_data = {}
-if os.path.isfile(target_file) and os.path.getsize(target_file) > 0:
-    try:
-        with open(target_file, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            target_data = loaded
-        else:
-            raise ValueError("target file is not an object")
-    except Exception as exc:
-        backup = f"{target_file}.invalid.{int(time.time())}"
-        os.replace(target_file, backup)
-        print(f"Backed up invalid city_thread_ids.json to {backup}: {exc}")
-
-merged = dict(repo_data)
-merged.update(target_data)
-
-if merged != target_data:
-    tmp_file = f"{target_file}.tmp"
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp_file, target_file)
-    print(f"Synced city_thread_ids.json: {len(target_data)} -> {len(merged)} cities")
-else:
-    print(f"city_thread_ids.json already up to date: {len(target_data)} cities")
-PY
-}
-
-sync_city_thread_ids
-
 PREVIOUS_TAG=""
 if [ -f "$TAG_FILE" ]; then
     PREVIOUS_TAG=$(cat "$TAG_FILE")
@@ -143,6 +88,24 @@ read_env_file_value() {
     ' .env | tail -n 1
 }
 
+stop_existing_bot_receivers() {
+    echo "Stopping existing Telegram bot receivers..."
+    docker compose stop polyweather || true
+
+    local legacy_pattern='python(3)? .*bot_[l]istener\.py'
+    if pgrep -af "$legacy_pattern" >/dev/null 2>&1; then
+        echo "Stopping legacy host bot_listener.py processes..."
+        pkill -TERM -f "$legacy_pattern" || true
+        sleep 3
+        if pgrep -af "$legacy_pattern" >/dev/null 2>&1; then
+            echo "Force-stopping legacy host bot_listener.py processes..."
+            pkill -KILL -f "$legacy_pattern" || true
+        fi
+    else
+        echo "No legacy host bot_listener.py process found"
+    fi
+}
+
 resolve_env_value() {
     local primary_key="$1"
     local fallback_key="${2:-}"
@@ -175,6 +138,7 @@ if [ -n "$resolved_supabase_anon_key" ]; then
 else
     unset SUPABASE_ANON_KEY
 fi
+stop_existing_bot_receivers
 pull_ok=0
 for pull_attempt in $(seq 1 6); do
     docker compose pull && pull_ok=1 && break
@@ -278,6 +242,22 @@ wait_for_scan_terminal_snapshot() {
                 echo "✅ $name ready after attempt $i/$attempts"
                 return 0
             fi
+            if printf '%s' "$compact" | grep -q '"status":"stale"'; then
+                echo "✅ $name stale snapshot available after attempt $i/$attempts"
+                return 0
+            fi
+            if printf '%s' "$compact" | grep -q '"stale_reason":"市场扫描快照正在初始化"'; then
+                echo "✅ $name initializing after attempt $i/$attempts"
+                return 0
+            fi
+            if printf '%s' "$compact" | grep -q '"status":"partial"'; then
+                echo "✅ $name partial snapshot (market data degraded) after attempt $i/$attempts"
+                return 0
+            fi
+            if printf '%s' "$compact" | grep -q '"status":"failed"'; then
+                echo "✅ $name failed snapshot (market data unavailable) after attempt $i/$attempts"
+                return 0
+            fi
             status="$(printf '%s' "$compact" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' | head -n 1)"
             echo "   $name not ready attempt $i/$attempts http=${http_status:-unknown} status=${status:-unknown}"
         else
@@ -288,7 +268,7 @@ wait_for_scan_terminal_snapshot() {
         fi
     done
 
-    echo "❌ $name did not return status=ready or http=401"
+    echo "❌ $name did not return a snapshot payload (ready/stale/partial/failed) or http=401"
     return 1
 }
 
@@ -349,6 +329,9 @@ compose_up_retry "observation collector" -d --no-deps polyweather_collector
 
 echo "Updating cache warmer..."
 compose_up_retry "cache warmer" -d --no-deps polyweather_warmer
+
+echo "Updating training settlement worker..."
+compose_up_retry "training settlement" -d --no-deps polyweather_training_settlement
 
 echo "Updating frontend..."
 compose_up_retry "frontend" -d --no-deps polyweather_frontend

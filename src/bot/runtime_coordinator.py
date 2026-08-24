@@ -6,8 +6,6 @@ from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable, Dict, List, Optional
 
-from src.utils.telegram_chat_ids import get_telegram_chat_ids_from_env
-
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -46,9 +44,6 @@ class LoopStatus:
 class RuntimeStatus:
     started_at: str
     loops: List[LoopStatus]
-    command_access_mode: str
-    protected_commands: List[str]
-    required_group_chat_id: str
 
     def loop_map(self) -> Dict[str, LoopStatus]:
         return {loop.key: loop for loop in self.loops}
@@ -61,21 +56,12 @@ class StartupCoordinator:
         self,
         bot: Any,
         config: Dict[str, Any],
-        command_access_mode: str,
-        protected_commands: List[str],
-        required_group_chat_id: str,
     ):
         self.bot = bot
         self.config = config
-        self.command_access_mode = command_access_mode
-        self.protected_commands = protected_commands
-        self.required_group_chat_id = required_group_chat_id
         self._runtime_status = RuntimeStatus(
             started_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             loops=[],
-            command_access_mode=command_access_mode,
-            protected_commands=protected_commands,
-            required_group_chat_id=required_group_chat_id,
         )
 
     def get_runtime_status(self) -> RuntimeStatus:
@@ -83,19 +69,13 @@ class StartupCoordinator:
 
     def start_all(self) -> RuntimeStatus:
         loops = [
-            self._start_airport_high_freq_loop(),
             self._start_growth_milestone_reward_loop(),
-            self._start_weekly_reward_loop(),
             self._start_payment_event_loop(),
             self._start_payment_confirm_loop(),
-            self._start_daily_weather_report_loop(),
         ]
         self._runtime_status = RuntimeStatus(
             started_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             loops=loops,
-            command_access_mode=self.command_access_mode,
-            protected_commands=self.protected_commands,
-            required_group_chat_id=self.required_group_chat_id,
         )
         return self._runtime_status
 
@@ -150,96 +130,14 @@ class StartupCoordinator:
             details=details,
         )
 
-    def _start_airport_high_freq_loop(self) -> LoopStatus:
-        enabled = _env_bool("TELEGRAM_AIRPORT_PUSH_ENABLED", True)
-        chat_ids = get_telegram_chat_ids_from_env()
-        interval = max(30, _env_int("TELEGRAM_AIRPORT_PUSH_INTERVAL_SEC", 60))
-        details = {
-            "mode": "airport-periodic",
-            "interval_sec": interval,
-            "cities": [
-                "seoul",
-                "busan",
-                "tokyo",
-                "ankara",
-                "helsinki",
-                "amsterdam",
-                "istanbul",
-                "paris",
-                "hong kong",
-                "shenzhen",
-                "taipei",
-            ],
-            "chat_targets": len(chat_ids),
-            "window": "DEB proximity ≤3°C",
-        }
-        validation_error = None if chat_ids else "missing_TELEGRAM_CHAT_IDS"
-        return self._start_with_validation(
-            key="airport_high_freq_push",
-            label="机场高频推送",
-            configured_enabled=enabled,
-            details=details,
-            validation_error=validation_error,
-            starter=lambda: import_module(
-                "src.utils.telegram_push"
-            ).start_high_freq_airport_push_loop(
-                self.bot,
-                self.config,
-            ),
-        )
-
-    def _start_weekly_reward_loop(self) -> LoopStatus:
-        enabled = _env_bool("POLYWEATHER_WEEKLY_REWARD_ENABLED", False)
-        chat_ids = get_telegram_chat_ids_from_env()
-        settle_weekday = min(
-            7, max(1, _env_int("POLYWEATHER_WEEKLY_REWARD_SETTLE_WEEKDAY", 1))
-        )
-        settle_hour = min(
-            23, max(0, _env_int("POLYWEATHER_WEEKLY_REWARD_SETTLE_HOUR", 0))
-        )
-        settle_minute = min(
-            59, max(0, _env_int("POLYWEATHER_WEEKLY_REWARD_SETTLE_MINUTE", 5))
-        )
-        check_interval = max(
-            30, _env_int("POLYWEATHER_WEEKLY_REWARD_CHECK_INTERVAL_SEC", 300)
-        )
-        details = {
-            "timezone": str(
-                os.getenv("POLYWEATHER_WEEKLY_REWARD_TIMEZONE") or "Asia/Shanghai"
-            ).strip(),
-            "settle_weekday": settle_weekday,
-            "settle_time": f"{settle_hour:02d}:{settle_minute:02d}",
-            "check_interval_sec": check_interval,
-            "announce": _env_bool("POLYWEATHER_WEEKLY_REWARD_ANNOUNCE_ENABLED", True),
-            "chat_targets": len(chat_ids),
-        }
-        announce_enabled = bool(details["announce"])
-        validation_error = None
-        if announce_enabled and not chat_ids:
-            validation_error = "missing_TELEGRAM_CHAT_IDS"
-        return self._start_with_validation(
-            key="weekly_reward",
-            label="周榜奖励结算",
-            configured_enabled=enabled,
-            details=details,
-            validation_error=validation_error,
-            starter=lambda: import_module(
-                "src.bot.weekly_reward_loop"
-            ).start_weekly_reward_loop(self.bot),
-        )
-
     def _start_growth_milestone_reward_loop(self) -> LoopStatus:
         enabled = _env_bool("POLYWEATHER_GROWTH_REWARD_ENABLED", False)
-        chat_ids = get_telegram_chat_ids_from_env()
         interval_sec = max(
             300, _env_int("POLYWEATHER_GROWTH_REWARD_CHECK_INTERVAL_SEC", 21600)
         )
-        announce = _env_bool("POLYWEATHER_GROWTH_REWARD_ANNOUNCE_ENABLED", True)
         details = {
             "metric": "verified_supabase_auth_users",
             "check_interval_sec": interval_sec,
-            "announce": announce,
-            "chat_targets": len(chat_ids),
             "next_milestones": "600:+1d,750:+2d,1000+ every 100:+3d",
         }
         validation_error = None
@@ -248,8 +146,6 @@ class StartupCoordinator:
             or not str(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
         ):
             validation_error = "missing_supabase_service_credentials"
-        elif enabled and announce and not chat_ids:
-            validation_error = "missing_TELEGRAM_CHAT_IDS"
         return self._start_with_validation(
             key="growth_milestone_reward",
             label="用户增长里程碑奖励",
@@ -258,7 +154,7 @@ class StartupCoordinator:
             validation_error=validation_error,
             starter=lambda: import_module(
                 "src.bot.growth_milestone_reward_loop"
-            ).start_growth_milestone_reward_loop(self.bot),
+            ).start_growth_milestone_reward_loop(),
         )
 
     def _start_payment_confirm_loop(self) -> LoopStatus:
@@ -335,50 +231,11 @@ class StartupCoordinator:
             ).start_payment_event_loop(),
         )
 
-    def _start_daily_weather_report_loop(self) -> LoopStatus:
-        enabled = _env_bool("DAILY_WEATHER_REPORT_ENABLED", True)
-        chat_ids = get_telegram_chat_ids_from_env()
-        report_hour = _env_int("DAILY_WEATHER_REPORT_HOUR", 8)
-        report_minute = _env_int("DAILY_WEATHER_REPORT_MINUTE", 0)
-        tz_name = str(
-            os.getenv("DAILY_WEATHER_REPORT_TIMEZONE") or "Asia/Shanghai"
-        ).strip()
-        details = {
-            "schedule": f"{report_hour:02d}:{report_minute:02d}",
-            "timezone": tz_name,
-            "cities": [
-                "beijing",
-                "shanghai",
-                "guangzhou",
-                "chengdu",
-                "chongqing",
-                "wuhan",
-                "qingdao",
-            ],
-            "target": "forum_general_topic",
-            "chat_targets": len(chat_ids),
-        }
-        validation_error = None
-        return self._start_with_validation(
-            key="daily_weather_report",
-            label="中国城市天气日报",
-            configured_enabled=enabled,
-            details=details,
-            validation_error=validation_error,
-            starter=lambda: import_module(
-                "src.utils.daily_weather_report"
-            ).start_daily_weather_report_loop(self.bot, self.config),
-        )
-
 
 def render_runtime_status_html(status: RuntimeStatus) -> str:
     lines = [
         "🧭 <b>Bot 启动诊断</b>",
         f"启动时间: <code>{status.started_at}</code>",
-        "",
-        f"命令准入: <code>{status.command_access_mode}</code>",
-        f"受保护命令: <code>{', '.join(status.protected_commands) or '--'}</code>",
-        f"目标群组: <code>{status.required_group_chat_id or '--'}</code>",
         "",
         "后台循环:",
     ]

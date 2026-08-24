@@ -68,10 +68,12 @@ def test_city_detail_batch_response_includes_backend_server_timing(monkeypatch):
         lambda name: name.strip().lower(),
     )
     monkeypatch.setattr(city_api.legacy_routes, "_city_cache_is_fresh", lambda entry, ttl: True)
+    async def _noop_overlay(city, payload):
+        return payload
     monkeypatch.setattr(
-        city_api.legacy_routes,
-        "_overlay_latest_wunderground_current",
-        lambda city, payload: payload,
+        city_api,
+        "_overlay_cached_wunderground",
+        _noop_overlay,
     )
     monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
     monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
@@ -106,10 +108,12 @@ def test_city_detail_response_includes_backend_server_timing(monkeypatch):
         lambda name: name.strip().lower(),
     )
     monkeypatch.setattr(city_api.legacy_routes, "_city_cache_is_fresh", lambda entry, ttl: True)
+    async def _noop_overlay(city, payload):
+        return payload
     monkeypatch.setattr(
-        city_api.legacy_routes,
-        "_overlay_latest_wunderground_current",
-        lambda city, payload: payload,
+        city_api,
+        "_overlay_cached_wunderground",
+        _noop_overlay,
     )
     monkeypatch.setattr(city_api.legacy_routes, "_CACHE_DB", FakeCache())
     monkeypatch.setattr(city_api.legacy_routes, "_build_city_detail_payload", build_detail)
@@ -144,9 +148,7 @@ def test_scan_terminal_response_includes_backend_server_timing(monkeypatch):
     assert "scan_terminal_assert_entitlement" in server_timing
     assert "scan_terminal_build_payload" in server_timing
     assert "scan_terminal_total" in server_timing
-    assert response.headers["cache-control"] == (
-        "public, max-age=0, s-maxage=300, stale-while-revalidate=900"
-    )
+    assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.headers["cloudflare-cdn-cache-control"] == response.headers["cache-control"]
 
 

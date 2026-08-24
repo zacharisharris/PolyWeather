@@ -1,6 +1,6 @@
-# PolyWeather API 文档（v1.8.1）
+# PolyWeather API 文档（v1.9.0）
 
-最后更新：`2026-05-28`
+最后更新：`2026-08-01`
 
 本文档描述当前对外可用 API 口径（`web/app.py` + `web/routes.py` + `frontend/app/api/*`）。
 
@@ -33,8 +33,19 @@ flowchart LR
 | `/api/city/{name}/summary` | GET | 轻量摘要 |
 | `/api/city/{name}/detail` | GET | 聚合详情（含 market_scan） |
 | `/api/history/{name}` | GET | 历史对账 |
+| `/api/cities/deb-forecast` | GET | DEB + 多模型预测（外部项目接入） |
 | `/api/events` | GET | SSE 实时观测事件流 |
 | `/api/internal/collector-patch` | POST | 采集器内部写入实时观测 patch |
+
+### `GET /api/cities/deb-forecast`
+
+面向外部项目的 DEB 融合预测 + 多模型日报。鉴权同 pro 接口（entitlement token），结果缓存 5 分钟。
+
+参数：
+
+- `cities=`：可选，逗号分隔城市名或别名（如 `rjtt`、`klia`）；为空返回默认 24 城监控清单（9 中国大陆 + 香港/深圳 + 东京/首尔/釜山/吉隆坡/马尼拉 + 特拉维夫/马德里/莫斯科/开普敦 + 南美 3 城）。registry 全量 51 城均可查询。
+
+每城返回：`deb_prediction` / `deb_weights` / `deb_quality` / `forecast_daily` / `models_daily` / `model_keys`。
 
 ### `GET /api/events`
 
@@ -114,14 +125,14 @@ flowchart LR
 
 #### 2. `probabilities`
 
-概率层基于 legacy 高斯分桶，以 DEB 融合预测 `mu` 和 ensemble spread `sigma` 生成 1°C 粒度概率分布。前端图表将 legacy 高斯展示为水平概率温度带和 `mu` 参考线，不把概率分布渲染成时间序列曲线。
+概率层基于 DEB 正态分布引擎，以 DEB 融合预测 `deb_prediction + bias(lead)` 作为 `mu`、以按预测提前量分层的残差标准差作为 `sigma`，生成 1°C 粒度整度档位概率分布（适配 Polymarket 整度结算市场）。前端图表将概率分布展示为桶概率与 `mu` 参考线，不把概率分布渲染成时间序列曲线。
 
 概率字段：
 
-- `engine`：固定为 `legacy`
-- `mu`：DEB 融合预测中心值
-- `distribution`：当天合约桶概率分布
-- `distribution_all`：包含外围桶的完整分布
+- `engine`：`deb_normal`（当 lead 分层残差统计可用时）；`dead_market` 为死盘场景
+- `mu`：DEB 融合预测中心值（含偏差校正）
+- `distribution`：当天合约桶概率分布（概率最高的 4 个档位）
+- `distribution_all`：包含外围桶的完整分布（μ±4σ 内所有整度档位）
 
 #### 2.1 `deb.hourly_consensus`
 
@@ -205,8 +216,7 @@ DEB hourly consensus 是当前图表与峰值窗口的优先小时路径。
 #### 7. 结算锚点口径
 
 - 多数机场市场以 `METAR` / 机场主站实况为结算锚点。
-- `Wunderground` 是历史页面或参考入口，不应在产品文案里被描述成“站”。
-- `MGM / NMC / JMA / AMOS / HKO / CWA` 等官方站网属于增强层或明确官方站点层；只有合约规则明确指定时，才作为最终结算站点。
+- `JMA AMeDAS / HKO` 等官方站网属于增强层或明确官方站点层；只有合约规则明确指定时，才作为最终结算站点。
 
 ## 4. 鉴权与账户接口
 
@@ -352,4 +362,4 @@ docker compose logs -f polyweather | egrep "payment event loop started|payment c
 
 本仓库代码自 `2026-03-30` 起采用 `AGPL-3.0-only`。对外公开文档仅覆盖通用 API 契约；生产商业策略参数、私有运营阈值与托管服务能力不在公开文档披露。
 
-详见：[AGPL-3.0 与商用边界](OPEN_CORE_POLICY.md)
+详见：[商业化与开源边界](COMMERCIALIZATION.md)

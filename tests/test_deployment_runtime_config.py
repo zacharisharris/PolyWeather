@@ -94,6 +94,13 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
         1,
     )[0]
     warmer_block = compose.split("  polyweather_warmer:", 1)[1].split(
+        "\n  polyweather_training_settlement:",
+        1,
+    )[0]
+    training_settlement_block = compose.split(
+        "  polyweather_training_settlement:",
+        1,
+    )[1].split(
         "\nx-polyweather-base:",
         1,
     )[0]
@@ -102,6 +109,7 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
     assert "POLYWEATHER_SERVICE_ROLE: bot" in compose
     assert "POLYWEATHER_SERVICE_ROLE: collector" in collector_block
     assert "POLYWEATHER_SERVICE_ROLE: warmer" in warmer_block
+    assert "POLYWEATHER_SERVICE_ROLE: training_settlement" in training_settlement_block
     assert "redis-server --appendonly yes --maxmemory ${POLYWEATHER_REDIS_MAXMEMORY:-512mb} --maxmemory-policy noeviction" in compose
     assert "POLYWEATHER_SCAN_TERMINAL_PREWARM_ENABLED: 'false'" in bot_block
     assert "POLYWEATHER_EVENT_STORE: ${POLYWEATHER_EVENT_STORE:-redis}" in web_block
@@ -117,6 +125,18 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in web_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'true'" in collector_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in warmer_block
+    assert "POLYWEATHER_OBSERVATION_COLLECTOR_ENABLED: 'false'" in training_settlement_block
+    assert "command: python -m web.training_settlement_worker" in training_settlement_block
+    assert (
+        "POLYWEATHER_TRAINING_SETTLEMENT_INTERVAL_SEC: "
+        "${POLYWEATHER_TRAINING_SETTLEMENT_INTERVAL_SEC:-21600}"
+        in training_settlement_block
+    )
+    assert (
+        "POLYWEATHER_TRAINING_SETTLEMENT_LOOKBACK_DAYS: "
+        "${POLYWEATHER_TRAINING_SETTLEMENT_LOOKBACK_DAYS:-10}"
+        in training_settlement_block
+    )
     assert "POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_CONCURRENCY:-3}" in web_block
     assert "POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY: ${POLYWEATHER_CITY_DETAIL_BATCH_GLOBAL_CONCURRENCY:-3}" in web_block
     assert "POLYWEATHER_CITY_DETAIL_BATCH_QUEUE_WAIT_MS: ${POLYWEATHER_CITY_DETAIL_BATCH_QUEUE_WAIT_MS:-3000}" in web_block
@@ -131,7 +151,6 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
     )
     assert "command: python -m web.observation_collector_worker" in collector_block
     assert "command: python -m web.cache_warmer_worker" in warmer_block
-    assert "POLYWEATHER_OBSERVATION_COLLECTOR_AMSC_SEC: ${POLYWEATHER_OBSERVATION_COLLECTOR_AMSC_SEC:-60}" in collector_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_CACHE_REFRESH_WORKERS: ${POLYWEATHER_OBSERVATION_COLLECTOR_CACHE_REFRESH_WORKERS:-2}" in collector_block
     assert "POLYWEATHER_WARMER_ENABLED: ${POLYWEATHER_WARMER_ENABLED:-true}" in warmer_block
     assert "POLYWEATHER_WARMER_TICK_SEC: ${POLYWEATHER_WARMER_TICK_SEC:-30}" in warmer_block
@@ -139,7 +158,6 @@ def test_docker_compose_isolates_collector_from_web_and_bot_services():
     assert "POLYWEATHER_WARMER_CITY_INTERVAL_SEC: ${POLYWEATHER_WARMER_CITY_INTERVAL_SEC:-30}" in warmer_block
     assert "POLYWEATHER_WARMER_CITY_BATCH_SIZE: ${POLYWEATHER_WARMER_CITY_BATCH_SIZE:-16}" in warmer_block
     assert "cpus: ${POLYWEATHER_WARMER_CPUS:-0.75}" in warmer_block
-    assert "TELEGRAM_AIRPORT_PUSH_INTERVAL_SEC: ${POLYWEATHER_BOT_AIRPORT_PUSH_INTERVAL_SEC:-60}" in bot_block
     assert "POLYWEATHER_OBSERVATION_COLLECTOR_MADIS_SEC: ${POLYWEATHER_OBSERVATION_COLLECTOR_MADIS_SEC:-300}" in collector_block
 
 
@@ -173,7 +191,7 @@ def test_scan_terminal_backend_timeout_returns_before_next_proxy_abort():
         ROOT / "web" / "services" / "scan_terminal_config.py"
     ).read_text(encoding="utf-8")
 
-    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "35000"' in route_source
+    assert 'POLYWEATHER_SCAN_TERMINAL_PROXY_TIMEOUT_MS || "60000"' in route_source
     assert '"POLYWEATHER_SCAN_TERMINAL_BUILD_TIMEOUT_SEC",\n    30,' in config_source
     assert '"POLYWEATHER_SCAN_TERMINAL_MAX_WORKERS",\n    1,' in config_source
     assert (
@@ -241,14 +259,11 @@ def test_deploy_script_exports_backend_supabase_env_from_env_file():
     assert script.index('resolve_env_value "SUPABASE_URL"') < script.index("pull_ok=0")
 
 
-def test_deploy_script_syncs_city_thread_ids_into_runtime_volume():
+def test_deploy_script_no_longer_syncs_city_thread_ids():
     script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
-    assert "sync_city_thread_ids()" in script
-    assert 'repo_file="$COMPOSE_DIR/data/city_thread_ids.json"' in script
-    assert 'target_file="$runtime_dir/city_thread_ids.json"' in script
-    assert "merged.update(target_data)" in script
-    assert script.index("sync_city_thread_ids") < script.index("Updating Redis dependency")
+    assert "sync_city_thread_ids" not in script
+    assert "city_thread_ids.json" not in script
 
 
 def test_deploy_script_retries_startup_smoke_checks():
@@ -257,7 +272,11 @@ def test_deploy_script_retries_startup_smoke_checks():
     assert "smoke_check()" in script
     assert "wait_for_scan_terminal_snapshot()" in script
     assert '"status":"ready"' in script
+    assert '"status":"stale"' in script
+    assert "stale snapshot available" in script
     assert "http=401" in script
+    assert '"stale_reason":"市场扫描快照正在初始化"' in script
+    assert "initializing after attempt" in script
     assert 'wait_for_scan_terminal_snapshot "scan terminal snapshot" "http://127.0.0.1:3001/api/scan/terminal"' in script
     assert script.index("wait_for_scan_terminal_snapshot") < script.index("run_public_smoke_checks")
     assert 'smoke_check "healthz" "https://api.polyweather.top/healthz" 15 3 5' in script
@@ -287,6 +306,7 @@ def test_deploy_script_retries_compose_recreate_races():
     assert 'compose_up_retry "backend services" -d --no-deps polyweather_web polyweather' in script
     assert 'compose_up_retry "observation collector" -d --no-deps polyweather_collector' in script
     assert 'compose_up_retry "cache warmer" -d --no-deps polyweather_warmer' in script
+    assert 'compose_up_retry "training settlement" -d --no-deps polyweather_training_settlement' in script
     assert 'compose_up_retry "frontend" -d --no-deps polyweather_frontend' in script
 
 

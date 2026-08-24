@@ -66,11 +66,9 @@ CITIES: Dict[str, Dict[str, Any]] = {
 SETTLEMENT_SOURCE_LABELS: Dict[str, str] = {
     "metar": "METAR",
     "hko": "HKO",
-    "cwa": "CWA",
     "noaa": "NOAA",
-    "mgm": "MGM",
-    "wunderground": "Wunderground",
 }
+
 
 # ---------------------------------------------------------------------------
 # LRUDict — simple size-bounded cache
@@ -103,8 +101,6 @@ _CACHE_MAXSIZE = int(os.getenv("POLYWEATHER_ANALYSIS_CACHE_MAXSIZE", "256"))
 _cache: LRUDict = LRUDict(maxsize=_CACHE_MAXSIZE)
 _CACHE_LOCK = threading.Lock()
 CACHE_TTL = 300
-CACHE_TTL_ANKARA = 60
-CACHE_TTL_KOREAN_AMOS = 60
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------------------------------
@@ -127,9 +123,6 @@ from web.schemas.auth import (  # noqa: E402, F401
     AnalyticsEventRequest,
     FeedbackRewardRequest,
     GrantPointsRequest,
-    ReferralApplyRequest,
-    TelegramBindTokenRequest,
-    TelegramLoginRequest,
     UserFeedbackRequest,
 )
 from web.schemas.payments import (  # noqa: E402, F401
@@ -155,7 +148,9 @@ _SUPABASE_AUTH_REQUIRED = _auth_guards._env_bool(
     "POLYWEATHER_AUTH_REQUIRED",
     SUPABASE_ENTITLEMENT.enabled,
 )
-_ENTITLEMENT_GUARD_ENABLED = _auth_guards._env_bool("POLYWEATHER_REQUIRE_ENTITLEMENT", False)
+_ENTITLEMENT_GUARD_ENABLED = _auth_guards._env_bool(
+    "POLYWEATHER_REQUIRE_ENTITLEMENT", False
+)
 _ENTITLEMENT_TOKEN = (os.getenv("POLYWEATHER_BACKEND_ENTITLEMENT_TOKEN") or "").strip()
 
 
@@ -173,10 +168,6 @@ def _bind_optional_supabase_identity(request):
 
 def _resolve_auth_points(request):
     return _auth_guards._resolve_auth_points(request, account_db=_account_db)
-
-
-def _resolve_weekly_profile(request):
-    return _auth_guards._resolve_weekly_profile(request, account_db=_account_db)
 
 
 def _assert_entitlement(request):

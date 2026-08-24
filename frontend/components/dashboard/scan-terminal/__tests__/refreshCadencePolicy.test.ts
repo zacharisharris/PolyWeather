@@ -20,7 +20,7 @@ import {
   __resetHourlyDetailRequestQueueForTest,
   __runQueuedHourlyDetailRequestForTest,
   clearCityDetailCache,
-  fetchHourlyForecastForCity,
+  fetchFullChartDetailForCity,
   readCityDetailBatchDiagnostics,
 } from "@/components/dashboard/scan-terminal/temperature-chart-logic";
 
@@ -36,6 +36,7 @@ async function flushMicrotasks() {
 
 export async function runTests() {
   assert(DASHBOARD_REFRESH_POLICY_MS.observation === 60_000, "observation layer should refresh every 60 seconds");
+  assert(DASHBOARD_REFRESH_POLICY_MS.liveObservationFallback === 3 * 60_000, "chart observation fallback should poll every 180 seconds when SSE is unavailable");
   assert(DASHBOARD_REFRESH_POLICY_MS.scanRows === 2 * 60_000, "region/city rows should refresh every 2 minutes");
   assert(DASHBOARD_REFRESH_POLICY_MS.marketOverview === 10 * 60_000, "market overview should refresh every 10 minutes");
   assert(DASHBOARD_REFRESH_POLICY_MS.model === 30 * 60_000, "DEB and multi-model data should refresh every 30 minutes");
@@ -81,17 +82,27 @@ export async function runTests() {
   assert(
     chartSource.includes("useLatestPatch") &&
       chartSource.includes("latestPatch") &&
-      chartSource.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
+      !chartSource.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
       !chartSource.includes("2 * 60_000"),
-    "selected city chart should consume SSE patches and keep METAR cadence for heavy probability refreshes instead of a 2-minute forced refresh",
+    "selected city chart should consume SSE patches without coupling live observations to the model/detail refresh cadence",
   );
   assert(
-    chartSource.includes("NO_PATCH_CACHED_DETAIL_REFRESH_MS = DASHBOARD_REFRESH_POLICY_MS.observation") &&
-      chartSource.includes("refreshCachedDetail") &&
-      chartSource.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })") &&
+    chartSource.includes("LIVE_OBSERVATION_FALLBACK_MS = DASHBOARD_REFRESH_POLICY_MS.liveObservationFallback") &&
+      chartSource.includes("refreshLiveObservation") &&
+      chartSource.includes("fetchLiveObservationForCity") &&
+      chartSource.includes("mergeObservationSnapshotIntoHourly") &&
       chartLogicSource.includes("options.bypassLocalCache") &&
       chartLogicSource.includes("const forceRefresh = Boolean(options.ignoreCache)"),
-    "visible charts should bypass the five-minute browser detail cache every observation cadence without force-refreshing backend sources",
+    "visible charts should use the no-store observation endpoint for 180-second SSE fallback without forcing detail-batch refreshes",
+  );
+  const componentHourlyFetchCalls = chartSource.match(/fetchFullChartDetailForCity\(city,/g) || [];
+  const hourlyFetcherBlock =
+    /function useHourlyDetailFetcher\([\s\S]*?\n}\r?\n\r?\n\/\/ 岸岸 Main component/.exec(chartSource)?.[0] || "";
+  assert(
+    chartSource.includes("function useHourlyDetailFetcher") &&
+      componentHourlyFetchCalls.length === 1 &&
+      !/fetchFullChartDetailForCity\(city,[\s\S]*?\)\s*\.then\(/.test(hourlyFetcherBlock),
+    "temperature chart should centralize full-detail fetch lifecycle in useHourlyDetailFetcher instead of duplicating then/catch branches across effects",
   );
   assert(
     chartSource.includes("preloadTemperatureChartCanvas"),
@@ -120,19 +131,20 @@ export async function runTests() {
   assert(
     chartSource.includes("activationRefreshKey") &&
       chartSource.includes("refreshActivatedCachedDetail") &&
-      chartSource.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })"),
+      chartSource.includes("fetchOptions: { bypassLocalCache: true }") &&
+      chartSource.includes("applyOptions: { updateLiveTemp: true }"),
     "switching back to the terminal tab should refresh visible chart detail through cached backend data without forcing external sources",
   );
   assert(
-    chartSource.includes("fetchHourlyForecastForCity(city, { ignoreCache: true, resolution: targetResolution })") &&
-      chartSource.includes("const mergedHourly = mergeHourlyWithLiveObservations(dataWithCurrentRow, prev, latestRow)") &&
-      chartSource.includes("return mergedHourly;"),
-    "visible chart fallback must refresh full city detail at the current chart resolution while preserving newer live observations",
+    chartSource.includes("fetchLiveObservationForCity") &&
+      chartSource.includes("mergeObservationSnapshotIntoHourly") &&
+      !chartSource.includes("rememberHourlyDetailSnapshot"),
+    "visible chart fallback must use the no-store observation endpoint without writing live overlays into full-detail cache",
   );
   assert(
-    chartSource.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS = DASHBOARD_REFRESH_POLICY_MS.metar") &&
-      !chartSource.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS = 60_000"),
-    "live observation patches should update the plotted line immediately and throttle heavy probability/detail refreshes to METAR cadence",
+    !chartSource.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS") &&
+      !chartSource.includes("refreshProbabilityOverlayAfterPatch"),
+    "live observation patches must not force-refresh model, DEB, probability, or detail-batch data",
   );
   assert(
     chartLogicSource.includes("HOURLY_FORCE_REFRESH_DEDUP_MS") &&
@@ -141,9 +153,50 @@ export async function runTests() {
     "forced chart detail refreshes should reuse a very recent full-detail payload instead of refetching repeatedly",
   );
   assert(
+    chartLogicSource.includes("const SESSION_CACHE_TTL_MS = HOURLY_CACHE_TTL_MS") &&
+      chartLogicSource.includes("MAX_HOURLY_CACHE_ENTRIES") &&
+      chartLogicSource.includes("pruneHourlyCache") &&
+      chartLogicSource.includes("writeHourlyCacheEntry"),
+    "hourly detail cache should use one TTL policy and bounded memory writes instead of separate ad-hoc memory/session lifetimes",
+  );
+  assert(
     chartLogicSource.includes("forceRefresh: boolean") &&
       chartLogicSource.includes('force_refresh: forceRefresh ? "true" : "false"'),
-    "ignoreCache chart detail refreshes must send force_refresh=true so fresh METAR observations bypass proxy and backend chart caches",
+    "ignoreCache chart detail refreshes must send force_refresh=true only for heavy model/detail resyncs, not the 180-second observation fallback",
+  );
+  assert(
+    chartLogicSource.includes("/api/city/${encodeURIComponent(city)}/observation") &&
+      chartLogicSource.includes('cache: "no-store"') &&
+      chartLogicSource.includes("mergeObservationSnapshotIntoHourly"),
+    "live observation fetches must call the no-store per-city observation endpoint and merge without touching cached model detail",
+  );
+  assert(
+    chartLogicSource.includes("type ChartRenderState = {") &&
+      /type FullChartDetail\s*=\s*NonNullable<ChartRenderState>\s*&\s*\{[\s\S]*__detailKind:\s*"full_chart_detail"/.test(chartLogicSource) &&
+      !chartLogicSource.includes("HourlyForecast") &&
+      !chartSource.includes("HourlyForecast"),
+    "chart render state should be named ChartRenderState; the historical HourlyForecast name must not appear in chart data APIs",
+  );
+  assert(
+    /type FullChartDetail\s*=\s*NonNullable<ChartRenderState>\s*&\s*\{[\s\S]*__detailKind:\s*"full_chart_detail"/.test(chartLogicSource) &&
+      /type ObservationSnapshot\s*=\s*CityObservationPayload\s*&\s*\{[\s\S]*__observationKind:\s*"observation_snapshot"/.test(chartLogicSource),
+    "full detail and no-store observation payloads should be separate branded types instead of sharing raw ChartRenderState",
+  );
+  assert(
+    chartLogicSource.includes("type HourlyCacheEntry = { ts: number; data: FullChartDetail }") &&
+      /function rememberHourlyDetailSnapshot\([\s\S]*data:\s*FullChartDetail/.test(chartLogicSource),
+    "hourly detail cache writes should require FullChartDetail so observation-only snapshots cannot be cached as model detail",
+  );
+  assert(
+    /async function fetchLiveObservationForCity\([\s\S]*Promise<ObservationSnapshot \| null>/.test(chartLogicSource) &&
+      chartLogicSource.includes("function observationPayloadToSnapshot") &&
+      chartLogicSource.includes("function mergeObservationSnapshotIntoHourly"),
+    "live observation fetches should return ObservationSnapshot and enter chart state through the observation snapshot merge path",
+  );
+  assert(
+    /async function fetchFullChartDetailForCity\([\s\S]*Promise<FullChartDetail \| null>/.test(chartLogicSource) &&
+      /type CityDetailBatchWaiter = \{[\s\S]*resolve: \(value: FullChartDetail \| null\)/.test(chartLogicSource),
+    "model/detail fetches and batch waiters should return FullChartDetail or null, not observation-shaped hourly state",
   );
   assert(
     chartLogicSource.includes("cityDetailBatchQueueKey") &&
@@ -244,9 +297,10 @@ export async function runTests() {
   );
   assert(
     chartLogicSource.includes("_hourlyRequestCache") &&
-      chartLogicSource.includes("seedHourlyForecastFromRow") &&
-      chartSource.includes("setHourly(seedHourlyForecastFromRow(getLatestRowSnapshot()))"),
-    "terminal charts should render from row data immediately and dedupe concurrent city detail requests",
+      chartLogicSource.includes("seedChartRenderStateFromRow") &&
+      !chartSource.includes("setHourly(seedChartRenderStateFromRow(getLatestRowSnapshot()))") &&
+      chartSource.includes("mergeRowObservationIntoHourly"),
+    "terminal charts should render from row data through the same merge path instead of racing a row-only skeleton against detail fetches",
   );
   assert(
     chartLogicSource.includes("/api/cities/detail-batch") &&
@@ -288,7 +342,7 @@ export async function runTests() {
       !flushCityDetailBatchBlock.includes("resolveCityDetailBatchWithSingleFallback"),
     "whole-batch failures should stop at the chart batch layer instead of fanning out into single-city full-detail requests",
   );
-  const fetchHourlyBlock = chartLogicSource.match(/async function fetchHourlyForecastForCity[\s\S]*?\r?\n}\r?\n\r?\nfunction shouldPollLiveChart/)?.[0] || "";
+  const fetchHourlyBlock = chartLogicSource.match(/async function fetchFullChartDetailForCity[\s\S]*?\r?\n}\r?\n\r?\nfunction shouldPollLiveChart/)?.[0] || "";
   assert(
     fetchHourlyBlock.includes("queueCityDetailBatch(city, resParam, forceRefresh)") &&
       !fetchHourlyBlock.includes("runQueuedHourlyDetailRequest"),
@@ -325,7 +379,7 @@ export async function runTests() {
   assert(
     chartSource.includes("TRANSIENT_DETAIL_RETRY_DELAY_MS") &&
       chartSource.includes("scheduleTransientDetailRetry") &&
-      chartSource.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })") &&
+      chartSource.includes("fetchOptions: { bypassLocalCache: true }") &&
       chartSource.includes("!retryScheduled"),
     "cold partial detail-batch misses should stay in loading state and retry cached detail once before showing unavailable",
   );
@@ -334,24 +388,44 @@ export async function runTests() {
       chartSource.includes("latestRowRef.current = row"),
     "temperature chart should keep the latest row in a ref so live row changes do not restart detail fetches",
   );
+  assert(
+    !chartSource.includes("_hourlyCache") &&
+      !chartSource.includes("readSessionCache") &&
+      chartSource.includes("readCachedHourlyForInitialRow") &&
+      chartSource.includes("readHourlyDetailSnapshot") &&
+      chartSource.includes("detailSource: cached.source"),
+    "temperature chart component should not directly read global memory/session caches; cache policy belongs in temperature-chart-logic.ts",
+  );
+  const rememberSnapshotCalls = chartSource.match(/rememberHourlyDetailSnapshot\(/g) || [];
+  assert(
+    rememberSnapshotCalls.length === 0,
+    "temperature chart component must not persist live-merged snapshots into the full-detail cache",
+  );
+  const markDetailDegradedBlock =
+    /const markDetailDegraded = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(chartSource)?.[0] || "";
+  assert(
+    markDetailDegradedBlock.includes("const detailErrorMessage") &&
+      markDetailDegradedBlock.includes("setDetailError(detailErrorMessage)"),
+    "detail degraded state and visible detail error text should be updated from the same branch so they cannot drift",
+  );
   const successfulHourlyDetailBlock =
     /const applySuccessfulHourlyDetail = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(chartSource)?.[0] || "";
   assert(
     successfulHourlyDetailBlock.includes("setDetailError(null)") &&
       successfulHourlyDetailBlock.includes("setShowingStaleDetail(false)") &&
       successfulHourlyDetailBlock.includes("getLatestRowSnapshot") &&
-      successfulHourlyDetailBlock.includes("rememberHourlyDetailSnapshot(city, targetResolution, mergedHourly)") &&
+      successfulHourlyDetailBlock.includes("commitHourlySnapshot") &&
       !/\[row\]/.test(successfulHourlyDetailBlock),
-    "successful city detail refreshes must read the latest row, persist the merged snapshot, and avoid depending on the row object",
+    "successful city detail refreshes must read the latest row, merge into chart state, and avoid depending on the row object",
   );
   assert(
-    chartSource.includes("rememberHourlyDetailSnapshot") &&
-      chartSource.includes("const mergedHourly = mergeRowObservationIntoHourly(prev ?? rowSeed, row);") &&
-      chartSource.includes("const mergedHourly = mergePatchIntoHourly(prev ?? seedHourlyForecastFromRow(getLatestRowSnapshot()), latestPatch);"),
-    "live row and SSE patch merges must persist their hourly snapshots so returning to terminal restores runway history immediately",
+    chartSource.includes("commitHourlySnapshot") &&
+      chartSource.includes("mergeRowObservationIntoHourly") &&
+      chartSource.includes("mergePatchIntoHourly"),
+    "live row and SSE patch merges must flow through the shared state helper without touching the full-detail cache",
   );
   const coldDetailFetchBlock =
-    /useEffect\(\(\) => \{\s*if \(!city\) \{[\s\S]*?fetchHourlyForecastForCity\(city, \{ resolution: targetResolution \}\)[\s\S]*?\n  \}, \[([\s\S]*?)\]\);/.exec(chartSource)?.[1] || "";
+    /useEffect\(\(\) => \{\s*if \(!city\) \{[\s\S]*?scheduleTransientDetailRetry[\s\S]*?runHourlyDetailFetch\(\{[\s\S]*?\n  \}, \[([\s\S]*?)\]\);/.exec(chartSource)?.[1] || "";
   assert(
     coldDetailFetchBlock.length > 0 &&
       !/^\s*row\s*,?\s*$/m.test(coldDetailFetchBlock),
@@ -362,8 +436,8 @@ export async function runTests() {
     .match(/setHourly\(data\);/g) || [];
   assert(
     rawSuccessfulSetHourlyCalls.length === 0 &&
-      (chartSource.match(/applySuccessfulHourlyDetail\(data/g) || []).length >= 5,
-    "all successful city detail fetch branches should use the shared success handler",
+      (chartSource.match(/applySuccessfulHourlyDetail\(data/g) || []).length === 1,
+    "all successful city detail fetch branches should flow through the shared fetcher and success handler once",
   );
   assert(
     chartSource.includes("const showDetailErrorBadge = !compact || isActive || isMaximized") &&
@@ -549,9 +623,9 @@ export async function runTests() {
       };
     };
 
-    const firstDetail = await fetchHourlyForecastForCity("fallback-revalidate", { resolution: "10m" });
-    const cachedDetail = await fetchHourlyForecastForCity("fallback-revalidate", { resolution: "10m" });
-    const revalidatedDetail = await fetchHourlyForecastForCity("fallback-revalidate", {
+    const firstDetail = await fetchFullChartDetailForCity("fallback-revalidate", { resolution: "10m" });
+    const cachedDetail = await fetchFullChartDetailForCity("fallback-revalidate", { resolution: "10m" });
+    const revalidatedDetail = await fetchFullChartDetailForCity("fallback-revalidate", {
       bypassLocalCache: true,
       resolution: "10m",
     });
@@ -593,72 +667,6 @@ export async function runTests() {
     );
 
     clearCityDetailCache();
-    const runwayCacheKey = "chengdu:1m";
-    store.set(
-      `polyweather_city_detail_v1:${runwayCacheKey}`,
-      JSON.stringify({
-        ts: Date.now() - HOURLY_CACHE_TTL_MS - 1000,
-        data: {
-          forecastDaily: [],
-          localDate: "2026-06-15",
-          localTime: "2026-06-15T09:00:00Z",
-          multiModelDaily: {},
-          probabilities: null,
-          temps: [27.1],
-          times: ["09:00"],
-          runwayPlateHistory: {
-            "02L/20R": [{ time: "2026-06-15T09:00:00Z", temp: 27.1 }],
-          },
-          amos: {
-            runway_plate_history: {
-              "02L/20R": [{ time: "2026-06-15T09:00:00Z", temp: 27.1 }],
-            },
-          },
-        },
-      }),
-    );
-    (globalThis as any).fetch = async () => ({
-      ok: true,
-      json: async () => ({
-        cities: ["chengdu"],
-        details: {
-          chengdu: {
-            city: "chengdu",
-            local_date: "2026-06-15",
-            local_time: "2026-06-15T09:04:00Z",
-            hourly: {
-              times: ["09:00", "09:04"],
-              temps: [27.1, 27.8],
-            },
-            models_hourly: {
-              times: ["09:00", "09:04"],
-              curves: { ECMWF: [27.0, 27.6] },
-            },
-            deb: {
-              hourly_path: {
-                source: "deb_hourly_consensus",
-                times: ["09:00", "09:04"],
-                temps: [30.1, 30.4],
-              },
-            },
-            runway_plate_history: {},
-            amos: {},
-          },
-        },
-        errors: {},
-        missing: [],
-        partial: false,
-      }),
-    });
-    const forceRefreshedRunwayDetail = await fetchHourlyForecastForCity("chengdu", {
-      ignoreCache: true,
-      resolution: "1m",
-    });
-    assert(
-      forceRefreshedRunwayDetail?.runwayPlateHistory?.["02L/20R"]?.length === 1 &&
-        __readHourlyCacheEntryForTest(runwayCacheKey, { allowStale: true })?.data?.runwayPlateHistory?.["02L/20R"]?.length === 1,
-      "force-refresh chart detail must not overwrite cached runway history when the response omits it",
-    );
   } finally {
     clearCityDetailCache();
     (globalThis as any).window = originalWindow;

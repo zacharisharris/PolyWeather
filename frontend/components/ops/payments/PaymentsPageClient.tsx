@@ -12,6 +12,7 @@ import type {
   PaymentRuntimePayload,
   PaymentIncident,
   PaymentRecord,
+  RefundCase,
 } from "@/types/ops";
 
 const PaymentIncidentPieChart = dynamic(
@@ -60,6 +61,8 @@ function paymentReasonLabel(reason?: string) {
   if (key === "expired") return "订单已过期";
   if (key === "event_mismatch") return "支付事件不匹配";
   if (key === "direct_transfer_mismatch") return "直接转账不匹配";
+  if (key === "refund_required") return "需要退款处理";
+  if (key === "duplicate_payment") return "重复付款";
   if (key === "unknown") return "未知原因";
   return key || "未知原因";
 }
@@ -96,21 +99,24 @@ export function PaymentsPageClient() {
   const [runtime, setRuntime] = useState<PaymentRuntimePayload | null>(null);
   const [incidents, setIncidents] = useState<PaymentIncident[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [refunds, setRefunds] = useState<RefundCase[]>([]);
   const [risk, setRisk] = useState<BillingRiskPayload | null>(null);
   const [resolving, setResolving] = useState<Set<number>>(new Set());
 
   const load = async () => {
     setLoading(true);
     try {
-      const [rt, inc, pay, riskPayload] = await Promise.all([
+      const [rt, inc, pay, refundPayload, riskPayload] = await Promise.all([
         opsApi.paymentRuntime() as Promise<PaymentRuntimePayload>,
         opsApi.incidents(50),
         opsApi.listPayments(50),
+        opsApi.refunds(50),
         opsApi.billingRisk(30, 80) as Promise<BillingRiskPayload>,
       ]);
       setRuntime(rt);
       setIncidents((inc as unknown as { incidents?: PaymentIncident[] }).incidents ?? []);
       setPayments((pay as unknown as { payments?: PaymentRecord[] }).payments ?? []);
+      setRefunds((refundPayload as unknown as { refunds?: RefundCase[] }).refunds ?? []);
       setRisk(riskPayload);
     } catch { /* */ }
     setLoading(false);
@@ -145,7 +151,6 @@ export function PaymentsPageClient() {
   }));
   const riskSummary = risk?.summary ?? {};
   const riskIssues = risk?.issues ?? [];
-  const referralRewards = risk?.recent_referral_rewards ?? [];
   const hasRisk = Number(riskSummary.issues ?? 0) > 0;
 
   return (
@@ -161,7 +166,7 @@ export function PaymentsPageClient() {
         <CardHeader className="flex flex-row items-center justify-between gap-3">
           <CardTitle className="flex items-center gap-2">
             {hasRisk ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <ShieldCheck className="h-4 w-4 text-emerald-500" />}
-            支付与邀请风控流水
+            支付风控流水
           </CardTitle>
           <span className="text-xs text-slate-500">最近 {risk?.window_days ?? 30} 天 · {compactDate(risk?.checked_at)}</span>
         </CardHeader>
@@ -172,8 +177,6 @@ export function PaymentsPageClient() {
             <RiskStat label="试用漏开" value={Number(riskSummary.trial_gaps ?? 0)} sub="后端试用/订阅证据缺失" />
             <RiskStat label="支付异常" value={Number(riskSummary.payment_incidents ?? incidents.length)} sub="未标记处理" />
             <RiskStat label="积分异常" value={Number(riskSummary.points_discount_issues ?? 0)} sub="确认后未扣/少扣" />
-            <RiskStat label="推荐异常" value={Number(riskSummary.referral_settlement_issues ?? 0)} sub="转化无奖励记录" />
-            <RiskStat label="上限命中" value={Number(riskSummary.monthly_cap_hits ?? 0)} sub="月度邀请封顶" />
           </div>
 
           {risk?.query_errors?.length ? (
@@ -262,42 +265,6 @@ export function PaymentsPageClient() {
       </div>
 
       <Card>
-        <CardHeader><CardTitle>推荐奖励结算 ({referralRewards.length})</CardTitle></CardHeader>
-        <CardContent>
-          {referralRewards.length === 0 ? (
-            <span className="text-sm text-slate-500">最近没有推荐奖励记录</span>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-left text-slate-500">
-                    <th className="py-2 pr-4 font-bold">ID</th>
-                    <th className="py-2 pr-4 font-bold">邀请人</th>
-                    <th className="py-2 pr-4 font-bold">被邀请人</th>
-                    <th className="py-2 pr-4 font-bold">奖励</th>
-                    <th className="py-2 pr-4 font-bold">Intent</th>
-                    <th className="py-2 pr-4 font-bold">时间</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {referralRewards.slice(0, 20).map((row, index) => (
-                    <tr key={`${row.id}-${index}`} className="border-b border-slate-100">
-                      <td className="py-2 pr-4 font-mono text-xs text-slate-500">{String(row.id ?? "—")}</td>
-                      <td className="py-2 pr-4 font-mono text-xs text-slate-500">{String(row.referrer_user_id ?? "—").slice(0, 10)}...</td>
-                      <td className="py-2 pr-4 font-mono text-xs text-slate-500">{String(row.referred_user_id ?? "—").slice(0, 10)}...</td>
-                      <td className="py-2 pr-4 text-emerald-700 font-bold">+{Number(row.reward_points ?? 0).toLocaleString()} 分</td>
-                      <td className="py-2 pr-4 font-mono text-xs text-blue-700">{String(row.payment_intent_id ?? "—").slice(0, 14)}</td>
-                      <td className="py-2 pr-4 whitespace-nowrap text-xs text-slate-500">{compactDate(String(row.created_at ?? ""))}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
         <CardHeader><CardTitle>支付异常 ({incidents.length})</CardTitle></CardHeader>
         <CardContent>
           {incidents.length === 0 ? (
@@ -328,6 +295,11 @@ export function PaymentsPageClient() {
                         <div className="mt-0.5 max-w-xl truncate text-xs text-slate-500" title={inc.detail || inc.reason || ""}>
                           {inc.detail || inc.reason || "—"}
                         </div>
+                        {inc.refund_case_id ? (
+                          <div className="mt-1 text-[11px] font-semibold text-blue-700">
+                            退款工单 #{inc.refund_case_id} · {inc.refund_status || "open"}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="py-2 pr-4 text-xs text-slate-500">
                         <div className="font-mono" title={inc.user_id || ""}>{compactMono(inc.user_id)}</div>
@@ -345,6 +317,54 @@ export function PaymentsPageClient() {
                           <CheckCircle2 className="h-3 w-3" />
                           {resolving.has(inc.id) ? "处理中" : "标记处理"}
                         </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>退款工单 ({refunds.length})</CardTitle></CardHeader>
+        <CardContent>
+          {refunds.length === 0 ? (
+            <span className="text-sm text-slate-500">暂无退款或售后工单</span>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-left text-slate-400">
+                    <th className="py-2 pr-4 font-medium">ID</th>
+                    <th className="py-2 pr-4 font-medium">状态 / 原因</th>
+                    <th className="py-2 pr-4 font-medium">用户 / Intent</th>
+                    <th className="py-2 pr-4 font-medium">Tx Hash</th>
+                    <th className="py-2 pr-4 font-medium">处理人</th>
+                    <th className="py-2 pr-4 font-medium">更新时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {refunds.map((refund) => (
+                    <tr key={refund.id} className="border-b border-white/5">
+                      <td className="py-2 pr-4 font-mono text-xs text-slate-500">{refund.id}</td>
+                      <td className="py-2 pr-4">
+                        <div className="font-bold text-slate-900">{refund.status || "open"}</div>
+                        <div className="text-xs text-amber-600">{paymentReasonLabel(refund.reason)}</div>
+                      </td>
+                      <td className="py-2 pr-4 text-xs text-slate-500">
+                        <div className="font-mono" title={refund.user_id || ""}>{compactMono(refund.user_id)}</div>
+                        <div className="mt-0.5 font-mono text-blue-700" title={refund.intent_id || ""}>{compactMono(refund.intent_id, 12, 6)}</div>
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-xs text-slate-500" title={refund.tx_hash || ""}>
+                        {compactMono(refund.tx_hash)}
+                      </td>
+                      <td className="py-2 pr-4 text-xs text-slate-500">
+                        {refund.handled_by || refund.created_by || "—"}
+                      </td>
+                      <td className="py-2 pr-4 whitespace-nowrap text-xs text-slate-500">
+                        {compactDate(refund.updated_at || refund.created_at)}
                       </td>
                     </tr>
                   ))}

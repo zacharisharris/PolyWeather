@@ -87,9 +87,8 @@ class TestSafeFloat:
 
 class TestMuCalculation:
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_normal_mu_blends_forecast_and_ensemble(self, _udr, _deb_acc, _dw):
+    def test_normal_mu_blends_forecast_and_ensemble(self, _udr, _dw):
         """Normal case: μ = forecast_median * 0.7 + ens_median * 0.3"""
         data = _make_weather_data(
             cur_temp=25.0, max_so_far=26.0,
@@ -104,9 +103,8 @@ class TestMuCalculation:
         assert 29.0 <= mu <= 31.0  # Reasonable range
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_reality_anchored_mu_on_forecast_bust(self, _udr, _deb_acc, _dw):
+    def test_reality_anchored_mu_on_forecast_bust(self, _udr, _dw):
         """When past peak and actual << forecasts, μ anchors on actual max."""
         data = _make_weather_data(
             cur_temp=22.0, max_so_far=23.0,
@@ -122,9 +120,8 @@ class TestMuCalculation:
         assert mu <= 24.0, f"μ should anchor on actual max (23°C), got {mu}"
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_mu_rises_when_actual_exceeds_forecast(self, _udr, _deb_acc, _dw):
+    def test_mu_rises_when_actual_exceeds_forecast(self, _udr, _dw):
         """When actual max exceeds μ, μ adjusts upward."""
         data = _make_weather_data(
             cur_temp=32.0, max_so_far=33.0,
@@ -139,9 +136,8 @@ class TestMuCalculation:
         assert mu >= 33.0, f"μ should be >= actual max (33°C), got {mu}"
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_mu_uses_city_local_date_daily_high(self, _udr, _deb_acc, _dw):
+    def test_mu_uses_city_local_date_daily_high(self, _udr, _dw):
         """Cached daily arrays may include yesterday first; μ must use the city-local target date."""
         data = _make_weather_data(
             cur_temp=25.0,
@@ -164,10 +160,9 @@ class TestMuCalculation:
         assert sd["mu"] is not None and sd["mu"] >= 30.0
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
     def test_multi_model_peak_window_prevents_early_open_meteo_bust(
-        self, _udr, _deb_acc, _dw
+        self, _udr, _dw
     ):
         """If Open-Meteo peaks early but multi-models peak later, μ must not anchor to morning actuals."""
         hourly_times = [f"2026-03-04T{h:02d}:00" for h in range(24)]
@@ -207,10 +202,9 @@ class TestMuCalculation:
         assert sd["mu"] is not None and sd["mu"] >= 29.0
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
     def test_deb_hourly_consensus_takes_priority_for_peak_window(
-        self, _udr, _deb_acc, _dw
+        self, _udr, _dw
     ):
         """The peak window should follow the independent DEB hourly path before raw model medians."""
         data = _make_weather_data(
@@ -241,14 +235,97 @@ class TestMuCalculation:
         assert sd["peak_hours"] == ["15:00", "16:00"]
         assert sd["peak_status"] == "before"
 
+    @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
+    @patch("src.analysis.trend_engine.update_daily_record")
+    def test_deb_normal_probability_engine_contract(
+        self, _udr, _dw
+    ):
+        data = _make_weather_data(
+            cur_temp=30.0,
+            max_so_far=31.0,
+            om_today_high=33.0,
+            ens_median=32.0,
+            local_time="2026-03-04 11:00",
+        )
+
+        _, _, sd = analyze_weather_trend(data, "°C", "test_city")
+
+        # DEB normal is the only probability engine after weathernext2 removal;
+        # without trained stats there is no probability payload.
+        assert sd["probability_engine"] in {"deb_normal", None}
+        assert sd["mu"] is not None
+
+
+class TestDebEnsembleSignal:
+    @patch(
+        "src.analysis.trend_engine.calculate_deb_prediction",
+        return_value={
+            "prediction": 30.1,
+            "raw_prediction": 30.1,
+            "weights_info": "test weights",
+        },
+    )
+    @patch("src.analysis.trend_engine.update_daily_record")
+    def test_narrow_ensemble_supports_aligned_deb(self, _udr, _deb):
+        data = _make_weather_data(
+            cur_temp=25.0,
+            max_so_far=25.2,
+            om_today_high=30.0,
+            ens_median=30.0,
+            ens_p10=29.4,
+            ens_p90=30.6,
+            local_time="2026-03-04 10:00",
+            multi_model={"ECMWF": 30.2, "GFS": 30.0},
+        )
+
+        _, ai_context, sd = analyze_weather_trend(data, "°C", "test_city")
+
+        signal = sd["deb_ensemble_signal"]
+        assert signal["available"] is True
+        assert signal["stance"] == "supporting"
+        assert signal["confidence_delta"] > 0
+        assert signal["spread"] == 1.2
+        assert "集合支撑" in ai_context
+        assert "GEFS" not in sd["current_forecasts"]
+        assert not any("ensemble" in name.lower() for name in sd["current_forecasts"])
+
+    @patch(
+        "src.analysis.trend_engine.calculate_deb_prediction",
+        return_value={
+            "prediction": 31.0,
+            "raw_prediction": 31.0,
+            "weights_info": "test weights",
+        },
+    )
+    @patch("src.analysis.trend_engine.update_daily_record")
+    def test_wide_ensemble_marks_deb_as_caution(self, _udr, _deb):
+        data = _make_weather_data(
+            cur_temp=25.0,
+            max_so_far=25.2,
+            om_today_high=30.0,
+            ens_median=29.0,
+            ens_p10=24.0,
+            ens_p90=34.0,
+            local_time="2026-03-04 10:00",
+            multi_model={"ECMWF": 30.2, "GFS": 31.0},
+        )
+
+        _, ai_context, sd = analyze_weather_trend(data, "°C", "test_city")
+
+        signal = sd["deb_ensemble_signal"]
+        assert signal["available"] is True
+        assert signal["stance"] == "caution"
+        assert signal["confidence_delta"] < 0
+        assert signal["spread"] == 10.0
+        assert "集合分歧" in ai_context
+
 
 # ─── Tests: Dead Market ───
 
 class TestDeadMarket:
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_dead_market_after_peak_with_cooling(self, _udr, _deb_acc, _dw):
+    def test_dead_market_after_peak_with_cooling(self, _udr, _dw):
         """Past peak + 1.5°C drop → dead market."""
         data = _make_weather_data(
             cur_temp=26.0, max_so_far=28.0,
@@ -261,9 +338,8 @@ class TestDeadMarket:
         assert ti["is_dead_market"] is True
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_not_dead_market_during_peak_warming(self, _udr, _deb_acc, _dw):
+    def test_not_dead_market_during_peak_warming(self, _udr, _dw):
         """During peak window while still warming → NOT dead market."""
         data = _make_weather_data(
             cur_temp=28.0, max_so_far=28.0,
@@ -276,9 +352,8 @@ class TestDeadMarket:
         assert ti["is_dead_market"] is False
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_dead_market_probability_is_100_percent(self, _udr, _deb_acc, _dw):
+    def test_dead_market_probability_is_100_percent(self, _udr, _dw):
         """When dead market, probabilities collapse to 100% at settled value."""
         data = _make_weather_data(
             cur_temp=25.0, max_so_far=28.0,
@@ -298,9 +373,8 @@ class TestDeadMarket:
 
 class TestForecastBust:
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_heavy_forecast_bust_detected(self, _udr, _deb_acc, _dw):
+    def test_heavy_forecast_bust_detected(self, _udr, _dw):
         """Heavy bust: forecast_median - max_so_far > 5.0"""
         data = _make_weather_data(
             cur_temp=22.0, max_so_far=23.0,
@@ -315,9 +389,8 @@ class TestForecastBust:
         assert "重" in ai_context or "级失准" in ai_context
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_no_bust_when_on_track(self, _udr, _deb_acc, _dw):
+    def test_no_bust_when_on_track(self, _udr, _dw):
         """No bust when actual is close to forecast."""
         data = _make_weather_data(
             cur_temp=29.0, max_so_far=29.5,
@@ -334,9 +407,8 @@ class TestForecastBust:
 
 class TestTrendDirection:
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_rising_trend(self, _udr, _deb_acc, _dw):
+    def test_rising_trend(self, _udr, _dw):
         data = _make_weather_data(
             recent_temps=[("14:00", 28.0), ("13:00", 27.0), ("12:00", 26.0)],
         )
@@ -344,9 +416,8 @@ class TestTrendDirection:
         assert sd["trend_info"]["direction"] == "rising"
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_falling_trend(self, _udr, _deb_acc, _dw):
+    def test_falling_trend(self, _udr, _dw):
         data = _make_weather_data(
             recent_temps=[("16:00", 25.0), ("15:00", 26.0), ("14:00", 27.0)],
         )
@@ -354,9 +425,8 @@ class TestTrendDirection:
         assert sd["trend_info"]["direction"] == "falling"
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
-    def test_stagnant_trend(self, _udr, _deb_acc, _dw):
+    def test_stagnant_trend(self, _udr, _dw):
         data = _make_weather_data(
             recent_temps=[("14:00", 27.0), ("13:00", 27.0), ("12:00", 27.0)],
         )
@@ -366,10 +436,9 @@ class TestTrendDirection:
 
 class TestDynamicCommentary:
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
     def test_dynamic_commentary_detects_cloud_build_without_cooling(
-        self, _udr, _deb_acc, _dw
+        self, _udr, _dw
     ):
         data = _make_weather_data(
             cur_temp=28.0,
@@ -394,10 +463,9 @@ class TestDynamicCommentary:
         assert "结构解读" in ai_context
 
     @patch("src.analysis.trend_engine.calculate_dynamic_weights", return_value=(None, ""))
-    @patch("src.analysis.trend_engine.get_deb_accuracy", return_value=None)
     @patch("src.analysis.trend_engine.update_daily_record")
     def test_dynamic_commentary_falls_back_when_recent_obs_missing(
-        self, _udr, _deb_acc, _dw
+        self, _udr, _dw
     ):
         data = _make_weather_data(recent_obs=[])
 

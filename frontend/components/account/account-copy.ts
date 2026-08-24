@@ -10,9 +10,6 @@ export function createAccountCopy(isEn: boolean): Record<string, string> {
       guestUser: isEn ? "Signed-out account" : "未登录账户",
       joinedAt: isEn ? "Joined" : "加入时间",
       totalPoints: isEn ? "Total Points" : "总积分 (荣誉)",
-      weeklyPoints: isEn ? "This Month Invites" : "本月有效邀请",
-      weeklyRank: isEn ? "Monthly Cap" : "月度上限",
-      weeklyRewards: isEn ? "Referral Rewards" : "邀请奖励",
       membershipDetails: isEn ? "Membership Details" : "会员权限详情",
       identityStatus: isEn ? "Identity Status" : "身份状态",
       accountFeedbackTitle: isEn ? "My Feedback" : "我的反馈",
@@ -41,57 +38,14 @@ export function createAccountCopy(isEn: boolean): Record<string, string> {
       authResult: isEn ? "Auth Result" : "鉴权结果",
       passed: isEn ? "Passed" : "通过",
       restricted: isEn ? "Restricted" : "受限",
-      telegramBind: isEn ? "Telegram Bot Binding" : "Telegram Bot 绑定",
-      telegramHint: isEn
-        ? "Use one-click Telegram binding first to sync notifications and access. After binding, refresh this page and submit your Telegram group join request."
-        : "优先使用「一键绑定 Telegram Bot」同步通知与权限。绑定完成后刷新本页，再提交 Telegram 群组入群申请。",
-      telegramFallbackHint: isEn
-        ? "Fallback copy method: click Copy to generate a 10-minute one-time /start bind command, send it to @polyyuanbot, then confirm binding in the Bot and refresh this page."
-        : "兜底复制方式：点击复制会生成 10 分钟有效的一次性 /start bind 命令。请把它发送给 @polyyuanbot，并在 Bot 内确认绑定后刷新本页。",
-      telegramBindCommandPlaceholder: isEn
-        ? "Click Copy to generate a one-time /start bind command"
-        : "点击复制生成一次性 /start bind 命令",
-      telegramBindCommandCopied: isEn
-        ? "One-time Telegram bind command generated and copied. Send it to @polyyuanbot, then confirm binding in the Bot."
-        : "一次性 Telegram 绑定命令已生成并复制。请发送给 @polyyuanbot，然后在 Bot 内确认绑定。",
       paymentManualSupport: isEn
         ? "If payment succeeds but Pro is still not activated, email yhrsc30@gmail.com. This project is currently maintained by one developer, so manual recovery may be needed in edge cases."
         : "如果付款成功后 Pro 仍未开通，请发邮件到 yhrsc30@gmail.com。当前项目由我一人维护，极少数边缘情况可能需要人工补开。给你带来的不便，敬请谅解！",
-      telegramBotLink: isEn
-        ? "Open Bot (@polyyuanbot)"
-        : "打开机器人 (@polyyuanbot)",
-      telegramBotBindLink: isEn ? "One-click Telegram Binding" : "一键绑定 Telegram Bot",
-      telegramGroupLink: isEn ? "Join Telegram Group" : "加入 Telegram 群组",
-      telegramTopicsGroupLink: isEn
-        ? "Real-time Weather Updates"
-        : "城市实测温度群",
-      copyCommand: isEn ? "Copy fallback command" : "复制兜底命令",
       paymentMgmt: isEn ? "Payment Management" : "支付管理",
       proPlan: isEn ? "Pro Plan" : "Pro 套餐",
       monthlyPlan: isEn ? "Monthly" : "月付",
       quarterlyPlan: isEn ? "Quarterly" : "季度",
       trialBadge: isEn ? "3-day trial" : "3天试用",
-      trialPaidGroupLocked: isEn
-        ? "Trial users can use the core product experience, but the paid Telegram group is available to full Pro subscriptions only."
-        : "3天试用用户可体验核心产品，但无法进入付费 Telegram 群；付费群仅对正式 Pro 开放。",
-      referralTitle: isEn ? "Referral Code" : "邀请码",
-      referralMyCode: isEn ? "My invite code" : "我的邀请码",
-      referralApplyLabel: isEn ? "Use invite code" : "使用邀请码",
-      referralApplyPlaceholder: isEn ? "Enter invite code" : "输入邀请码",
-      referralApplyButton: isEn ? "Apply" : "应用",
-      referralApplied: isEn
-        ? "Referral code applied. Your first monthly payment is now discounted."
-        : "邀请码已应用，首月 Pro 将按邀请价结算。",
-      referralApplyFailed: isEn ? "Failed to apply referral code" : "邀请码应用失败",
-      referralDiscountHint: isEn
-        ? "Invite discount: first monthly Pro is 20 USDC."
-        : "邀请首月价：Pro 月付 20 USDC。",
-      referralRewardHint: isEn
-        ? "When an invited user pays for Pro, you receive +3500 points."
-        : "被邀请人成功付费后，邀请人获得 +3500 积分。",
-      referralInviteLimit: isEn
-        ? "Monthly referral reward cap: 10 paid invites, up to +35000 points."
-        : "每月最多 10 个有效付费邀请奖励，最高 +35000 积分。",
       paymentToken: isEn ? "Payment Token" : "支付币种",
       paymentAccount: isEn ? "Subscription Account" : "订阅归属账号",
       paymentWallet: isEn ? "Paying Wallet" : "付款钱包",
@@ -285,22 +239,6 @@ export function createAccountCopy(isEn: boolean): Record<string, string> {
         : "这笔是收款地址自转，不是用户付款。请从你自己的钱包转到收款地址。",
       verifyFailed: isEn ? "Verification failed: " : "验证失败: ",
       verifyUnknown: isEn ? "Unknown error" : "未知错误",
-      // ── Telegram bind messages ────────────────────────────────────────
-      telegramVerifySuccess: isEn
-        ? "Telegram group membership verified. Member monthly price {amount} USDC is active."
-        : "Telegram 群成员验证成功，群友月付价 {amount} USDC 已生效。",
-      telegramBindClickHint: isEn
-        ? "Open the Telegram Bot, click Start, and confirm binding. Then refresh this page to request group entry."
-        : "已打开 Telegram Bot，请在 Bot 内点击 Start 并确认绑定；完成后刷新本页再申请入群。",
-      telegramPopupBlocked: isEn
-        ? "Popup blocked. Please click the link below to complete binding:"
-        : "弹窗被拦截，请点击下方链接完成绑定：",
-      telegramBindFailed: isEn
-        ? "Failed to create Telegram bind link"
-        : "创建 Telegram 绑定链接失败",
-      telegramBindLinkMissing: isEn
-        ? "Telegram bind link missing"
-        : "Telegram 绑定链接缺失",
       // ── Wallet errors ──────────────────────────────────────────────────
       noWalletProvider: isEn
         ? "No EVM wallet provider found"
@@ -350,8 +288,8 @@ export function createAccountCopy(isEn: boolean): Record<string, string> {
         : "加载支付配置失败: {raw}",
       // ── Points / Footer ────────────────────────────────────────────────
       pointsRule: isEn
-        ? "Points rule: points are earned through successful paid referrals only. 500 points = 1 USDC. Monthly orders can use up to 3 USDC off; quarterly orders can use up to 8 USDC off."
-        : "积分规则：积分仅通过有效付费邀请获得。500 积分 = 1 USDC。月付订单最多抵扣 3 USDC，季度订单最多抵扣 8 USDC。",
+        ? "Points rule: 500 points = 1 USDC. Monthly orders can use up to 3 USDC off; quarterly orders can use up to 8 USDC off."
+        : "积分规则：500 积分 = 1 USDC。月付订单最多抵扣 3 USDC，季度订单最多抵扣 8 USDC。",
       pointsDiscount: isEn
         ? "Available: {points} points discounting ${amount}. Applied automatically on renewal."
         : "当前可用 {points} 积分抵扣 ${amount}，续费时会自动生效。",

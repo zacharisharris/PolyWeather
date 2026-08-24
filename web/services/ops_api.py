@@ -20,7 +20,6 @@ from src.database.runtime_state import ObservationCollectorStatusRepository  # n
 
 # Backward-compat: internal helpers referenced by tests
 from web.services.ops.config import _lookup_supabase_user_id_by_email  # noqa: F401
-from web.services.ops.health import _check_amsc_awos_health  # noqa: F401
 from web.services.ops.payments import _list_active_subscriptions_with_windows  # noqa: F401
 
 
@@ -32,9 +31,9 @@ def _require_ops(request):
 # ---------------------------------------------------------------------------
 from web.services.ops.users import (  # noqa: E402, F401
     get_ops_analytics_funnel,
-    get_ops_weekly_leaderboard,
     grant_ops_feedback_reward,
     grant_ops_points,
+    list_ops_audit_log,
     list_ops_feedback,
     search_ops_users,
     transfer_ops_points,
@@ -45,13 +44,16 @@ from web.services.ops.users import (  # noqa: E402, F401
 # Payments / Billing / Memberships
 # ---------------------------------------------------------------------------
 from web.services.ops.payments import (  # noqa: E402, F401
+    create_ops_refund_case,
     get_ops_billing_risk,
     get_ops_memberships_growth,
     get_ops_memberships_overview,
+    list_ops_refund_cases,
     list_ops_memberships,
     list_ops_payment_incidents,
     list_ops_payments,
     resolve_ops_payment_incident,
+    update_ops_refund_case,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,6 +69,13 @@ from web.services.ops.health import (  # noqa: E402, F401
 )
 
 # ---------------------------------------------------------------------------
+# Internal market opportunities
+# ---------------------------------------------------------------------------
+from web.services.ops.market_opportunities import (  # noqa: E402, F401
+    get_ops_market_opportunities,
+)
+
+# ---------------------------------------------------------------------------
 # Config / Subscriptions / Logs / Telegram
 # ---------------------------------------------------------------------------
 from web.services.ops.config import (  # noqa: E402, F401
@@ -75,7 +84,6 @@ from web.services.ops.config import (  # noqa: E402, F401
     get_ops_config,
     get_ops_logs,
     get_ops_sensitive_config,
-    get_ops_telegram_audit,
     get_ops_user_subscriptions,
     grant_ops_subscription,
     update_ops_config,

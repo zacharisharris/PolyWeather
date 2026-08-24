@@ -1,6 +1,6 @@
 # 前端部署配置（Docker / VPS）
 
-最后更新：`2026-06-14`
+最后更新：`2026-08-01`
 
 本文只覆盖 `frontend` 目录对应的 Next.js 前端部署。前端当前不再使用 Vercel，统一与后端一起以 Docker Compose 形式部署在同一台 VPS 上，前面挂 Cloudflare + Nginx。
 
@@ -55,12 +55,11 @@
 
 1. SSH 登录 VPS，用 GHCR PAT 登录镜像仓库
 2. `git fetch origin main && git reset --hard origin/main` 同步仓库（含 `docker-compose.yml`）
-3. 同步 `data/city_thread_ids.json` 到运行态目录
-4. `docker compose pull` 拉取新镜像（带重试）
-5. 按顺序滚动更新：`redis` → `web` + `bot` → `collector` → `warmer` → `frontend`
-6. 每步后做本地健康检查；前端额外等待 `/terminal` 和 `/api/scan/terminal` 就绪
-7. 公网 smoke check：`https://api.polyweather.top/healthz`、`https://polyweather.top/api/cities`、`https://www.polyweather.top/`
-8. 任意一步失败自动回滚到上一个镜像 tag（记录在 `/var/lib/polyweather/.current_tag`）
+3. `docker compose pull` 拉取新镜像（带重试）
+4. 按顺序滚动更新：`redis` → `web` + `bot` → `collector` → `warmer` → `training_settlement` → `frontend`
+5. 每步后做本地健康检查；前端额外等待 `/terminal` 和 `/api/scan/terminal` 就绪
+6. 公网 smoke check：`https://api.polyweather.top/healthz`、`https://polyweather.top/api/cities`、`https://www.polyweather.top/`
+7. 任意一步失败自动回滚到上一个镜像 tag（记录在 `/var/lib/polyweather/.current_tag`）
 
 部署失败时优先看 `deploy.sh` 输出里哪一步打了 `❌`，并检查 `docker compose logs polyweather_frontend`。
 
@@ -119,17 +118,7 @@ POLYWEATHER_OPS_ADMIN_EMAILS=yhrsc30@gmail.com
 
 `/ops` 页面入口会读取管理员邮箱白名单，前端和后端容器都应配置相同的值。
 
-### 4. Telegram 入口（构建期）
-
-```
-NEXT_PUBLIC_TELEGRAM_GROUP_URL=https://t.me/<your_group>
-NEXT_PUBLIC_TELEGRAM_BOT_URL=https://t.me/polyyuanbot
-NEXT_PUBLIC_TELEGRAM_LOGIN_BOT_USERNAME=polyyuanbot
-```
-
-只影响按钮跳转，不影响核心页面加载。
-
-### 5. 前端观测与预热开关（推荐默认关闭）
+### 4. 前端观测与预热开关（推荐默认关闭）
 
 ```
 NEXT_PUBLIC_POLYWEATHER_APP_ANALYTICS=false

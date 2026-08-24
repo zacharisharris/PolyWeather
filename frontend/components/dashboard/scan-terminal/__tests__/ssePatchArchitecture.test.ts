@@ -37,7 +37,6 @@ export function runTests() {
   const schema = fs.readFileSync(schemaPath, "utf8");
   assert(schema.includes("city_observation_patch.v1"), "patch schema must expose city_observation_patch.v1");
   assert(schema.includes("normalize_observation_patch"), "patch schema must normalize collector payloads");
-  assert(schema.includes("runway_points"), "patch schema must preserve runway point observations");
 
   const storePath = path.join(repoRoot, "web", "realtime_event_store.py");
   assert(fs.existsSync(storePath), "backend must define a realtime event replay store");
@@ -137,7 +136,7 @@ export function runTests() {
     __applySsePatchForTest({
       type: "city_observation_patch.v1",
       city: "Latency City",
-      source: "amsc_awos",
+      source: "metar",
       obs_time: "2026-06-10T04:50:00Z",
       observed_at_utc: "2026-06-10T04:50:00Z",
       revision: 987001,
@@ -168,17 +167,14 @@ export function runTests() {
   const chart = readFrontendFile("components", "dashboard", "scan-terminal", "LiveTemperatureThresholdChart.tsx");
   const chartCanvasPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureChartCanvas.tsx");
   const chartStatsPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureStatsBars.tsx");
-  const chartRunwayPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureRunwayDetails.tsx");
   const chartTooltipPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "TemperatureTooltipContent.tsx");
   const chartSummaryPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "ModelCurvesSummary.tsx");
   assert(fs.existsSync(chartCanvasPath), "temperature chart Recharts canvas must live in TemperatureChartCanvas.tsx");
   assert(fs.existsSync(chartStatsPath), "temperature chart stat bars must live in TemperatureStatsBars.tsx");
-  assert(fs.existsSync(chartRunwayPath), "temperature chart runway detail panel must live in TemperatureRunwayDetails.tsx");
   assert(fs.existsSync(chartTooltipPath), "temperature chart tooltip must live in TemperatureTooltipContent.tsx");
   assert(fs.existsSync(chartSummaryPath), "temperature chart model summary must live in ModelCurvesSummary.tsx");
   const chartCanvas = fs.readFileSync(chartCanvasPath, "utf8");
   const chartTooltip = fs.readFileSync(chartTooltipPath, "utf8");
-  const chartRunway = fs.readFileSync(chartRunwayPath, "utf8");
   const chartSummary = fs.readFileSync(chartSummaryPath, "utf8");
   const chartLogicPath = path.join(process.cwd(), "components", "dashboard", "scan-terminal", "temperature-chart-logic.ts");
   assert(fs.existsSync(chartLogicPath), "temperature chart pure data logic must live in temperature-chart-logic.ts");
@@ -189,27 +185,23 @@ export function runTests() {
   assert(!chart.includes("function mergePatchIntoHourly"), "LiveTemperatureThresholdChart.tsx must not define SSE patch merge logic inline");
   assert(chart.includes("useLatestPatch"), "temperature chart must consume useLatestPatch(city)");
   assert(chart.includes("latestPatch"), "temperature chart must react to incoming SSE patches");
-  assert(chart.includes("useSseResyncVersion"), "temperature chart must resync full detail when SSE replay is incomplete");
-  assert(chartLogic.includes("runway_points"), "temperature chart must merge v1 runway_points into runway history");
+  assert(chart.includes("useSseResyncVersion"), "temperature chart must resync live observations when SSE replay is incomplete");
   assert(
-    chart.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
+    !chart.includes("DASHBOARD_REFRESH_POLICY_MS.metar") &&
       !chart.includes("2 * 60_000"),
-    "temperature chart must keep METAR cadence for heavy patch-triggered probability refreshes",
+    "temperature chart must not attach model/detail refresh cadence to live observation patches",
   );
   assert(
-    chart.includes("NO_PATCH_CACHED_DETAIL_REFRESH_MS = DASHBOARD_REFRESH_POLICY_MS.observation"),
-    "temperature chart must use observation cadence for lightweight cached no-patch refreshes",
+    chart.includes("LIVE_OBSERVATION_FALLBACK_MS = DASHBOARD_REFRESH_POLICY_MS.liveObservationFallback"),
+    "temperature chart must use the 180-second observation fallback cadence when SSE patches stop",
   );
   assert(chart.includes("TemperatureChartCanvas"), "temperature chart shell must compose the extracted chart canvas");
   assert(chart.includes("TemperatureStatsBars"), "temperature chart shell must compose the extracted stat bars");
-  assert(chart.includes("TemperatureRunwayDetails"), "temperature chart shell must compose the extracted runway panel");
   assert(chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city temperature unit into stat bars");
-  assert(chart.includes("<TemperatureRunwayDetails") && chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city unit into runway details");
   assert(chart.includes("<ModelCurvesSummary") && chart.includes("tempSymbol={row?.temp_symbol || \"°C\"}"), "temperature chart shell must pass the city unit into model summaries");
   const chartStats = fs.readFileSync(chartStatsPath, "utf8");
   assert(chartStats.includes("tempSymbol"), "temperature stat bars must accept the city temperature unit");
-  assert(chartStats.includes("temp(displayRunwayTemp, tempSymbol)"), "temperature stat bars must render live observations with the city unit");
-  assert(chartRunway.includes("tempSymbol") && !chartRunway.includes("}°C`"), "runway detail rows must render values with the city unit");
+  assert(chartStats.includes("temp(displayObsTemp, tempSymbol)"), "temperature stat bars must render live observations with the city unit");
   assert(chartSummary.includes("tempSymbol") && chartSummary.includes("temp(stats.latest, tempSymbol)"), "model curve summaries must render values with the city unit");
   assert(chartCanvas.includes("const tempSymbol = row?.temp_symbol || \"°C\""), "temperature chart canvas must derive the city unit from the row");
   assert(chartCanvas.includes("tempSymbol={tempSymbol}"), "temperature chart canvas must pass the city unit into tooltips");
@@ -229,17 +221,28 @@ export function runTests() {
     chart.includes("ignoreCache: true") && chart.includes("currentCityLocalDate !== loadedLocalDate"),
     "temperature chart must background-refresh full city detail when the city-local day rolls over",
   );
-  const fallbackRefreshBlock = chart.match(/const refreshCachedDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
+  const fallbackRefreshBlock = chart.match(/const refreshLiveObservation = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
   assert(
-    fallbackRefreshBlock.includes("fetchHourlyForecastForCity(city, { bypassLocalCache: true, resolution: targetResolution })") &&
+    fallbackRefreshBlock.includes("fetchLiveObservationForCity") &&
+      fallbackRefreshBlock.includes("applyLiveObservationSnapshot") &&
+      chart.includes("mergeObservationSnapshotIntoHourly") &&
+      !fallbackRefreshBlock.includes("runHourlyDetailFetch") &&
       !fallbackRefreshBlock.includes("ignoreCache: true") &&
       !fallbackRefreshBlock.includes("setIsHourlyLoading(true)"),
-    "no-patch fallback refresh should revalidate through cached backend detail without force-refreshing sources or showing the loading overlay",
+    "no-patch fallback refresh should merge no-store observation data without refreshing cached detail-batch or showing the loading overlay",
   );
-  const resyncBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!resyncVersion \|\| !city\) return;[\s\S]*?\}, \[resyncVersion, city, targetResolution, applySuccessfulHourlyDetail\]\);/)?.[0] || "";
   assert(
-    !resyncBlock.includes("setIsHourlyLoading(true)"),
-    "SSE replay resync should refresh full detail in the background without showing the loading overlay",
+    !chart.includes("rememberHourlyDetailSnapshot"),
+    "temperature chart must not write row/SSE/observation overlays back into the full-detail cache",
+  );
+  const resyncBlock = chart.match(/useEffect\(\(\) => \{\s*if \(!resyncVersion \|\| !city\) return;[\s\S]*?\}, \[resyncVersion, city, applyLiveObservationSnapshot\]\);/)?.[0] || "";
+  assert(
+    resyncBlock.includes("fetchLiveObservationForCity") &&
+      resyncBlock.includes("applyLiveObservationSnapshot") &&
+      !resyncBlock.includes("runHourlyDetailFetch") &&
+      !resyncBlock.includes("ignoreCache: true") &&
+      !resyncBlock.includes("setIsHourlyLoading(true)"),
+    "SSE replay resync should refresh no-store observations without touching cached detail-batch or showing the loading overlay",
   );
   assert(
     chart.includes("visibilitychange") &&
@@ -250,7 +253,7 @@ export function runTests() {
   const foregroundRefreshBlock = chart.match(/const refreshForegroundFullDetail = \(\) => \{[\s\S]*?\n    \};/)?.[0] || "";
   assert(
     foregroundRefreshBlock.includes("bypassLocalCache: true") &&
-    foregroundRefreshBlock.includes("fetchHourlyForecastForCity") &&
+    foregroundRefreshBlock.includes("runHourlyDetailFetch") &&
     foregroundRefreshBlock.includes("FOREGROUND_FULL_DETAIL_REFRESH_DEDUP_MS") &&
     !foregroundRefreshBlock.includes("ignoreCache: true") &&
     !foregroundRefreshBlock.includes("setIsHourlyLoading(true)"),
@@ -281,23 +284,10 @@ export function runTests() {
     "temperature chart must guard target-resolution state updates to prevent render/update loops",
   );
   assert(
-    chart.includes("prefersHighFrequencyRunwayResolution") && chart.includes('return "1m";'),
-    "runway charts must request 1-minute detail resolution so historical runway lines match live SSE patch cadence",
-  );
-  assert(
-    chart.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS") &&
-      chart.includes("lastProbabilityRefreshAtRef") &&
-      chart.includes("refreshProbabilityOverlayAfterPatch"),
-    "temperature chart must trigger a throttled background probability refresh after live observation patches",
-  );
-  const patchEffectBlock = chart.match(
-    /useEffect\(\(\) => \{\s*if \(!latestPatch[\s\S]*?refreshProbabilityOverlayAfterPatch\(\);[\s\S]*?\}, \[[^\]]*latestPatch[^\]]*applySuccessfulHourlyDetail[^\]]*\]\);/,
-  )?.[0] || "";
-  assert(
-    patchEffectBlock.includes("refreshProbabilityOverlayAfterPatch") &&
-      patchEffectBlock.includes("ignoreCache: true") &&
-      !patchEffectBlock.includes("setIsHourlyLoading(true)"),
-    "live patch probability refresh must recompute legacy Gaussian in the background without showing a loading overlay",
+    !chart.includes("PROBABILITY_REFRESH_AFTER_PATCH_MS") &&
+      !chart.includes("lastProbabilityRefreshAtRef") &&
+      !chart.includes("refreshProbabilityOverlayAfterPatch"),
+    "live observation patches must not trigger model/probability/detail refreshes; cached detail-batch stays on its own cadence",
   );
   assert(!chartCanvas.includes("ResponsiveContainer"), "temperature chart canvas must not mount Recharts through ResponsiveContainer at 0x0");
   assert(chartCanvas.includes("ResizeObserver"), "temperature chart canvas must measure its host with ResizeObserver");
@@ -310,18 +300,23 @@ export function runTests() {
     "temperature chart canvas must pass explicit positive width/height to Recharts",
   );
   assert(
-    chartCanvas.includes("canToggleRunwayDetails") && chartCanvas.includes("individualRunwaySeriesCount > 1"),
-    "single-runway charts must not show the runway-detail toggle because aggregate and individual views are visually redundant",
-  );
-  assert(
     chartLogic.includes("HOURLY_DETAIL_REQUEST_TIMEOUT_MS = 16_000") &&
       chartLogic.includes("fetchCityDetailBatchWithTimeout") &&
       chartLogic.includes("signal: controller.signal") &&
       chartLogic.includes("controller.abort()"),
     "city detail chart fetches must have a frontend timeout so panels cannot stay on 加载图表 forever",
   );
-  assert(!chart.includes("3D"), "temperature chart UI must not expose a 3D/future-forecast mode");
-  assert(!chart.includes("build3DayChartData"), "temperature chart component must not render future prediction curves");
+  // The 72h view is forecast-only (multi-model hourly consensus + DEB anchors);
+  // it must not interfere with the SSE patch pipeline for live observations.
+  assert(
+    chart.includes('"3D"') && chart.includes('"1D"'),
+    "temperature chart must expose 1D/3D timeframe switching",
+  );
+  assert(
+    chartLogic.includes("build72hChartData") &&
+      !chart.includes("setInterval(poll, 60_000)"),
+    "72h mode must be backed by build72hChartData and must not introduce unconditional polling",
+  );
   assert(
     !chart.includes("setInterval(poll, 60_000)"),
     "temperature chart must not use unconditional 60-second full-detail polling after SSE patch migration",
