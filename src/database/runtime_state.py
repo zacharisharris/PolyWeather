@@ -1540,6 +1540,51 @@ class IntradayPathSnapshotRepository:
                 continue
         return out
 
+    def load_earliest_deb_prediction(self) -> Dict[tuple[str, str], float]:
+        """Earliest deb_prediction per (city, target_date) for training.
+
+        Uses the first intraday snapshot of the day (what the user saw in the
+        morning) instead of the last upsert in daily_records_store (what the
+        user saw at 23h). This closes the 1.6x MAE / 1.67x sigma train/serve
+        skew shown in scripts/analyze_deb_lead_bias.py.
+        """
+        # Batch scan to tolerate malformed pages (like analyze_deb_lead_bias.py).
+        try:
+            with self.db.connect() as conn:
+                max_id = conn.execute("SELECT MAX(id) FROM intraday_path_snapshots_store").fetchone()[0] or 0
+        except Exception:
+            return {}
+        out: Dict[tuple[str, str], float] = {}
+        seen: set[tuple[str, str]] = set()
+        batch = 5000
+        try:
+            with self.db.connect() as conn:
+                for start in range(1, int(max_id) + 1, batch):
+                    try:
+                        rows = conn.execute(
+                            "SELECT city, target_date, deb_prediction, id FROM intraday_path_snapshots_store WHERE id BETWEEN ? AND ? ORDER BY id ASC",
+                            (start, start + batch - 1),
+                        ).fetchall()
+                    except Exception:
+                        continue
+                    for row in rows:
+                        city = str(row["city"] or "").strip().lower()
+                        date_str = str(row["target_date"] or "")[:10]
+                        key = (city, date_str)
+                        if not city or not date_str or key in seen:
+                            continue
+                        pred = row["deb_prediction"]
+                        if pred is None:
+                            continue
+                        try:
+                            out[key] = float(pred)
+                            seen.add(key)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        return out
+
 def _top_bucket(snapshot: Optional[List[Dict[str, Any]]]) -> Optional[int]:
     best_value = None
     best_prob = -1.0
