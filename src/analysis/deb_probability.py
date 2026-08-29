@@ -61,6 +61,7 @@ RECENT_BIAS_DECAY = 0.9
 # which broke >=37C PIT (mean 0.51 -> 0.71). Raising the bar to 30 drops those
 # small unreliable groups while keeping the well-sampled <=32C / 33-36C strata.
 MIN_ADJUST_SAMPLES = 30
+MIN_SIGMA_SAMPLES = 15
 
 # Celsius -> Fahrenheit, matching settlement rounding to whole degrees.
 def _c_to_f(value: float) -> float:
@@ -111,16 +112,30 @@ def _sigma_for_lead(
 ) -> float:
     if not stats:
         return 2.5
+    sigmas = stats.get("lead_sigmas") or {}
+    pooled = _sf(sigmas.get(str(lead_key)))
+    if pooled is None:
+        pooled = _sf(sigmas.get("1")) or _sf(sigmas.get("0"))
+    pooled = pooled if pooled is not None else 2.5
     # Temperature-stratum sigma (per lead) wins when available: hot-day
     # residual pools are much tighter than the pooled lead pool, and using the
     # pooled sigma made >=37C PIT std collapse to ~0.19 (over-confident).
     if temp_key:
         temp_sigmas = stats.get("temp_sigmas") or {}
-        lead_temp = temp_sigmas.get(str(lead_key)) or {}
-        value = _sf(lead_temp.get(temp_key))
-        if value is not None:
-            return max(value, MIN_SIGMA)
-    sigmas = stats.get("lead_sigmas") or {}
+        # Try current lead, then fall back to other leads' same-temp sigma
+        # before degrading to the pooled lead sigma. This fixes the lead=0
+        # high-temp inversion where lead_0's >=37 pool has only 4 samples
+        # (fallback to 1.263 was smaller than lead_1's 2.024, i.e. more
+        # confident nearer settlement).
+        for lk in (str(lead_key), "1", "0", "2"):
+            lead_temp = temp_sigmas.get(lk) or {}
+            value = _sf(lead_temp.get(temp_key))
+            if value is not None:
+                # Floor: temp-stratum sigma must not be below pooled sigma,
+                # otherwise a 22-sample 33-36 group (0.778) would be more
+                # confident than the 304-sample <=32 group (1.626) on the
+                # same lead — the same inversion shifted to another bucket.
+                return max(value, pooled, MIN_SIGMA)
     value = _sf(sigmas.get(str(lead_key)))
     if value is None:
         value = _sf(sigmas.get("1")) or _sf(sigmas.get("0"))
@@ -280,6 +295,8 @@ def _walk_forward_deb_residuals(
     daily_records: Dict[str, Dict[str, Dict[str, Any]]],
     *,
     min_history_days: int = 2,
+    lead_by_cd: Optional[Dict[tuple[str, str], int]] = None,
+    earliest_pred_by_cd: Optional[Dict[tuple[str, str], float]] = None,
 ) -> List[Dict[str, Any]]:
     """Walk-forward no-leakage residual rows: (lead, residual_c).
 
@@ -287,12 +304,13 @@ def _walk_forward_deb_residuals(
     recomputed using ONLY history strictly before the target date (same logic as
     `_build_training_rows` in deb_ml_calibration.py, minus the LightGBM step).
 
-    `lead` is derived from the earliest probability snapshot timestamp of that
-    (city, date) when available; otherwise falls back to 1 (default one-day-ahead).
+    `lead` and the earliest-snapshot prediction are injected by the caller
+    (training_settlement_worker) so this function stays pure: it never touches
+    the runtime DB. Missing entries fall back to lead=1 and to the stored
+    deb_prediction respectively.
     """
     from src.analysis.deb_algorithm import calculate_dynamic_weight_components
     from src.data_collection.city_registry import CITY_REGISTRY
-    from src.database.runtime_state import ProbabilitySnapshotRepository
 
     f_cities = {
         str(c).strip().lower()
@@ -306,17 +324,14 @@ def _walk_forward_deb_residuals(
             return None
         return (v - 32.0) * 5.0 / 9.0 if city in f_cities else v
 
-    # Earliest snapshot timestamp per (city, date) for lead computation.
-    lead_by_cd: Dict[tuple[str, str], int] = {}
-    try:
-        # SQL-side aggregation: the snapshot table grows to hundreds of
-        # thousands of rows (payload_json included); loading all of them just
-        # to derive one lead integer per (city, date) cost multiple GB of RAM
-        # and OOM-killed the training worker on production.
-        snap_repo = ProbabilitySnapshotRepository()
-        lead_by_cd.update(snap_repo.load_earliest_lead_days())
-    except Exception:
-        pass
+    # Earliest snapshot timestamp per (city, date) for lead computation, and
+    # earliest deb_prediction per (city, date) for train/serve alignment:
+    # daily_records_store is upserted on every analysis call, so its
+    # deb_prediction is the *last* snapshot of the day (23h). Inference
+    # happens at 00-08h (first snapshot). Using the last snapshot makes
+    # training 1.6x too optimistic (MAE 1.37 vs 2.19, sigma 1.17 vs 1.95).
+    lead_by_cd = dict(lead_by_cd or {})
+    earliest_pred_by_cd = dict(earliest_pred_by_cd or {})
 
     rows: List[Dict[str, Any]] = []
     for city, by_date in (daily_records or {}).items():
@@ -332,15 +347,19 @@ def _walk_forward_deb_residuals(
             if actual is None or not isinstance(forecasts, dict) or not forecasts:
                 history[target_date] = record
                 continue
-            # Preferred prediction basis: the stored deb_prediction the engine
-            # actually published for this (city, date) - this is exactly what
-            # `_build_deb_normal_probability_payload` consumes at inference
-            # time, so trained bias/sigma/strata correct the real output.
-            # Fall back to a walk-forward recomputation when it is missing.
+            # Preferred prediction basis: the *first* intraday snapshot of
+            # this (city, date) — what the user actually saw in the morning
+            # (00-08h). Falls back to the stored last-snapshot deb_prediction
+            # (what training used before) and then to a walk-forward recompute.
             pred_c: Optional[float] = None
-            stored = _sf(record.get("deb_prediction"))
-            if stored is not None:
-                pred_c = _to_c(stored, str(city).strip().lower())
+            key = (str(city).strip().lower(), str(target_date)[:10])
+            earliest = earliest_pred_by_cd.get(key)
+            if earliest is not None:
+                pred_c = _to_c(earliest, str(city).strip().lower())
+            if pred_c is None:
+                stored = _sf(record.get("deb_prediction"))
+                if stored is not None:
+                    pred_c = _to_c(stored, str(city).strip().lower())
             if pred_c is None:
                 components = calculate_dynamic_weight_components(
                     city,
@@ -371,6 +390,8 @@ def train_deb_lead_stats(
     daily_records: Dict[str, Dict[str, Dict[str, Any]]],
     *,
     min_samples: int = 20,
+    lead_by_cd: Optional[Dict[tuple[str, str], int]] = None,
+    earliest_pred_by_cd: Optional[Dict[tuple[str, str], float]] = None,
 ) -> Dict[str, Any]:
     """Train lead-stratified residual stats from settled history (no leakage).
 
@@ -390,7 +411,11 @@ def train_deb_lead_stats(
     small-sample groups contribute nothing and large-sample groups (e.g. Seoul
     +2.8C, 33-36C warm band) correct the lead bias.
     """
-    rows = _walk_forward_deb_residuals(daily_records)
+    rows = _walk_forward_deb_residuals(
+        daily_records,
+        lead_by_cd=lead_by_cd,
+        earliest_pred_by_cd=earliest_pred_by_cd,
+    )
     by_lead: Dict[int, List[float]] = {}
     by_lead_city: Dict[tuple[int, str], Dict[str, List[float]]] = {}
     by_lead_temp: Dict[tuple[int, str], List[float]] = {}
@@ -520,7 +545,7 @@ def train_deb_lead_stats(
         # tighter than the pooled lead pool (>=37C PIT std ~0.19 with the
         # pooled sigma). Emit a stratum sigma only when the group is
         # well-sampled; otherwise inference falls back to the lead sigma.
-        if len(resid) >= MIN_ADJUST_SAMPLES:
+        if len(resid) >= MIN_SIGMA_SAMPLES:
             temp_sigmas.setdefault(str(lead_key), {})[temp_key] = round(
                 _robust_sigma(resid), 3
             )
