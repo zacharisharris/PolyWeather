@@ -69,6 +69,9 @@ export function runTests() {
   assert(!source.includes("高频刷新与 API 仍为 Pro 权益"), "landing page must not incorrectly exclude high-frequency refresh or API from trial access");
   assert(source.includes("bg-[#fbfbfa]"), "landing page must use a light Notion-style background");
   assert(source.includes("WeatherWorkflowIllustration"), "landing page must include a friendly illustration surface");
+  assert(!source.includes("MADIS 300s"), "landing page must not advertise the retired MADIS cadence");
+  assert(!source.includes("polyweather.app/terminal"), "landing hero must not show a terminal preview");
+  assert(!source.includes("landing-screen-glow"), "landing hero must not render the terminal chart preview frame");
   assert(
     /className="text-base font-black tracking-tight text-slate-950[\s\S]*?>\s*PolyWeather\s*<\/Link>/.test(
       source,
@@ -121,8 +124,8 @@ export function runTests() {
       authActionsSource.includes('"enter_terminal"'),
     "landing client islands must emit the top-of-funnel analytics events",
   );
-  assert(source.includes("29.9") && source.includes("30 天"), "landing page must show monthly Pro pricing");
-  assert(source.includes("79.9") && source.includes("90 天"), "landing page must show quarterly Pro pricing");
+  assert(source.includes("9.9") && source.includes("30 天"), "landing page must show monthly Pro pricing");
+  assert(source.includes("24.9") && source.includes("90 天"), "landing page must show quarterly Pro pricing");
   assert(source.includes("API") && source.includes("暂不售卖"), "landing page must describe API as not currently for sale");
   assert(!source.includes("Request API") && !source.includes("申请 API"), "landing page must not invite users to buy or request API access");
   assert(source.includes("Team") && source.includes("团队"), "landing page must describe the Team tier");
@@ -131,8 +134,8 @@ export function runTests() {
   assert(!source.includes("AI 气象证据链解读"), "legacy AI evidence-chain wording must be removed");
   assert(!source.includes("AI weather evidence"), "legacy AI evidence wording must be removed");
   assert(!source.includes("$10"), "legacy $10/month pricing must be removed from landing page");
-  assert(appPageSource.includes('price: "29.90"'), "JSON-LD must expose monthly Pro pricing");
-  assert(appPageSource.includes('price: "79.90"'), "JSON-LD must expose quarterly Pro pricing");
+  assert(appPageSource.includes('price: "9.90"'), "JSON-LD must expose monthly Pro pricing");
+  assert(appPageSource.includes('price: "24.90"'), "JSON-LD must expose quarterly Pro pricing");
   assert(!appPageSource.includes('price: "10.00"'), "legacy JSON-LD pricing must be removed");
   assert(!appPageSource.includes("PreloadTerminalData"), "landing route must not add a fourth client island");
   assert(
