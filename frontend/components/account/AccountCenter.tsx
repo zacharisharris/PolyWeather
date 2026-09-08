@@ -440,8 +440,8 @@ export function AccountCenter() {
   const displayPlanList = effectivePlanList.length
     ? effectivePlanList
     : [
-        { plan_code: "pro_monthly", plan_id: 101, amount_usdc: "29.9", duration_days: 30 },
-        { plan_code: "pro_quarterly", plan_id: 102, amount_usdc: "79.9", duration_days: 90 },
+        { plan_code: "pro_monthly", plan_id: 101, amount_usdc: "9.9", duration_days: 30 },
+        { plan_code: "pro_quarterly", plan_id: 102, amount_usdc: "24.9", duration_days: 90 },
       ];
   const manualTxHashReady = /^0x[a-fA-F0-9]{64}$/.test(manualTxHash.trim());
   const trialValueReplaySummary = useMemo(
@@ -1407,7 +1407,7 @@ export function AccountCenter() {
       </main>
 
       <footer className="mt-16 text-center text-slate-600 text-[10px] uppercase tracking-[0.3em] font-mono z-10 pb-8">
-        copy.footerEngine
+        {copy.footerEngine}
       </footer>
     </div>
   );

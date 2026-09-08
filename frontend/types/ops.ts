@@ -84,6 +84,37 @@ export type SourceHealthPayload = {
   total_cities?: number;
 };
 
+export type DataQualityCity = {
+  city: string;
+  source?: string | null;
+  station?: string | null;
+  latest_observation_at?: string | null;
+  fetched_at?: string | null;
+  age_seconds?: number | null;
+  status?: string;
+  fallback_in_use?: boolean;
+  fallback_reason?: string | null;
+  fallback_since?: string | null;
+  primary_source?: string | null;
+  active_source?: string | null;
+  primary_last_success_at?: string | null;
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  consecutive_failures?: number;
+  request_latency_ms?: number | null;
+  last_error?: string | null;
+  quality_flags?: string[];
+};
+
+export type DataQualityPayload = {
+  checked_at?: string;
+  overall?: string;
+  total_cities?: number;
+  status_counts?: Record<string, number>;
+  fallback_count?: number;
+  cities?: DataQualityCity[];
+};
+
 export type ObservationCollectorStatus =
   | "ok"
   | "due"

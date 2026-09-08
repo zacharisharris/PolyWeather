@@ -17,7 +17,6 @@ import { STATIC_CITY_LIST } from "@/lib/static-cities";
 const COVERAGE_EN = [
   "METAR settlement anchors across 51 cities",
   "CoWIN 60s + HKO 600s (Hong Kong)",
-  "MADIS 300s airport observations",
   "JMA AMeDAS / FMI / KNMI official layers",
   "Live chart updates",
 ];
@@ -25,7 +24,6 @@ const COVERAGE_EN = [
 const COVERAGE_ZH = [
   "51 城 METAR 结算锚点",
   "CoWIN 60s + HKO 600s（香港）",
-  "MADIS 300s 机场观测",
   "JMA AMeDAS / FMI / KNMI 官方增强层",
   "网页图表实时更新",
 ];
@@ -245,7 +243,7 @@ function InstitutionalLandingScreen({ locale }: { locale: LandingLocale }) {
     "bg-violet-100 text-violet-700",
     "bg-cyan-100 text-cyan-700",
   ];
-  const coverageIcons: IconName[] = ["radar", "cloudSun", "lineChart", "database", "clock"];
+  const coverageIcons: IconName[] = ["radar", "cloudSun", "database", "clock"];
 
   const platformCards: Array<{ body: string; icon: IconName; title: string }> = isEn
     ? [
@@ -286,13 +284,13 @@ function InstitutionalLandingScreen({ locale }: { locale: LandingLocale }) {
   const heroStats = isEn
     ? [
         { label: "Trial", value: "3 days" },
-        { label: "Monthly", value: "29.9 USDC" },
-        { label: "Quarterly", value: "79.9 USDC" },
+        { label: "Monthly", value: "9.9 USDC" },
+        { label: "Quarterly", value: "24.9 USDC" },
       ]
     : [
         { label: "试用", value: "3 天" },
-        { label: "月付", value: "29.9 USDC" },
-        { label: "季度", value: "79.9 USDC" },
+        { label: "月付", value: "9.9 USDC" },
+        { label: "季度", value: "24.9 USDC" },
       ];
 
   return (
@@ -356,47 +354,6 @@ function InstitutionalLandingScreen({ locale }: { locale: LandingLocale }) {
                   ? "Start with a one-time 7-day trial. Trial access matches Pro."
                   : "新用户可先领一次 7 天试用。试用期权益和 Pro 一致。"}
               </p>
-            </div>
-
-            <div className="landing-float-slow landing-screen-glow mx-auto mt-14 max-w-5xl rounded-lg border border-slate-200 bg-white p-2 shadow-[0_24px_70px_rgba(15,23,42,0.12)]">
-              <div className="flex h-9 items-center gap-2 border-b border-slate-200 px-3">
-                <span className="h-2.5 w-2.5 rounded-full bg-[#ff6b6b]" />
-                <span className="h-2.5 w-2.5 rounded-full bg-[#ffd166]" />
-                <span className="landing-pulse-dot h-2.5 w-2.5 rounded-full bg-[#06d6a0]" />
-                <span className="ml-2 text-xs font-semibold text-slate-400">
-                  polyweather.app/terminal
-                </span>
-              </div>
-              <div className="mt-2 aspect-[16/9] overflow-hidden rounded-md border border-slate-100 bg-gradient-to-b from-slate-50 to-slate-100 p-5 sm:p-8">
-                <div className="grid h-full grid-cols-2 gap-3 sm:grid-cols-4">
-                  {heroStats.map((item) => (
-                    <div
-                      key={`preview-${item.label}`}
-                      className="flex flex-col justify-center rounded-md border border-slate-200 bg-white px-3 py-2 shadow-sm"
-                    >
-                      <div className="font-mono text-sm font-black text-slate-950 sm:text-base">
-                        {item.value}
-                      </div>
-                      <div className="mt-0.5 text-[10px] font-semibold text-slate-500">
-                        {item.label}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {(isEn
-                    ? ["Settlement obs", "DEB blend", "Model consensus", "Calibrated probability", "Market buckets"]
-                    : ["结算实测", "DEB 融合", "模型共识", "校准概率", "市场温度桶"]
-                  ).map((chip) => (
-                    <span
-                      key={chip}
-                      className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600"
-                    >
-                      {chip}
-                    </span>
-                  ))}
-                </div>
-              </div>
             </div>
 
             <div className="mx-auto mt-8 grid max-w-5xl gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -592,11 +549,11 @@ function InstitutionalLandingScreen({ locale }: { locale: LandingLocale }) {
                 </p>
                 <div className="mt-7 space-y-2">
                   <div className="flex items-baseline gap-2">
-                    <span className="font-mono text-4xl font-black text-slate-950">29.9</span>
+                    <span className="font-mono text-4xl font-black text-slate-950">9.9</span>
                     <span className="text-sm font-semibold text-slate-500">USDC / 30 天</span>
                   </div>
                   <div className="flex items-baseline gap-2">
-                    <span className="font-mono text-2xl font-black text-slate-950">79.9</span>
+                    <span className="font-mono text-2xl font-black text-slate-950">24.9</span>
                     <span className="text-sm font-semibold text-slate-500">USDC / 90 天</span>
                   </div>
                 </div>
